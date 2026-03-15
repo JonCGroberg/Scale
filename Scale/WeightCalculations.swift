@@ -7,6 +7,44 @@
 
 import Foundation
 
+enum TimePeriod: String, CaseIterable {
+    case week = "1W"
+    case month = "1M"
+    case threeMonths = "3M"
+    case sixMonths = "6M"
+    case year = "1Y"
+
+    var calendarComponent: Calendar.Component {
+        switch self {
+        case .week: return .weekOfYear
+        case .month: return .month
+        case .threeMonths: return .month
+        case .sixMonths: return .month
+        case .year: return .year
+        }
+    }
+
+    var componentValue: Int {
+        switch self {
+        case .week: return 1
+        case .month: return 1
+        case .threeMonths: return 3
+        case .sixMonths: return 6
+        case .year: return 1
+        }
+    }
+
+    var label: String {
+        switch self {
+        case .week: return "Week"
+        case .month: return "Month"
+        case .threeMonths: return "3 Months"
+        case .sixMonths: return "6 Months"
+        case .year: return "Year"
+        }
+    }
+}
+
 enum WeightCalculations {
 
     /// Calculate the weight change between the two most recent entries.
@@ -21,6 +59,26 @@ enum WeightCalculations {
     static func changeDate(from entries: [WeightEntry]) -> Date? {
         guard entries.count >= 2 else { return nil }
         return entries[1].timestamp
+    }
+
+    /// Average weight over a given time period.
+    /// - Parameters:
+    ///   - entries: Weight entries sorted most-recent-first.
+    ///   - period: The time period to average over.
+    /// - Returns: The average weight, or nil if no entries fall within the period.
+    static func averageWeight(from entries: [WeightEntry], over period: TimePeriod) -> Double? {
+        let calendar = Calendar.current
+        guard let cutoff = calendar.date(
+            byAdding: period.calendarComponent,
+            value: -period.componentValue,
+            to: Date()
+        ) else { return nil }
+
+        let filtered = entries.filter { $0.timestamp >= cutoff }
+        guard !filtered.isEmpty else { return nil }
+
+        let total = filtered.reduce(0.0) { $0 + $1.weight }
+        return total / Double(filtered.count)
     }
 
     /// Parse a user-entered weight string into a valid positive Double.

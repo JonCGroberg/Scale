@@ -86,9 +86,6 @@ private struct DataScannerRepresentable: UIViewControllerRepresentable {
     class Coordinator: NSObject, DataScannerViewControllerDelegate {
         var onWeightScanned: (Double) -> Void
 
-        /// Matches plausible weight values: 1-3 digits, optional decimal with up to 1 digit.
-        private let weightPattern = /^\d{1,3}(\.\d{0,1})?$/
-
         init(onWeightScanned: @escaping (Double) -> Void) {
             self.onWeightScanned = onWeightScanned
         }
@@ -96,9 +93,7 @@ private struct DataScannerRepresentable: UIViewControllerRepresentable {
         func dataScanner(_ dataScanner: DataScannerViewController, didTapOn item: RecognizedItem) {
             guard case .text(let text) = item else { return }
 
-            let transcript = text.transcript.trimmingCharacters(in: .whitespaces)
-            if transcript.wholeMatch(of: weightPattern) != nil,
-               let weight = Double(transcript), weight > 0 {
+            if let weight = WeightCalculations.parseScannedWeight(text.transcript) {
                 onWeightScanned(weight)
             }
         }

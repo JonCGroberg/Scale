@@ -23,9 +23,12 @@ struct ScaleApp: App {
         }
     }()
 
+    private let healthKitManager = HealthKitManager()
+
     var body: some Scene {
         WindowGroup {
-            ContentView()
+            RootView()
+                .environment(healthKitManager)
         }
         .modelContainer(sharedModelContainer)
     }
