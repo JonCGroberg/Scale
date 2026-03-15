@@ -18,6 +18,9 @@ struct EntryView: View {
     @State private var isEditingWeight = false
     @State private var weightText = ""
     @State private var showCamera = false
+    @State private var saved = false
+    @State private var saveScale: CGFloat = 1.0
+    @State private var saveFlash = false
     @FocusState private var weightFieldFocused: Bool
 
     private let step: Double = 0.1
@@ -25,41 +28,90 @@ struct EntryView: View {
     private var latestEntry: WeightEntry? { entries.first }
 
     var body: some View {
-        ZStack {
-            Color(.systemBackground)
-                .ignoresSafeArea()
+        NavigationStack {
+            ZStack {
+                Color(.systemBackground)
+                    .ignoresSafeArea()
 
-            VStack(spacing: 0) {
-                if showChangePill, !entries.isEmpty {
-                    ChangeBadge(entries: entries)
-                        .onTapGesture { selectedTab = 1 }
-                        .padding(.top, 16)
+                VStack(spacing: 0) {
+                    if showChangePill, !entries.isEmpty {
+                        ChangeBadge(entries: entries)
+                            .onTapGesture { selectedTab = 1 }
+                            .padding(.top, 8)
+                            .padding(.bottom, 8)
+                            .padding(.horizontal, 16)
+                    }
+
+                    Spacer()
+
+                    // Weight entry card
+                    GlassEffectContainer {
+                        VStack(spacing: 28) {
+                            lastLoggedLabel
+
+                            weightDisplay
+
+                            stepperRow
+
+                            saveButton
+                        }
+                        .padding(.vertical, 32)
+                        .padding(.horizontal, 40)
+                        .frame(maxWidth: .infinity)
+                        .glassEffect(in: .rect(cornerRadius: 24))
+                        .overlay(
+                            RoundedRectangle(cornerRadius: 24)
+                                .fill(
+                                    LinearGradient(
+                                        colors: [
+                                            .green.opacity(saveFlash ? 0.03 : 0),
+                                            .mint.opacity(saveFlash ? 0.1 : 0),
+                                            .green.opacity(saveFlash ? 0.2 : 0)
+                                        ],
+                                        startPoint: .top,
+                                        endPoint: .bottom
+                                    )
+                                )
+                                .allowsHitTesting(false)
+                        )
+                    }
+                    .scaleEffect(saveScale)
+                    .padding(.horizontal, 24)
+
+                    Spacer()
+
+                    cameraButton
+                        .padding(.bottom, 24)
                 }
-
-                Spacer()
-
-                weightDisplay
-
-                stepperRow
-                    .padding(.top, 32)
-
-                Spacer()
-
-                saveButton
-                    .padding(.bottom, 32)
             }
-            .padding(.horizontal, 24)
+            .toolbar(.hidden, for: .navigationBar)
+            .onAppear {
+                if let latest = latestEntry {
+                    currentWeight = latest.weight
+                }
+            }
+            .fullScreenCover(isPresented: $showCamera) {
+                ScaleScannerView { weight in
+                    withAnimation(.snappy) {
+                        currentWeight = weight
+                    }
+                }
+            }
         }
-        .onAppear {
+    }
+
+    // MARK: - Last Logged Label
+
+    private var lastLoggedLabel: some View {
+        Group {
             if let latest = latestEntry {
-                currentWeight = latest.weight
-            }
-        }
-        .fullScreenCover(isPresented: $showCamera) {
-            ScaleScannerView { weight in
-                withAnimation(.snappy) {
-                    currentWeight = weight
-                }
+                Text("Last logged \(latest.timestamp, format: .relative(presentation: .named))")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            } else {
+                Text("Log your first weight")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
             }
         }
     }
@@ -68,13 +120,12 @@ struct EntryView: View {
 
     private var weightDisplay: some View {
         VStack(spacing: 4) {
-            HStack(alignment: .firstTextBaseline, spacing: 6) {
+            HStack(alignment: .firstTextBaseline, spacing: 4) {
                 if isEditingWeight {
                     TextField("0.0", text: $weightText)
-                        .font(.system(size: 72, weight: .light))
-                        .tracking(-2)
+                        .font(.system(size: 64, weight: .bold, design: .rounded))
                         .keyboardType(.decimalPad)
-                        .multilineTextAlignment(.trailing)
+                        .multilineTextAlignment(.center)
                         .focused($weightFieldFocused)
                         .fixedSize()
                         .onSubmit { commitWeightEdit() }
@@ -92,23 +143,15 @@ struct EntryView: View {
                         }
                 } else {
                     Text(String(format: "%.1f", currentWeight))
-                        .font(.system(size: 72, weight: .light))
-                        .tracking(-2)
+                        .font(.system(size: 64, weight: .bold, design: .rounded))
                         .contentTransition(.numericText())
                 }
 
                 Text("lbs")
                     .font(.title3)
                     .fontWeight(.medium)
-                    .foregroundStyle(.accent.opacity(0.8))
-
-                Button {
-                    showCamera = true
-                } label: {
-                    Image(systemName: "barcode.viewfinder")
-                        .font(.title3)
-                        .foregroundStyle(.accent.opacity(0.5))
-                }
+                    .foregroundStyle(.secondary)
+                    .padding(.bottom, 4)
             }
             .onTapGesture {
                 weightText = String(format: "%.1f", currentWeight)
@@ -123,44 +166,48 @@ struct EntryView: View {
         }
     }
 
-    // MARK: - Stepper Row
+    // MARK: - Stepper
 
     private var stepperRow: some View {
-        HStack(spacing: 40) {
-            Button {
-                withAnimation(.snappy) {
-                    currentWeight = max(currentWeight - step, 0.1)
-                }
-            } label: {
-                Image(systemName: "minus")
-                    .font(.title2.weight(.semibold))
-                    .frame(width: 56, height: 56)
-                    .background(.accent.opacity(0.1), in: Circle())
-                    .overlay(Circle().stroke(.accent.opacity(0.2), lineWidth: 1))
+        Stepper("Weight") {
+            withAnimation(.snappy) {
+                currentWeight += step
             }
-
-            Button {
-                withAnimation(.snappy) {
-                    currentWeight += step
-                }
-            } label: {
-                Image(systemName: "plus")
-                    .font(.title2.weight(.semibold))
-                    .frame(width: 56, height: 56)
-                    .background(.accent.opacity(0.1), in: Circle())
-                    .overlay(Circle().stroke(.accent.opacity(0.2), lineWidth: 1))
+        } onDecrement: {
+            withAnimation(.snappy) {
+                currentWeight -= step
             }
+        }
+        .labelsHidden()
+        .onChange(of: currentWeight) {
+            saved = false
         }
     }
 
     // MARK: - Save Button
 
     private var saveButton: some View {
-        Button("Save Entry") {
+        Button {
             saveEntry()
+        } label: {
+            Text(saved ? "Saved" : "Save")
+                .contentTransition(.interpolate)
         }
-        .buttonStyle(.glassProminent)
+        .buttonStyle(.glass)
         .controlSize(.large)
+        .disabled(saved)
+    }
+
+    // MARK: - Camera Button
+
+    private var cameraButton: some View {
+        Button {
+            showCamera = true
+        } label: {
+            Label("Scan Scale", systemImage: "camera.viewfinder")
+                .font(.subheadline.weight(.medium))
+        }
+        .buttonStyle(.glass)
     }
 
     // MARK: - Actions
@@ -180,10 +227,19 @@ struct EntryView: View {
     }
 
     private func saveEntry() {
-        withAnimation {
-            let entry = WeightEntry(weight: currentWeight)
-            modelContext.insert(entry)
-            selectedTab = 1
+        let entry = WeightEntry(weight: currentWeight)
+        modelContext.insert(entry)
+
+        withAnimation(.spring(duration: 0.2, bounce: 0.0)) {
+            saveScale = 1.08
+            saveFlash = true
+            saved = true
+        }
+        withAnimation(.spring(duration: 0.4, bounce: 0.4).delay(0.2)) {
+            saveScale = 1.0
+        }
+        withAnimation(.easeOut(duration: 1.0).delay(0.3)) {
+            saveFlash = false
         }
     }
 }

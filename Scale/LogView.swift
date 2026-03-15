@@ -7,115 +7,76 @@
 
 import SwiftUI
 import SwiftData
-import Charts
-
-enum ChartRange: String, CaseIterable {
-    case days = "Days"
-    case weeks = "Weeks"
-    case months = "Months"
-
-    var calendarComponent: Calendar.Component {
-        switch self {
-        case .days: return .day
-        case .weeks: return .weekOfYear
-        case .months: return .month
-        }
-    }
-
-    var dayCount: Int {
-        switch self {
-        case .days: return 7
-        case .weeks: return 30
-        case .months: return 365
-        }
-    }
-}
-
 struct LogView: View {
     @Environment(\.modelContext) private var modelContext
     @Query(sort: \WeightEntry.timestamp, order: .reverse) private var entries: [WeightEntry]
-    @AppStorage("showChangeGraph") private var showChangeGraph = true
-
     @AppStorage("showChangePill") private var showChangePill = true
 
     @State private var isScrolling = false
     @State private var visibleSection = ""
     @State private var hideYearTask: Task<Void, Never>?
-    @State private var chartRange: ChartRange = .weeks
+
 
     var body: some View {
         NavigationStack {
             ZStack {
-                Color(.systemBackground)
+                Color(.systemGroupedBackground)
                     .ignoresSafeArea()
 
                 if entries.isEmpty {
                     emptyState
                 } else {
                     VStack(spacing: 0) {
-                        if showChangePill, !entries.isEmpty {
-                            ChangeBadge(entries: entries)
-                                .padding(.top, 16)
-                                .padding(.bottom, 8)
-                        }
-
                         List {
-                            if showChangeGraph && chartEntries.count >= 2 {
-                            weightChart
-                                .listRowBackground(Color(.systemBackground))
-                                .listRowSeparator(.hidden)
-                        }
-
-                        ForEach(groupedEntries, id: \.key) { month, monthEntries in
-                            Section {
-                                ForEach(monthEntries) { entry in
-                                    logRow(entry: entry)
-                                        .listRowBackground(Color(.systemBackground))
-                                }
-                                .onDelete { offsets in
-                                    deleteEntries(monthEntries, at: offsets)
-                                }
-                            } header: {
-                                Text(month.uppercased())
-                                    .font(.footnote)
-                                    .fontWeight(.semibold)
-                                    .foregroundStyle(.secondary)
-                                    .textCase(nil)
-                                    .padding(.top, 12)
-                                    .onGeometryChange(for: CGFloat.self) { proxy in
-                                        proxy.frame(in: .global).minY
-                                    } action: { minY in
-                                        if minY < 160 {
-                                            visibleSection = month
-                                        }
+                            ForEach(groupedEntries, id: \.key) { month, monthEntries in
+                                Section {
+                                    ForEach(monthEntries) { entry in
+                                        logRow(entry: entry)
                                     }
-                            }
-                        }
-                        .listSectionSpacing(0)
-                    }
-                    .listStyle(.grouped)
-                    .scrollContentBackground(.hidden)
-                    .onScrollPhaseChange { _, newPhase in
-                        switch newPhase {
-                        case .idle:
-                            hideYearTask?.cancel()
-                            hideYearTask = Task {
-                                try? await Task.sleep(for: .seconds(0.8))
-                                guard !Task.isCancelled else { return }
-                                withAnimation(.easeOut(duration: 0.3)) {
-                                    isScrolling = false
+                                    .onDelete { offsets in
+                                        deleteEntries(monthEntries, at: offsets)
+                                    }
+                                } header: {
+                                    Text(month.uppercased())
+                                        .font(.footnote)
+                                        .fontWeight(.semibold)
+                                        .foregroundStyle(.secondary)
+                                        .textCase(nil)
+                                        .onGeometryChange(for: CGFloat.self) { proxy in
+                                            proxy.frame(in: .global).minY
+                                        } action: { minY in
+                                            if minY < 160 {
+                                                visibleSection = month
+                                            }
+                                        }
                                 }
                             }
-                        default:
-                            hideYearTask?.cancel()
-                            if !isScrolling {
-                                withAnimation(.easeIn(duration: 0.15)) {
-                                    isScrolling = true
+                            .listSectionSpacing(0)
+                        }
+                        .listStyle(.insetGrouped)
+                        .contentMargins(.horizontal, 24)
+                        .scrollContentBackground(.hidden)
+                        .onScrollPhaseChange { _, newPhase in
+                            switch newPhase {
+                            case .idle:
+                                hideYearTask?.cancel()
+                                hideYearTask = Task {
+                                    try? await Task.sleep(for: .seconds(0.8))
+                                    guard !Task.isCancelled else { return }
+                                    withAnimation(.easeOut(duration: 0.3)) {
+                                        isScrolling = false
+                                    }
+                                }
+                            default:
+                                hideYearTask?.cancel()
+                                if !isScrolling {
+                                    withAnimation(.easeIn(duration: 0.15)) {
+                                        isScrolling = true
+                                    }
                                 }
                             }
                         }
                     }
-                    } // end VStack
 
                     // Floating month overlay
                     if isScrolling && !visibleSection.isEmpty {
@@ -130,13 +91,22 @@ struct LogView: View {
                                 .shadow(color: .black.opacity(0.08), radius: 4, y: 2)
                             Spacer()
                         }
-                        .padding(.top, showChangePill && !entries.isEmpty ? 56 : 4)
+                        .padding(.top, 4)
                         .transition(.opacity)
                         .allowsHitTesting(false)
                     }
                 }
             }
             .toolbar(.hidden, for: .navigationBar)
+            .safeAreaInset(edge: .top, spacing: 0) {
+                if showChangePill, !entries.isEmpty {
+                    ChangeBadge(entries: entries)
+                        .frame(maxWidth: .infinity)
+                        .padding(.top, 8)
+                        .padding(.bottom, 16)
+                        .padding(.horizontal, 16)
+                }
+            }
         }
     }
 
@@ -146,93 +116,13 @@ struct LogView: View {
         WeightCalculations.groupedByMonth(entries)
     }
 
-    // MARK: - Chart
-
-    private var chartEntries: [WeightEntry] {
-        let cutoff = Calendar.current.date(byAdding: .day, value: -chartRange.dayCount, to: Date()) ?? Date()
-        return entries.filter { $0.timestamp >= cutoff }.sorted { $0.timestamp < $1.timestamp }
-    }
-
-    private var weightChart: some View {
-        let sorted = chartEntries
-        let dates = sorted.map(\.timestamp)
-        let weights = sorted.map(\.weight)
-
-        return VStack(spacing: 8) {
-            Picker("Range", selection: $chartRange) {
-                ForEach(ChartRange.allCases, id: \.self) { range in
-                    Text(range.rawValue).tag(range)
-                }
-            }
-            .pickerStyle(.segmented)
-            .padding(.horizontal, 4)
-
-            Chart {
-                ForEach(Array(zip(dates, weights).enumerated()), id: \.offset) { index, pair in
-                    let (date, weight) = pair
-
-                    LineMark(
-                        x: .value("Date", date),
-                        y: .value("Weight", weight)
-                    )
-                    .interpolationMethod(.catmullRom)
-                    .foregroundStyle(.accent)
-
-                    AreaMark(
-                        x: .value("Date", date),
-                        y: .value("Weight", weight)
-                    )
-                    .interpolationMethod(.catmullRom)
-                    .foregroundStyle(.accent.opacity(0.1))
-
-                    PointMark(
-                        x: .value("Date", date),
-                        y: .value("Weight", weight)
-                    )
-                    .symbolSize(20)
-                    .foregroundStyle(.accent)
-                }
-            }
-            .chartYScale(domain: .automatic(includesZero: false))
-            .chartXAxis {
-                switch chartRange {
-                case .days:
-                    AxisMarks(values: .automatic(desiredCount: 4)) {
-                        AxisValueLabel(format: .dateTime.weekday(.abbreviated))
-                    }
-                case .weeks:
-                    AxisMarks(values: .automatic(desiredCount: 4)) {
-                        AxisValueLabel(format: .dateTime.month(.abbreviated).day())
-                    }
-                case .months:
-                    AxisMarks(values: .automatic(desiredCount: 4)) {
-                        AxisValueLabel(format: .dateTime.month(.abbreviated))
-                    }
-                }
-            }
-            .chartYAxis {
-                AxisMarks(position: .leading, values: .automatic(desiredCount: 4)) {
-                    AxisGridLine(stroke: StrokeStyle(lineWidth: 0.5, dash: [4]))
-                        .foregroundStyle(.secondary.opacity(0.3))
-                    AxisValueLabel()
-                }
-            }
-            .frame(height: 160)
-        }
-        .padding(.vertical, 8)
-    }
-
     // MARK: - Empty State
 
     private var emptyState: some View {
-        VStack(spacing: 12) {
-            Image(systemName: "chart.line.uptrend.xyaxis")
-                .font(.system(size: 40))
-                .foregroundStyle(.secondary.opacity(0.5))
-
-            Text("No entries yet")
-                .font(.subheadline)
-                .foregroundStyle(.secondary)
+        ContentUnavailableView {
+            Label("No Entries Yet", systemImage: "chart.line.uptrend.xyaxis")
+        } description: {
+            Text("Log your first weight entry to start tracking your progress.")
         }
     }
 
@@ -240,22 +130,29 @@ struct LogView: View {
 
     private func logRow(entry: WeightEntry) -> some View {
         HStack {
-            VStack(alignment: .leading, spacing: 2) {
+            VStack(alignment: .leading, spacing: 3) {
                 Text(entry.timestamp, format: .dateTime.month(.abbreviated).day().year())
                     .font(.subheadline)
                     .fontWeight(.medium)
 
-                Text(entry.timestamp, format: .dateTime.hour().minute())
+                Text(entry.timestamp, format: .dateTime.weekday(.wide).hour().minute())
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }
 
             Spacer()
 
-            Text(String(format: "%.1f lbs", entry.weight))
-                .font(.body)
-                .fontWeight(.semibold)
-                .foregroundStyle(.accent)
+            HStack(alignment: .firstTextBaseline, spacing: 3) {
+                Text(String(format: "%.1f", entry.weight))
+                    .font(.title3)
+                    .fontWeight(.semibold)
+                    .foregroundStyle(.accent)
+
+                Text("lbs")
+                    .font(.caption)
+                    .fontWeight(.medium)
+                    .foregroundStyle(.accent.opacity(0.7))
+            }
         }
         .padding(.vertical, 4)
     }

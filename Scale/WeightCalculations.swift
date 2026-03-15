@@ -99,6 +99,27 @@ enum WeightCalculations {
         return weight
     }
 
+    /// Percentage weight change over a given time period.
+    /// Compares the most recent entry to the earliest entry within the period.
+    /// - Returns: The percentage change, or nil if fewer than 2 entries in the period.
+    static func percentageChange(from entries: [WeightEntry], over period: TimePeriod) -> Double? {
+        let calendar = Calendar.current
+        guard let cutoff = calendar.date(
+            byAdding: period.calendarComponent,
+            value: -period.componentValue,
+            to: Date()
+        ) else { return nil }
+
+        let filtered = entries.filter { $0.timestamp >= cutoff }
+            .sorted { $0.timestamp < $1.timestamp }
+        guard filtered.count >= 2,
+              let first = filtered.first,
+              let last = filtered.last,
+              first.weight != 0 else { return nil }
+
+        return ((last.weight - first.weight) / first.weight) * 100
+    }
+
     /// Group weight entries by month/year, sorted newest-first.
     static func groupedByMonth(_ entries: [WeightEntry]) -> [(key: String, value: [WeightEntry])] {
         let formatter = DateFormatter()

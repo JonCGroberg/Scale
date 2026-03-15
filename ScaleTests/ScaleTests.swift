@@ -332,3 +332,150 @@ struct EntryGroupingTests {
         #expect(grouped[0].key == expected)
     }
 }
+
+// MARK: - Average Weight Tests
+
+struct AverageWeightTests {
+
+    @Test func averageOfEntriesWithinPeriod() {
+        let now = Date()
+        let entries = [
+            WeightEntry(weight: 150.0, timestamp: now),
+            WeightEntry(weight: 148.0, timestamp: now.addingTimeInterval(-2 * 86400)),
+            WeightEntry(weight: 146.0, timestamp: now.addingTimeInterval(-5 * 86400))
+        ]
+        let avg = WeightCalculations.averageWeight(from: entries, over: .week)
+        #expect(avg != nil)
+        // All 3 entries are within the last week
+        let expected = (150.0 + 148.0 + 146.0) / 3.0
+        #expect(abs(avg! - expected) < 0.01)
+    }
+
+    @Test func averageExcludesOldEntries() {
+        let now = Date()
+        let entries = [
+            WeightEntry(weight: 150.0, timestamp: now),
+            WeightEntry(weight: 100.0, timestamp: now.addingTimeInterval(-400 * 86400))  // >1 year ago
+        ]
+        let avg = WeightCalculations.averageWeight(from: entries, over: .week)
+        #expect(avg != nil)
+        #expect(avg == 150.0)
+    }
+
+    @Test func averageIsNilWhenNoEntriesInPeriod() {
+        let entries = [
+            WeightEntry(weight: 150.0, timestamp: Date().addingTimeInterval(-400 * 86400))
+        ]
+        let avg = WeightCalculations.averageWeight(from: entries, over: .week)
+        #expect(avg == nil)
+    }
+
+    @Test func averageIsNilForEmptyEntries() {
+        let avg = WeightCalculations.averageWeight(from: [], over: .month)
+        #expect(avg == nil)
+    }
+}
+
+// MARK: - Percentage Change Tests
+
+struct PercentageChangeTests {
+
+    @Test func positivePercentageChange() {
+        let now = Date()
+        let entries = [
+            WeightEntry(weight: 110.0, timestamp: now),                                  // most recent
+            WeightEntry(weight: 100.0, timestamp: now.addingTimeInterval(-5 * 86400))     // oldest in range
+        ]
+        let pct = WeightCalculations.percentageChange(from: entries, over: .week)
+        #expect(pct != nil)
+        #expect(abs(pct! - 10.0) < 0.01)  // (110-100)/100 * 100 = 10%
+    }
+
+    @Test func negativePercentageChange() {
+        let now = Date()
+        let entries = [
+            WeightEntry(weight: 90.0, timestamp: now),
+            WeightEntry(weight: 100.0, timestamp: now.addingTimeInterval(-5 * 86400))
+        ]
+        let pct = WeightCalculations.percentageChange(from: entries, over: .week)
+        #expect(pct != nil)
+        #expect(abs(pct! - (-10.0)) < 0.01)
+    }
+
+    @Test func zeroPercentageWhenUnchanged() {
+        let now = Date()
+        let entries = [
+            WeightEntry(weight: 150.0, timestamp: now),
+            WeightEntry(weight: 150.0, timestamp: now.addingTimeInterval(-5 * 86400))
+        ]
+        let pct = WeightCalculations.percentageChange(from: entries, over: .week)
+        #expect(pct != nil)
+        #expect(abs(pct!) < 0.01)
+    }
+
+    @Test func percentageIsNilWithOneEntry() {
+        let entries = [WeightEntry(weight: 150.0, timestamp: Date())]
+        let pct = WeightCalculations.percentageChange(from: entries, over: .week)
+        #expect(pct == nil)
+    }
+
+    @Test func percentageIsNilWithNoEntries() {
+        let pct = WeightCalculations.percentageChange(from: [], over: .month)
+        #expect(pct == nil)
+    }
+
+    @Test func percentageUsesEarliestAndLatestInPeriod() {
+        let now = Date()
+        let entries = [
+            WeightEntry(weight: 155.0, timestamp: now),
+            WeightEntry(weight: 152.0, timestamp: now.addingTimeInterval(-3 * 86400)),
+            WeightEntry(weight: 150.0, timestamp: now.addingTimeInterval(-6 * 86400))
+        ]
+        let pct = WeightCalculations.percentageChange(from: entries, over: .week)
+        #expect(pct != nil)
+        // earliest=150, latest=155 → (155-150)/150 * 100 = 3.33%
+        let expected = ((155.0 - 150.0) / 150.0) * 100
+        #expect(abs(pct! - expected) < 0.01)
+    }
+}
+
+// MARK: - TimePeriod Tests
+
+struct TimePeriodTests {
+
+    @Test func allCasesCount() {
+        #expect(TimePeriod.allCases.count == 5)
+    }
+
+    @Test func rawValues() {
+        #expect(TimePeriod.week.rawValue == "1W")
+        #expect(TimePeriod.month.rawValue == "1M")
+        #expect(TimePeriod.threeMonths.rawValue == "3M")
+        #expect(TimePeriod.sixMonths.rawValue == "6M")
+        #expect(TimePeriod.year.rawValue == "1Y")
+    }
+
+    @Test func labels() {
+        #expect(TimePeriod.week.label == "Week")
+        #expect(TimePeriod.month.label == "Month")
+        #expect(TimePeriod.threeMonths.label == "3 Months")
+        #expect(TimePeriod.sixMonths.label == "6 Months")
+        #expect(TimePeriod.year.label == "Year")
+    }
+
+    @Test func componentValues() {
+        #expect(TimePeriod.week.componentValue == 1)
+        #expect(TimePeriod.month.componentValue == 1)
+        #expect(TimePeriod.threeMonths.componentValue == 3)
+        #expect(TimePeriod.sixMonths.componentValue == 6)
+        #expect(TimePeriod.year.componentValue == 1)
+    }
+
+    @Test func calendarComponents() {
+        #expect(TimePeriod.week.calendarComponent == .weekOfYear)
+        #expect(TimePeriod.month.calendarComponent == .month)
+        #expect(TimePeriod.threeMonths.calendarComponent == .month)
+        #expect(TimePeriod.sixMonths.calendarComponent == .month)
+        #expect(TimePeriod.year.calendarComponent == .year)
+    }
+}

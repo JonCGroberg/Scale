@@ -21,6 +21,10 @@ struct ChangeBadge: View {
         WeightCalculations.averageWeight(from: entries, over: period)
     }
 
+    private var percentChange: Double? {
+        WeightCalculations.percentageChange(from: entries, over: period)
+    }
+
     var body: some View {
         HStack(spacing: 6) {
             if let avg = average {
@@ -48,14 +52,22 @@ struct ChangeBadge: View {
                 .tracking(0.3)
                 .foregroundStyle(.secondary)
                 .contentTransition(.interpolate)
+
+            if let pct = percentChange {
+                Circle()
+                    .fill(.accent.opacity(0.4))
+                    .frame(width: 4, height: 4)
+
+                Text(String(format: "%+.1f%%", pct))
+                    .font(.caption2)
+                    .fontWeight(.bold)
+                    .foregroundStyle(pct <= 0 ? .green : .red)
+                    .contentTransition(.numericText())
+            }
         }
-        .padding(.horizontal, 20)
+        .padding(.horizontal, 14)
         .padding(.vertical, 10)
-        .background(.accent.opacity(0.1), in: Capsule())
-        .overlay(
-            Capsule()
-                .stroke(.accent.opacity(0.2), lineWidth: 1)
-        )
+        .glassEffect()
         .animation(.snappy, value: currentIndex)
         .gesture(
             DragGesture(minimumDistance: 20)

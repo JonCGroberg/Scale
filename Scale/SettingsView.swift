@@ -11,7 +11,6 @@ import SwiftData
 struct SettingsView: View {
     @Environment(\.modelContext) private var modelContext
     @Environment(HealthKitManager.self) private var healthManager
-    @AppStorage("showChangeGraph") private var showChangeGraph = true
     @AppStorage("showChangePill") private var showChangePill = true
 
     var body: some View {
@@ -22,12 +21,11 @@ struct SettingsView: View {
 
                 List {
                     Section {
-                        Toggle("Weight Trend Chart", isOn: $showChangeGraph)
                         Toggle("Last Change Badge", isOn: $showChangePill)
                     } header: {
                         Text("Display")
                     } footer: {
-                        Text("The weight trend chart appears in History. The last change badge shows your most recent weight difference on the Log screen.")
+                        Text("The last change badge shows your most recent weight difference on the Log screen.")
                     }
 
                     Section {
@@ -41,7 +39,6 @@ struct SettingsView: View {
                 .scrollContentBackground(.hidden)
             }
             .navigationTitle("Settings")
-            .navigationBarTitleDisplayMode(.large)
         }
     }
 
