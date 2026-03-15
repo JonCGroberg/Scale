@@ -9,10 +9,12 @@ import Foundation
 import SwiftData
 
 @Model
-final class Item {
+final class WeightEntry {
+    var weight: Double
     var timestamp: Date
     
-    init(timestamp: Date) {
+    init(weight: Double, timestamp: Date = Date()) {
+        self.weight = weight
         self.timestamp = timestamp
     }
 }
