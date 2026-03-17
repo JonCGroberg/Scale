@@ -120,6 +120,85 @@ enum WeightCalculations {
         return ((last.weight - first.weight) / first.weight) * 100
     }
 
+    /// Current logging streak: consecutive days (including today) with at least one entry.
+    /// - Parameters:
+    ///   - entries: Weight entries sorted most-recent-first.
+    ///   - includingToday: When `true`, count today even if no entry exists yet (used when about to save).
+    /// - Returns: The number of consecutive days with entries ending today, or 0 if none today.
+    static func currentStreak(from entries: [WeightEntry], includingToday: Bool = false) -> Int {
+        let calendar = Calendar.current
+        let today = calendar.startOfDay(for: Date())
+
+        // Collect unique logged days
+        var loggedDays = Set<Date>()
+        for entry in entries {
+            loggedDays.insert(calendar.startOfDay(for: entry.timestamp))
+        }
+        if includingToday {
+            loggedDays.insert(today)
+        }
+
+        guard loggedDays.contains(today) else { return 0 }
+
+        // Walk backwards from today
+        var streak = 0
+        var day = today
+        while loggedDays.contains(day) {
+            streak += 1
+            guard let previous = calendar.date(byAdding: .day, value: -1, to: day) else { break }
+            day = previous
+        }
+
+        return streak
+    }
+
+    /// Compute the streak value for every unique logged day.
+    /// Every day that is part of a consecutive run of 2+ days gets a value > 0.
+    /// Days that are isolated (no adjacent logged days) get 0.
+    /// Within a run, day 1 gets 1, day 2 gets 2, etc.
+    /// - Parameter entries: All weight entries (any order).
+    static func streaksByDay(from entries: [WeightEntry]) -> [Date: Int] {
+        let calendar = Calendar.current
+        var loggedDays = Set<Date>()
+        for entry in entries {
+            loggedDays.insert(calendar.startOfDay(for: entry.timestamp))
+        }
+
+        guard !loggedDays.isEmpty else { return [:] }
+
+        let sorted = loggedDays.sorted()
+
+        // Build runs of consecutive days
+        var runs: [[Date]] = []
+        var currentRun: [Date] = [sorted[0]]
+
+        for i in 1..<sorted.count {
+            let previous = sorted[i - 1]
+            let current = sorted[i]
+            if calendar.date(byAdding: .day, value: 1, to: previous) == current {
+                currentRun.append(current)
+            } else {
+                runs.append(currentRun)
+                currentRun = [current]
+            }
+        }
+        runs.append(currentRun)
+
+        // Assign streak counts: isolated days get 0, multi-day runs get 1...N
+        var result: [Date: Int] = [:]
+        for run in runs {
+            if run.count == 1 {
+                result[run[0]] = 0
+            } else {
+                for (index, day) in run.enumerated() {
+                    result[day] = index + 1
+                }
+            }
+        }
+
+        return result
+    }
+
     /// Group weight entries by month/year, sorted newest-first.
     static func groupedByMonth(_ entries: [WeightEntry]) -> [(key: String, value: [WeightEntry])] {
         let formatter = DateFormatter()

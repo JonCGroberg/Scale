@@ -406,7 +406,7 @@
 				ENABLE_PREVIEWS = YES;
 				GENERATE_INFOPLIST_FILE = YES;
 				INFOPLIST_KEY_NSCameraUsageDescription = "Scan the scale";
-				INFOPLIST_KEY_NSHealthShareUsageDescription = NSHealthShareUsageDescription;
+				INFOPLIST_KEY_NSHealthShareUsageDescription = "Sync your weight with apple health";
 				INFOPLIST_KEY_NSHealthUpdateUsageDescription = "Scale uses ​Health​Kit to import your weight history";
 				INFOPLIST_KEY_UIApplicationSceneManifest_Generation = YES;
 				INFOPLIST_KEY_UIApplicationSupportsIndirectInputEvents = YES;
@@ -437,14 +437,14 @@
 			buildSettings = {
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
-				CODE_SIGN_ENTITLEMENTS = Scale/Scale.entitlements;
+				CODE_SIGN_ENTITLEMENTS = Scale/ScaleRelease.entitlements;
 				CODE_SIGN_STYLE = Automatic;
 				CURRENT_PROJECT_VERSION = 1;
 				DEVELOPMENT_TEAM = N493N5JRGD;
 				ENABLE_PREVIEWS = YES;
 				GENERATE_INFOPLIST_FILE = YES;
 				INFOPLIST_KEY_NSCameraUsageDescription = "Scan the scale";
-				INFOPLIST_KEY_NSHealthShareUsageDescription = NSHealthShareUsageDescription;
+				INFOPLIST_KEY_NSHealthShareUsageDescription = "Sync your weight with apple health";
 				INFOPLIST_KEY_NSHealthUpdateUsageDescription = "Scale uses ​Health​Kit to import your weight history";
 				INFOPLIST_KEY_UIApplicationSceneManifest_Generation = YES;
 				INFOPLIST_KEY_UIApplicationSupportsIndirectInputEvents = YES;

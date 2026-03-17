@@ -12,11 +12,12 @@ struct SettingsView: View {
     @Environment(\.modelContext) private var modelContext
     @Environment(HealthKitManager.self) private var healthManager
     @AppStorage("showChangePill") private var showChangePill = true
+    @AppStorage("autoSyncHealthKit") private var autoSyncHealthKit = false
 
     var body: some View {
         NavigationStack {
             ZStack {
-                Color(.systemBackground)
+                Color(.systemGroupedBackground)
                     .ignoresSafeArea()
 
                 List {
@@ -29,11 +30,14 @@ struct SettingsView: View {
                     }
 
                     Section {
+                        if healthManager.isAvailable {
+                            Toggle("Sync on App Launch", isOn: $autoSyncHealthKit)
+                        }
                         healthImportRow
                     } header: {
-                        Text("Data")
+                        Text("Apple Health")
                     } footer: {
-                        Text("Import weight entries recorded in Apple Health into this app.")
+                        Text("Automatically import new weight entries from Apple Health each time you open the app, or import manually.")
                     }
                 }
                 .scrollContentBackground(.hidden)
@@ -94,17 +98,22 @@ struct SettingsView: View {
     @ViewBuilder
     private func resultText(_ result: HealthKitManager.ImportResult) -> some View {
         switch result {
-        case .success(let imported, let skipped):
-            if imported == 0 && skipped > 0 {
+        case .success(let imported, let skipped, let removed):
+            if imported == 0 && removed == 0 && skipped > 0 {
                 Text("All entries already imported")
                     .font(.caption)
                     .foregroundStyle(.secondary)
-            } else if imported == 0 && skipped == 0 {
+            } else if imported == 0 && removed == 0 && skipped == 0 {
                 Text("No weight data found in Apple Health")
                     .font(.caption)
                     .foregroundStyle(.secondary)
             } else {
-                Text("\(imported) imported, \(skipped) skipped")
+                let parts = [
+                    imported > 0 ? "\(imported) imported" : nil,
+                    removed > 0 ? "\(removed) removed" : nil,
+                    skipped > 0 ? "\(skipped) skipped" : nil,
+                ].compactMap { $0 }.joined(separator: ", ")
+                Text(parts)
                     .font(.caption)
                     .foregroundStyle(.accent)
             }

@@ -25,8 +25,29 @@ struct ChangeBadge: View {
         WeightCalculations.percentageChange(from: entries, over: period)
     }
 
+    private var streak: Int {
+        WeightCalculations.currentStreak(from: entries)
+    }
+
     var body: some View {
         HStack(spacing: 6) {
+            if streak > 0 {
+                HStack(spacing: 2) {
+                    Image(systemName: "flame.fill")
+                        .font(.caption2)
+                        .foregroundStyle(.orange)
+
+                    Text("\(streak)")
+                        .font(.caption)
+                        .fontWeight(.bold)
+                        .contentTransition(.numericText())
+                }
+
+                Circle()
+                    .fill(.accent.opacity(0.4))
+                    .frame(width: 4, height: 4)
+            }
+
             if let avg = average {
                 HStack(spacing: 4) {
                     Image(systemName: "chart.line.text.clipboard")

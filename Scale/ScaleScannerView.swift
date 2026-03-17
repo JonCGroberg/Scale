@@ -70,10 +70,15 @@ private struct DataScannerRepresentable: UIViewControllerRepresentable {
             isHighlightingEnabled: true
         )
         scanner.delegate = context.coordinator
+        try? scanner.startScanning()
         return scanner
     }
 
-    func updateUIViewController(_ uiViewController: DataScannerViewController, context: Context) {}
+    func updateUIViewController(_ uiViewController: DataScannerViewController, context: Context) {
+        if !uiViewController.isScanning {
+            try? uiViewController.startScanning()
+        }
+    }
 
     func makeCoordinator() -> Coordinator {
         Coordinator(onWeightScanned: onWeightScanned)

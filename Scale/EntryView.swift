@@ -10,6 +10,7 @@ import SwiftData
 
 struct EntryView: View {
     @Environment(\.modelContext) private var modelContext
+    @Environment(HealthKitManager.self) private var healthManager
     @Query(sort: \WeightEntry.timestamp, order: .reverse) private var entries: [WeightEntry]
     @Binding var selectedTab: Int
 
@@ -19,8 +20,6 @@ struct EntryView: View {
     @State private var weightText = ""
     @State private var showCamera = false
     @State private var saved = false
-    @State private var saveScale: CGFloat = 1.0
-    @State private var saveFlash = false
     @FocusState private var weightFieldFocused: Bool
 
     private let step: Double = 0.1
@@ -30,7 +29,7 @@ struct EntryView: View {
     var body: some View {
         NavigationStack {
             ZStack {
-                Color(.systemBackground)
+                Color(.systemGroupedBackground)
                     .ignoresSafeArea()
 
                 VStack(spacing: 0) {
@@ -64,9 +63,9 @@ struct EntryView: View {
                                 .fill(
                                     LinearGradient(
                                         colors: [
-                                            .green.opacity(saveFlash ? 0.03 : 0),
-                                            .mint.opacity(saveFlash ? 0.1 : 0),
-                                            .green.opacity(saveFlash ? 0.2 : 0)
+                                            .green.opacity(0),
+                                            .mint.opacity(0),
+                                            .green.opacity(0)
                                         ],
                                         startPoint: .top,
                                         endPoint: .bottom
@@ -75,7 +74,10 @@ struct EntryView: View {
                                 .allowsHitTesting(false)
                         )
                     }
-                    .scaleEffect(saveScale)
+                    .background(
+                        RoundedRectangle(cornerRadius: 24)
+                            .fill(Color.accent.opacity(0.12))
+                    )
                     .padding(.horizontal, 24)
 
                     Spacer()
@@ -227,19 +229,19 @@ struct EntryView: View {
     }
 
     private func saveEntry() {
-        let entry = WeightEntry(weight: currentWeight)
+        // Compute the streak including today's new entry
+        let streak = WeightCalculations.currentStreak(from: entries, includingToday: true)
+        let entry = WeightEntry(weight: currentWeight, streakCount: streak)
         modelContext.insert(entry)
 
-        withAnimation(.spring(duration: 0.2, bounce: 0.0)) {
-            saveScale = 1.08
-            saveFlash = true
+        Task {
+            let uuid = await healthManager.saveWeight(currentWeight, date: entry.timestamp)
+            entry.healthKitUUID = uuid
+        }
+
+        Task { @MainActor in
             saved = true
-        }
-        withAnimation(.spring(duration: 0.4, bounce: 0.4).delay(0.2)) {
-            saveScale = 1.0
-        }
-        withAnimation(.easeOut(duration: 1.0).delay(0.3)) {
-            saveFlash = false
+            selectedTab = 1
         }
     }
 }
@@ -249,4 +251,5 @@ struct EntryView: View {
 #Preview {
     EntryView(selectedTab: .constant(0))
         .modelContainer(for: WeightEntry.self, inMemory: true)
+        .environment(HealthKitManager())
 }
