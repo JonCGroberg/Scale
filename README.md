@@ -25,7 +25,7 @@ A lightweight iOS app for tracking your daily weight — with Apple Health sync,
 | Requirement | Version |
 |-------------|---------|
 | iOS | 26.0+ |
-| Xcode | 16.0+ |
+| Xcode | 26.0+ |
 | Swift | 5.0 |
 
 ---
@@ -76,7 +76,7 @@ Scale is built with modern Apple frameworks — no external dependencies.
 xcodebuild test \
   -scheme Scale \
   -testPlan Scale \
-  -destination 'platform=iOS Simulator,name=iPhone 16,OS=latest' \
+  -destination 'platform=iOS Simulator,name=iPhone 16' \
   CODE_SIGN_IDENTITY="" CODE_SIGNING_REQUIRED=NO
 ```
 
