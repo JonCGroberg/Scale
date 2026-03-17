@@ -21,11 +21,14 @@ jobs:
       - name: Show Xcode version
         run: xcodebuild -version
 
+      - name: Show available simulators
+        run: xcrun simctl list devices available
+
       - name: Build
         run: |
           xcodebuild build \
             -scheme Scale \
-            -destination 'platform=iOS Simulator,name=iPhone 16,OS=latest' \
+            -destination 'platform=iOS Simulator,name=iPhone 16' \
             CODE_SIGN_IDENTITY="" \
             CODE_SIGNING_REQUIRED=NO
 
@@ -34,6 +37,6 @@ jobs:
           xcodebuild test \
             -scheme Scale \
             -testPlan Scale \
-            -destination 'platform=iOS Simulator,name=iPhone 16,OS=latest' \
+            -destination 'platform=iOS Simulator,name=iPhone 16' \
             CODE_SIGN_IDENTITY="" \
             CODE_SIGNING_REQUIRED=NO
