@@ -41,11 +41,6 @@
 			path = ScaleTests;
 			sourceTree = "<group>";
 		};
-		D45B3F312F669AF2008AB112 /* ScaleUITests */ = {
-			isa = PBXFileSystemSynchronizedRootGroup;
-			path = ScaleUITests;
-			sourceTree = "<group>";
-		};
 /* End PBXFileSystemSynchronizedRootGroup section */
 
 /* Begin PBXFrameworksBuildPhase section */
@@ -79,7 +74,6 @@
 				D45A9EFC2F66BC7B0014B7BA /* Scale.xctestplan */,
 				D45B3F172F669AF1008AB112 /* Scale */,
 				D45B3F272F669AF2008AB112 /* ScaleTests */,
-				D45B3F312F669AF2008AB112 /* ScaleUITests */,
 				D45B3F162F669AF1008AB112 /* Products */,
 			);
 			sourceTree = "<group>";
@@ -154,9 +148,6 @@
 			);
 			dependencies = (
 				D45B3F302F669AF2008AB112 /* PBXTargetDependency */,
-			);
-			fileSystemSynchronizedGroups = (
-				D45B3F312F669AF2008AB112 /* ScaleUITests */,
 			);
 			name = ScaleUITests;
 			packageProductDependencies = (

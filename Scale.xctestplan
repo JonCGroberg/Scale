@@ -18,19 +18,11 @@
   },
   "testTargets" : [
     {
-      "parallelizable" : true,
+      "parallelizable" : false,
       "target" : {
         "containerPath" : "container:Scale.xcodeproj",
         "identifier" : "D45B3F232F669AF2008AB112",
         "name" : "ScaleTests"
-      }
-    },
-    {
-      "parallelizable" : true,
-      "target" : {
-        "containerPath" : "container:Scale.xcodeproj",
-        "identifier" : "D45B3F2D2F669AF2008AB112",
-        "name" : "ScaleUITests"
       }
     }
   ],

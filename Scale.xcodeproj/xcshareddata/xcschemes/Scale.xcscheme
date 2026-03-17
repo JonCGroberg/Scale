@@ -46,17 +46,6 @@
                ReferencedContainer = "container:Scale.xcodeproj">
             </BuildableReference>
          </TestableReference>
-         <TestableReference
-            skipped = "NO"
-            parallelizable = "YES">
-            <BuildableReference
-               BuildableIdentifier = "primary"
-               BlueprintIdentifier = "D45B3F2D2F669AF2008AB112"
-               BuildableName = "ScaleUITests.xctest"
-               BlueprintName = "ScaleUITests"
-               ReferencedContainer = "container:Scale.xcodeproj">
-            </BuildableReference>
-         </TestableReference>
       </Testables>
    </TestAction>
    <LaunchAction

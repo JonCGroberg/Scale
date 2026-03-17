@@ -44,7 +44,7 @@ struct EntryView: View {
                     Spacer()
 
                     // Weight entry card
-                    GlassEffectContainer {
+                    GlassEffectContainer(spacing: 24) {
                         VStack(spacing: 28) {
                             lastLoggedLabel
 
@@ -58,26 +58,7 @@ struct EntryView: View {
                         .padding(.horizontal, 40)
                         .frame(maxWidth: .infinity)
                         .glassEffect(in: .rect(cornerRadius: 24))
-                        .overlay(
-                            RoundedRectangle(cornerRadius: 24)
-                                .fill(
-                                    LinearGradient(
-                                        colors: [
-                                            .green.opacity(0),
-                                            .mint.opacity(0),
-                                            .green.opacity(0)
-                                        ],
-                                        startPoint: .top,
-                                        endPoint: .bottom
-                                    )
-                                )
-                                .allowsHitTesting(false)
-                        )
                     }
-                    .background(
-                        RoundedRectangle(cornerRadius: 24)
-                            .fill(Color.accent.opacity(0.12))
-                    )
                     .padding(.horizontal, 24)
 
                     Spacer()
@@ -87,6 +68,13 @@ struct EntryView: View {
                 }
             }
             .toolbar(.hidden, for: .navigationBar)
+            .safeAreaInset(edge: .bottom) {
+                if isEditingWeight {
+                    editActionsBar
+                        .padding(.horizontal, 24)
+                        .padding(.bottom, 12)
+                }
+            }
             .onAppear {
                 if let latest = latestEntry {
                     currentWeight = latest.weight
@@ -131,18 +119,6 @@ struct EntryView: View {
                         .focused($weightFieldFocused)
                         .fixedSize()
                         .onSubmit { commitWeightEdit() }
-                        .toolbar {
-                            ToolbarItemGroup(placement: .keyboard) {
-                                Button("Cancel") {
-                                    cancelWeightEdit()
-                                }
-                                Spacer()
-                                Button("Done") {
-                                    commitWeightEdit()
-                                }
-                                .fontWeight(.semibold)
-                            }
-                        }
                 } else {
                     Text(String(format: "%.1f", currentWeight))
                         .font(.system(size: 64, weight: .bold, design: .rounded))
@@ -210,6 +186,24 @@ struct EntryView: View {
                 .font(.subheadline.weight(.medium))
         }
         .buttonStyle(.glass)
+    }
+
+    private var editActionsBar: some View {
+        HStack(spacing: 12) {
+            Button("Cancel") {
+                cancelWeightEdit()
+            }
+
+            Spacer()
+
+            Button("Done") {
+                commitWeightEdit()
+            }
+            .fontWeight(.semibold)
+        }
+        .padding(.horizontal, 16)
+        .padding(.vertical, 12)
+        .background(.ultraThinMaterial, in: Capsule())
     }
 
     // MARK: - Actions

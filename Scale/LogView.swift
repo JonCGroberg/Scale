@@ -14,15 +14,19 @@ struct LogView: View {
     @Environment(HealthKitManager.self) private var healthManager
     @Query(sort: \WeightEntry.timestamp, order: .reverse) private var entries: [WeightEntry]
     @AppStorage("showChangePill") private var showChangePill = true
+    @AppStorage("appTint") private var appTint = AppTint.defaultValue.rawValue
 
     @State private var isScrolling = false
     @State private var visibleSection = ""
     @State private var hideYearTask: Task<Void, Never>?
     @State private var chartPeriod: TimePeriod = .threeMonths
 
-    /// Streaks computed dynamically from all entries.
-    private var streaksByDay: [Date: Int] {
-        WeightCalculations.streaksByDay(from: entries)
+    private var snapshot: WeightCalculations.LogSnapshot {
+        WeightCalculations.logSnapshot(from: entries, chartPeriod: chartPeriod)
+    }
+
+    private var tintColor: Color {
+        (AppTint(rawValue: appTint) ?? .defaultValue).color
     }
 
     var body: some View {
@@ -42,7 +46,7 @@ struct LogView: View {
                             .listRowInsets(EdgeInsets())
                             .listRowBackground(Color.clear)
 
-                            ForEach(groupedEntries, id: \.key) { month, monthEntries in
+                            ForEach(snapshot.groupedEntries, id: \.key) { month, monthEntries in
                                 Section {
                                     ForEach(monthEntries) { entry in
                                         logRow(entry: entry, streak: streakForEntry(entry))
@@ -60,7 +64,7 @@ struct LogView: View {
                                         .onGeometryChange(for: CGFloat.self) { proxy in
                                             proxy.frame(in: .global).minY
                                         } action: { minY in
-                                            if minY < 160 {
+                                            if minY < 160, visibleSection != month {
                                                 visibleSection = month
                                             }
                                         }
@@ -126,21 +130,6 @@ struct LogView: View {
         }
     }
 
-    // MARK: - Chart
-
-    private var chartEntries: [WeightEntry] {
-        let calendar = Calendar.current
-        guard let cutoff = calendar.date(
-            byAdding: chartPeriod.calendarComponent,
-            value: -chartPeriod.componentValue,
-            to: Date()
-        ) else { return [] }
-
-        return entries
-            .filter { $0.timestamp >= cutoff }
-            .sorted { $0.timestamp < $1.timestamp }
-    }
-
     private var weightChart: some View {
         VStack(spacing: 12) {
             Picker("Period", selection: $chartPeriod) {
@@ -150,30 +139,30 @@ struct LogView: View {
             }
             .pickerStyle(.segmented)
 
-            if chartEntries.count >= 2 {
-                Chart(chartEntries) { entry in
+            if snapshot.chart.entries.count >= 2 {
+                Chart(snapshot.chart.entries) { entry in
                     LineMark(
                         x: .value("Date", entry.timestamp),
                         y: .value("Weight", entry.weight)
                     )
                     .interpolationMethod(.catmullRom)
-                    .foregroundStyle(.accent)
+                    .foregroundStyle(tintColor)
 
                     AreaMark(
                         x: .value("Date", entry.timestamp),
-                        yStart: .value("Min", chartYDomain.lowerBound),
+                        yStart: .value("Min", snapshot.chart.yDomain.lowerBound),
                         yEnd: .value("Weight", entry.weight)
                     )
                     .interpolationMethod(.catmullRom)
                     .foregroundStyle(
                         .linearGradient(
-                            colors: [.accent.opacity(0.25), .accent.opacity(0.0)],
+                            colors: [tintColor.opacity(0.25), tintColor.opacity(0.0)],
                             startPoint: .top,
                             endPoint: .bottom
                         )
                     )
                 }
-                .chartYScale(domain: chartYDomain)
+                .chartYScale(domain: snapshot.chart.yDomain)
                 .chartXAxis {
                     AxisMarks(values: .automatic(desiredCount: 5)) {
                         AxisValueLabel(format: .dateTime.month(.abbreviated).day())
@@ -196,19 +185,6 @@ struct LogView: View {
         .padding(16)
     }
 
-    private var chartYDomain: ClosedRange<Double> {
-        let weights = chartEntries.map(\.weight)
-        let minW = (weights.min() ?? 0) - 1
-        let maxW = (weights.max() ?? 0) + 1
-        return minW...maxW
-    }
-
-    // MARK: - Data
-
-    private var groupedEntries: [(key: String, value: [WeightEntry])] {
-        WeightCalculations.groupedByMonth(entries)
-    }
-
     // MARK: - Empty State
 
     private var emptyState: some View {
@@ -223,7 +199,7 @@ struct LogView: View {
 
     private func streakForEntry(_ entry: WeightEntry) -> Int {
         let day = Calendar.current.startOfDay(for: entry.timestamp)
-        return streaksByDay[day] ?? 0
+        return snapshot.streaksByDay[day] ?? 0
     }
 
     // MARK: - Log Row
@@ -258,7 +234,7 @@ struct LogView: View {
                 HStack(spacing: 3) {
                     if entry.source == .appleHealth {
                         Image(systemName: "heart.fill")
-                            .foregroundStyle(.pink)
+                            .foregroundStyle(tintColor)
                         Text("Apple Health")
                     } else {
                         Image(systemName: "pencil.line")
@@ -276,12 +252,12 @@ struct LogView: View {
                 Text(String(format: "%.1f", entry.weight))
                     .font(.title3)
                     .fontWeight(.semibold)
-                    .foregroundStyle(.accent)
+                    .foregroundStyle(tintColor)
 
                 Text("lbs")
                     .font(.caption)
                     .fontWeight(.medium)
-                    .foregroundStyle(.accent.opacity(0.7))
+                    .foregroundStyle(tintColor.opacity(0.7))
             }
         }
         .padding(.vertical, 4)

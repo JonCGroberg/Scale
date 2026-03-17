@@ -9,7 +9,12 @@ import SwiftUI
 import SwiftData
 
 struct RootView: View {
-    @State private var selectedTab = 0
+    @Binding var selectedTab: Int
+    @AppStorage("appTint") private var appTint = AppTint.defaultValue.rawValue
+
+    private var selectedTint: AppTint {
+        AppTint(rawValue: appTint) ?? .defaultValue
+    }
 
     var body: some View {
         TabView(selection: $selectedTab) {
@@ -25,12 +30,14 @@ struct RootView: View {
                 .tabItem { Label("Settings", systemImage: "gearshape") }
                 .tag(2)
         }
-        .tint(.accent)
+        .tint(selectedTint.color)
+        .id(appTint)
     }
 }
 
 #Preview {
-    RootView()
+    RootView(selectedTab: .constant(0))
         .modelContainer(for: WeightEntry.self, inMemory: true)
         .environment(HealthKitManager())
+        .environment(NotificationManager())
 }

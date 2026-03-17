@@ -439,6 +439,60 @@ struct PercentageChangeTests {
     }
 }
 
+// MARK: - Derived Snapshot Tests
+
+struct DerivedSnapshotTests {
+
+    @Test func badgeSummaryMatchesExistingCalculations() {
+        let now = Date()
+        let entries = [
+            WeightEntry(weight: 180.0, timestamp: now),
+            WeightEntry(weight: 178.0, timestamp: now.addingTimeInterval(-2 * 86400)),
+            WeightEntry(weight: 176.0, timestamp: now.addingTimeInterval(-5 * 86400))
+        ]
+
+        let summary = WeightCalculations.badgeSummary(from: entries, over: .week)
+
+        #expect(summary.streak == WeightCalculations.currentStreak(from: entries))
+        #expect(summary.average == WeightCalculations.averageWeight(from: entries, over: .week))
+        #expect(summary.percentChange == WeightCalculations.percentageChange(from: entries, over: .week))
+    }
+
+    @Test func chartSnapshotFiltersAndSortsEntriesInPeriod() {
+        let now = Date()
+        let oldEntry = WeightEntry(weight: 200.0, timestamp: now.addingTimeInterval(-40 * 86400))
+        let midEntry = WeightEntry(weight: 181.0, timestamp: now.addingTimeInterval(-6 * 86400))
+        let recentEntry = WeightEntry(weight: 179.0, timestamp: now.addingTimeInterval(-2 * 86400))
+        let entries = [recentEntry, oldEntry, midEntry]
+
+        let snapshot = WeightCalculations.chartSnapshot(from: entries, over: .week)
+
+        #expect(snapshot.entries.count == 2)
+        #expect(snapshot.entries[0].timestamp == midEntry.timestamp)
+        #expect(snapshot.entries[1].timestamp == recentEntry.timestamp)
+        #expect(snapshot.yDomain.lowerBound == 178.0)
+        #expect(snapshot.yDomain.upperBound == 182.0)
+    }
+
+    @Test func logSnapshotBuildsGroupedEntriesAndStreaks() {
+        let calendar = Calendar.current
+        let now = Date()
+        let today = WeightEntry(weight: 180.0, timestamp: now)
+        let yesterday = WeightEntry(weight: 179.0, timestamp: calendar.date(byAdding: .day, value: -1, to: now)!)
+        let lastMonth = WeightEntry(weight: 182.0, timestamp: calendar.date(byAdding: .month, value: -1, to: now)!)
+        let entries = [today, yesterday, lastMonth]
+
+        let snapshot = WeightCalculations.logSnapshot(from: entries, chartPeriod: .threeMonths)
+        let todayKey = calendar.startOfDay(for: today.timestamp)
+        let yesterdayKey = calendar.startOfDay(for: yesterday.timestamp)
+
+        #expect(snapshot.groupedEntries.count == 2)
+        #expect(snapshot.chart.entries.count == 3)
+        #expect(snapshot.streaksByDay[todayKey] == 2)
+        #expect(snapshot.streaksByDay[yesterdayKey] == 1)
+    }
+}
+
 // MARK: - TimePeriod Tests
 
 struct TimePeriodTests {
@@ -477,5 +531,153 @@ struct TimePeriodTests {
         #expect(TimePeriod.threeMonths.calendarComponent == .month)
         #expect(TimePeriod.sixMonths.calendarComponent == .month)
         #expect(TimePeriod.year.calendarComponent == .year)
+    }
+}
+
+// MARK: - Reminder Model Tests
+
+struct ReminderModelTests {
+
+    @Test func reminderDefaultValues() {
+        let reminder = Reminder()
+        #expect(reminder.name == "Weigh In")
+        #expect(reminder.hour == 8)
+        #expect(reminder.minute == 0)
+    }
+
+    @Test func reminderCustomValues() {
+        let reminder = Reminder(name: "Morning", hour: 7, minute: 30)
+        #expect(reminder.name == "Morning")
+        #expect(reminder.hour == 7)
+        #expect(reminder.minute == 30)
+    }
+
+    @Test func reminderEncodesAndDecodes() throws {
+        let original = Reminder(name: "Evening", hour: 20, minute: 15)
+        let data = try JSONEncoder().encode(original)
+        let decoded = try JSONDecoder().decode(Reminder.self, from: data)
+        #expect(decoded == original)
+    }
+
+    @Test func reminderArrayEncodesAndDecodes() throws {
+        let reminders = [
+            Reminder(name: "Morning", hour: 8, minute: 0),
+            Reminder(name: "Evening", hour: 20, minute: 0)
+        ]
+        let data = try JSONEncoder().encode(reminders)
+        let decoded = try JSONDecoder().decode([Reminder].self, from: data)
+        #expect(decoded == reminders)
+    }
+
+    @Test func reminderHasUniqueIds() {
+        let a = Reminder()
+        let b = Reminder()
+        #expect(a.id != b.id)
+    }
+
+    @Test func enabledFlagDefaultsToFalse() {
+        UserDefaults.standard.removeObject(forKey: "remindersEnabled")
+        #expect(UserDefaults.standard.bool(forKey: "remindersEnabled") == false)
+    }
+
+    @Test func enabledFlagToggles() {
+        let defaults = UserDefaults.standard
+        defaults.set(true, forKey: "remindersEnabled")
+        #expect(defaults.bool(forKey: "remindersEnabled") == true)
+
+        defaults.set(false, forKey: "remindersEnabled")
+        #expect(defaults.bool(forKey: "remindersEnabled") == false)
+    }
+
+    @Test func saveAndLoadReminders() {
+        let manager = NotificationManager()
+        let reminders = [
+            Reminder(name: "Morning", hour: 8, minute: 0),
+            Reminder(name: "Night", hour: 21, minute: 30)
+        ]
+        manager.saveReminders(reminders)
+        let loaded = manager.loadReminders()
+        #expect(loaded == reminders)
+    }
+
+    @Test func loadRemindersReturnsEmptyWhenNoneSaved() {
+        UserDefaults.standard.removeObject(forKey: "savedReminders")
+        let manager = NotificationManager()
+        let loaded = manager.loadReminders()
+        #expect(loaded.isEmpty)
+    }
+}
+
+// MARK: - Notification Name Tests
+
+struct NotificationNameTests {
+
+    @Test func notificationNameIsCorrect() {
+        #expect(Notification.Name.didTapWeightReminder.rawValue == "didTapWeightReminder")
+    }
+
+    @Test func notificationPostAndReceive() async {
+        let received = UnsafeSendable(value: false)
+
+        let observer = NotificationCenter.default.addObserver(
+            forName: .didTapWeightReminder,
+            object: nil,
+            queue: .main
+        ) { _ in
+            received.value = true
+        }
+
+        NotificationCenter.default.post(name: .didTapWeightReminder, object: nil)
+
+        // Give run loop a moment to deliver
+        try? await Task.sleep(for: .milliseconds(100))
+
+        #expect(received.value == true)
+        NotificationCenter.default.removeObserver(observer)
+    }
+
+    @Test func notificationDelegateConformsToProtocol() {
+        let delegate = NotificationDelegate()
+        // Verify it conforms to UNUserNotificationCenterDelegate
+        let conforming: UNUserNotificationCenterDelegate = delegate
+        #expect(conforming is NotificationDelegate)
+    }
+}
+
+/// A simple wrapper to allow mutation of a value in a Sendable context for testing.
+private final class UnsafeSendable<T>: @unchecked Sendable {
+    var value: T
+    init(value: T) { self.value = value }
+}
+
+// MARK: - NotificationManager Initialization Tests
+
+struct NotificationManagerTests {
+
+    @Test func initializedWithIsAuthorizedFalse() {
+        let manager = NotificationManager()
+        // Before any authorization request, the default should be false
+        #expect(manager.isAuthorized == false)
+    }
+}
+
+// MARK: - App Tint Tests
+
+struct AppTintTests {
+
+    @Test func allCasesCount() {
+        #expect(AppTint.allCases.count == 6)
+    }
+
+    @Test func defaultValueIsBlue() {
+        #expect(AppTint.defaultValue == .blue)
+    }
+
+    @Test func rawValueLookupFindsSavedTint() {
+        #expect(AppTint(rawValue: "green") == .green)
+    }
+
+    @Test func rawValueLookupFindsLavenderTint() {
+        #expect(AppTint(rawValue: "lavender") == .lavender)
     }
 }

@@ -10,50 +10,46 @@ import SwiftUI
 struct ChangeBadge: View {
     let entries: [WeightEntry]
 
+    @AppStorage("appTint") private var appTint = AppTint.defaultValue.rawValue
     @State private var currentIndex: Int = 1  // default to month (index 1)
-    @GestureState private var dragOffset: CGFloat = 0
 
     private var period: TimePeriod {
         TimePeriod.allCases[currentIndex]
     }
 
-    private var average: Double? {
-        WeightCalculations.averageWeight(from: entries, over: period)
+    private var summary: WeightCalculations.BadgeSummary {
+        WeightCalculations.badgeSummary(from: entries, over: period)
     }
 
-    private var percentChange: Double? {
-        WeightCalculations.percentageChange(from: entries, over: period)
-    }
-
-    private var streak: Int {
-        WeightCalculations.currentStreak(from: entries)
+    private var tintColor: Color {
+        (AppTint(rawValue: appTint) ?? .defaultValue).color
     }
 
     var body: some View {
         HStack(spacing: 6) {
-            if streak > 0 {
+            if summary.streak > 0 {
                 HStack(spacing: 2) {
                     Image(systemName: "flame.fill")
                         .font(.caption2)
                         .foregroundStyle(.orange)
 
-                    Text("\(streak)")
+                    Text("\(summary.streak)")
                         .font(.caption)
                         .fontWeight(.bold)
                         .contentTransition(.numericText())
                 }
 
                 Circle()
-                    .fill(.accent.opacity(0.4))
+                    .fill(tintColor.opacity(0.4))
                     .frame(width: 4, height: 4)
             }
 
-            if let avg = average {
+            if let avg = summary.average {
                 HStack(spacing: 4) {
                     Image(systemName: "chart.line.text.clipboard")
                         .font(.caption2)
                         .fontWeight(.semibold)
-                        .foregroundStyle(.accent)
+                        .foregroundStyle(tintColor)
 
                     Text(String(format: "%.1f lbs", avg))
                         .font(.caption)
@@ -62,7 +58,7 @@ struct ChangeBadge: View {
                 }
 
                 Circle()
-                    .fill(.accent.opacity(0.4))
+                    .fill(tintColor.opacity(0.4))
                     .frame(width: 4, height: 4)
             }
 
@@ -74,9 +70,9 @@ struct ChangeBadge: View {
                 .foregroundStyle(.secondary)
                 .contentTransition(.interpolate)
 
-            if let pct = percentChange {
+            if let pct = summary.percentChange {
                 Circle()
-                    .fill(.accent.opacity(0.4))
+                    .fill(tintColor.opacity(0.4))
                     .frame(width: 4, height: 4)
 
                 Text(String(format: "%+.1f%%", pct))

@@ -46,6 +46,25 @@ enum TimePeriod: String, CaseIterable {
 }
 
 enum WeightCalculations {
+    struct BadgeSummary: Equatable {
+        let streak: Int
+        let average: Double?
+        let percentChange: Double?
+    }
+
+    struct ChartSnapshot {
+        let entries: [WeightEntry]
+        let yDomain: ClosedRange<Double>
+
+        static let empty = ChartSnapshot(entries: [], yDomain: 0...1)
+    }
+
+    struct LogSnapshot {
+        let groupedEntries: [(key: String, value: [WeightEntry])]
+        let streaksByDay: [Date: Int]
+        let chart: ChartSnapshot
+    }
+
 
     /// Calculate the weight change between the two most recent entries.
     /// - Parameter entries: Weight entries sorted most-recent-first.
@@ -67,18 +86,48 @@ enum WeightCalculations {
     ///   - period: The time period to average over.
     /// - Returns: The average weight, or nil if no entries fall within the period.
     static func averageWeight(from entries: [WeightEntry], over period: TimePeriod) -> Double? {
-        let calendar = Calendar.current
-        guard let cutoff = calendar.date(
-            byAdding: period.calendarComponent,
-            value: -period.componentValue,
-            to: Date()
-        ) else { return nil }
-
-        let filtered = entries.filter { $0.timestamp >= cutoff }
+        let filtered = entriesWithin(period, from: entries)
         guard !filtered.isEmpty else { return nil }
 
         let total = filtered.reduce(0.0) { $0 + $1.weight }
         return total / Double(filtered.count)
+    }
+
+    static func badgeSummary(from entries: [WeightEntry], over period: TimePeriod) -> BadgeSummary {
+        let filtered = entriesWithin(period, from: entries).sorted { $0.timestamp < $1.timestamp }
+        let average = filtered.isEmpty ? nil : filtered.reduce(0.0) { $0 + $1.weight } / Double(filtered.count)
+        let percentChange: Double?
+
+        if filtered.count >= 2, let first = filtered.first, let last = filtered.last, first.weight != 0 {
+            percentChange = ((last.weight - first.weight) / first.weight) * 100
+        } else {
+            percentChange = nil
+        }
+
+        return BadgeSummary(
+            streak: currentStreak(from: entries),
+            average: average,
+            percentChange: percentChange
+        )
+    }
+
+    static func chartSnapshot(from entries: [WeightEntry], over period: TimePeriod) -> ChartSnapshot {
+        let filteredEntries = entriesWithin(period, from: entries).sorted { $0.timestamp < $1.timestamp }
+        guard !filteredEntries.isEmpty else { return .empty }
+
+        let weights = filteredEntries.map(\.weight)
+        let minWeight = (weights.min() ?? 0) - 1
+        let maxWeight = (weights.max() ?? 0) + 1
+
+        return ChartSnapshot(entries: filteredEntries, yDomain: minWeight...maxWeight)
+    }
+
+    static func logSnapshot(from entries: [WeightEntry], chartPeriod: TimePeriod) -> LogSnapshot {
+        LogSnapshot(
+            groupedEntries: groupedByMonth(entries),
+            streaksByDay: streaksByDay(from: entries),
+            chart: chartSnapshot(from: entries, over: chartPeriod)
+        )
     }
 
     /// Parse a user-entered weight string into a valid positive Double.
@@ -103,15 +152,7 @@ enum WeightCalculations {
     /// Compares the most recent entry to the earliest entry within the period.
     /// - Returns: The percentage change, or nil if fewer than 2 entries in the period.
     static func percentageChange(from entries: [WeightEntry], over period: TimePeriod) -> Double? {
-        let calendar = Calendar.current
-        guard let cutoff = calendar.date(
-            byAdding: period.calendarComponent,
-            value: -period.componentValue,
-            to: Date()
-        ) else { return nil }
-
-        let filtered = entries.filter { $0.timestamp >= cutoff }
-            .sorted { $0.timestamp < $1.timestamp }
+        let filtered = entriesWithin(period, from: entries).sorted { $0.timestamp < $1.timestamp }
         guard filtered.count >= 2,
               let first = filtered.first,
               let last = filtered.last,
@@ -213,5 +254,16 @@ enum WeightCalculations {
                   let dateB = b.value.first?.timestamp else { return false }
             return dateA > dateB
         }
+    }
+
+    private static func entriesWithin(_ period: TimePeriod, from entries: [WeightEntry]) -> [WeightEntry] {
+        let calendar = Calendar.current
+        guard let cutoff = calendar.date(
+            byAdding: period.calendarComponent,
+            value: -period.componentValue,
+            to: Date()
+        ) else { return [] }
+
+        return entries.filter { $0.timestamp >= cutoff }
     }
 }

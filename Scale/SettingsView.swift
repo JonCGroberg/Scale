@@ -11,38 +11,122 @@ import SwiftData
 struct SettingsView: View {
     @Environment(\.modelContext) private var modelContext
     @Environment(HealthKitManager.self) private var healthManager
+    @Environment(NotificationManager.self) private var notificationManager
     @AppStorage("showChangePill") private var showChangePill = true
     @AppStorage("autoSyncHealthKit") private var autoSyncHealthKit = false
+    @AppStorage("appTint") private var appTint = AppTint.defaultValue.rawValue
+    @AppStorage("remindersEnabled") private var remindersEnabled = false
+    @State private var reminders: [Reminder] = []
+
+    private var selectedTint: Binding<AppTint> {
+        Binding(
+            get: { AppTint(rawValue: appTint) ?? .defaultValue },
+            set: { appTint = $0.rawValue }
+        )
+    }
+
+    private var tintColor: Color {
+        (AppTint(rawValue: appTint) ?? .defaultValue).color
+    }
 
     var body: some View {
         NavigationStack {
-            ZStack {
-                Color(.systemGroupedBackground)
-                    .ignoresSafeArea()
+            List {
+                Section {
+                    Toggle("Last Change Badge", isOn: $showChangePill)
 
-                List {
-                    Section {
-                        Toggle("Last Change Badge", isOn: $showChangePill)
-                    } header: {
-                        Text("Display")
-                    } footer: {
-                        Text("The last change badge shows your most recent weight difference on the Log screen.")
-                    }
+                    Picker(selection: selectedTint) {
+                        ForEach(AppTint.allCases) { tint in
+                            HStack(spacing: 10) {
+                                Circle()
+                                    .fill(tint.color)
+                                    .frame(width: 12, height: 12)
 
-                    Section {
-                        if healthManager.isAvailable {
-                            Toggle("Sync on App Launch", isOn: $autoSyncHealthKit)
+                                Text(tint.title)
+                                    .foregroundStyle(tint.color)
+                            }
+                            .tag(tint)
                         }
-                        healthImportRow
-                    } header: {
-                        Text("Apple Health")
-                    } footer: {
-                        Text("Automatically import new weight entries from Apple Health each time you open the app, or import manually.")
                     }
+                    label: {
+                        Text("Tint Color")
+                            .foregroundStyle(tintColor)
+                    }
+                } header: {
+                    Text("Display")
+                } footer: {
+                    Text("The last change badge shows your most recent weight difference on the Log screen.")
                 }
-                .scrollContentBackground(.hidden)
+
+                Section {
+                    if healthManager.isAvailable {
+                        Toggle("Import Apple Health updates automatically", isOn: $autoSyncHealthKit)
+                    }
+                    healthImportRow
+                } header: {
+                    Text("Apple Health")
+                } footer: {
+                    Text("Bring in weight entries from Apple Health automatically when the app opens, or run an import whenever you want.")
+                }
+
+                Section {
+                    Toggle("Daily Reminders", isOn: $remindersEnabled)
+                        .onChange(of: remindersEnabled) { _, enabled in
+                            if enabled {
+                                Task {
+                                    let granted = await notificationManager.requestAuthorization()
+                                    if !granted {
+                                        remindersEnabled = false
+                                    } else {
+                                        if reminders.isEmpty {
+                                            withAnimation {
+                                                reminders.append(Reminder())
+                                            }
+                                            notificationManager.saveReminders(reminders)
+                                        } else {
+                                            notificationManager.rescheduleReminders()
+                                        }
+                                    }
+                                }
+                            } else {
+                                notificationManager.rescheduleReminders()
+                            }
+                        }
+
+                    if remindersEnabled {
+                        ForEach($reminders) { $reminder in
+                            ReminderRow(reminder: $reminder, tintColor: tintColor) {
+                                notificationManager.saveReminders(reminders)
+                            }
+                        }
+                        .onDelete { offsets in
+                            withAnimation {
+                                reminders.remove(atOffsets: offsets)
+                            }
+                            notificationManager.saveReminders(reminders)
+                        }
+
+                        Button {
+                            let lastHour = reminders.last?.hour ?? 6
+                            withAnimation {
+                                reminders.append(Reminder(hour: min(lastHour + 2, 22)))
+                            }
+                            notificationManager.saveReminders(reminders)
+                        } label: {
+                            Label("Add Reminder", systemImage: "plus.circle.fill")
+                        }
+
+                    }
+                } header: {
+                    Text("Reminders")
+                } footer: {
+                    Text("Get a notification to log your weight. Tapping the notification opens the entry screen.")
+                }
             }
             .navigationTitle("Settings")
+            .onAppear {
+                reminders = notificationManager.loadReminders()
+            }
         }
     }
 
@@ -55,13 +139,13 @@ struct SettingsView: View {
                 VStack(alignment: .leading, spacing: 4) {
                     Text("Apple Health")
                         .font(.body)
-                    Text("Not available on this device")
+                    Text("Apple Health isn't available on this device")
                         .font(.caption)
                         .foregroundStyle(.secondary)
                 }
             } icon: {
                 Image(systemName: "heart.fill")
-                    .foregroundStyle(.accent)
+                    .foregroundStyle(tintColor)
             }
         } else {
             Button {
@@ -71,15 +155,19 @@ struct SettingsView: View {
             } label: {
                 Label {
                     VStack(alignment: .leading, spacing: 4) {
-                        Text("Import from Apple Health")
+                        Text("Import weight history")
                             .font(.body)
 
                         if healthManager.isImporting {
-                            Text("Importing...")
+                            Text("Reading your weight entries from Apple Health")
                                 .font(.caption)
                                 .foregroundStyle(.secondary)
                         } else if let result = healthManager.importResult {
                             resultText(result)
+                        } else {
+                            Text("Add weight entries from Apple Health to your log")
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
                         }
                     }
                 } icon: {
@@ -87,7 +175,7 @@ struct SettingsView: View {
                         ProgressView()
                     } else {
                         Image(systemName: "heart.fill")
-                            .foregroundStyle(.accent)
+                            .foregroundStyle(tintColor)
                     }
                 }
             }
@@ -115,12 +203,51 @@ struct SettingsView: View {
                 ].compactMap { $0 }.joined(separator: ", ")
                 Text(parts)
                     .font(.caption)
-                    .foregroundStyle(.accent)
+                    .foregroundStyle(tintColor)
             }
         case .error(let message):
             Text(message)
                 .font(.caption)
                 .foregroundStyle(.red)
+        }
+    }
+
+}
+
+// MARK: - ReminderRow
+
+private struct ReminderRow: View {
+    @Binding var reminder: Reminder
+    let tintColor: Color
+    let onChanged: () -> Void
+
+    @State private var time: Date
+
+    init(reminder: Binding<Reminder>, tintColor: Color, onChanged: @escaping () -> Void) {
+        self._reminder = reminder
+        self.tintColor = tintColor
+        self.onChanged = onChanged
+
+        var components = DateComponents()
+        components.hour = reminder.wrappedValue.hour
+        components.minute = reminder.wrappedValue.minute
+        let date = Calendar.current.date(from: components) ?? .now
+        _time = State(initialValue: date)
+    }
+
+    var body: some View {
+        DatePicker(selection: $time, displayedComponents: .hourAndMinute) {
+            TextField("Name", text: $reminder.name)
+                .onChange(of: reminder.name) {
+                    onChanged()
+                }
+        }
+        .tint(tintColor)
+        .onChange(of: time) {
+            let comps = Calendar.current.dateComponents([.hour, .minute], from: time)
+            reminder.hour = comps.hour ?? 8
+            reminder.minute = comps.minute ?? 0
+            onChanged()
         }
     }
 }
@@ -129,4 +256,5 @@ struct SettingsView: View {
     SettingsView()
         .modelContainer(for: WeightEntry.self, inMemory: true)
         .environment(HealthKitManager())
+        .environment(NotificationManager())
 }
