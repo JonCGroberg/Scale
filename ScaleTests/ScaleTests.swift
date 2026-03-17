@@ -661,6 +661,180 @@ struct NotificationManagerTests {
     }
 }
 
+// MARK: - Current Streak (Including Today) Tests
+//
+// These scenarios directly mirror the logic inside NotificationManager.notificationBody():
+// the method calls currentStreak(from:includingToday: true) to decide whether to show
+// a streak-preservation message (streak ≥ 2) or a generic prompt (streak < 2).
+
+struct CurrentStreakIncludingTodayTests {
+
+    private var calendar: Calendar { Calendar.current }
+
+    private func daysAgo(_ n: Int) -> Date {
+        calendar.date(byAdding: .day, value: -n, to: Date())!
+    }
+
+    // -- No entries --
+
+    @Test func noEntriesPotentialStreakIsOne() {
+        // A brand-new user has no entries; counting today gives streak = 1 (below threshold).
+        let streak = WeightCalculations.currentStreak(from: [], includingToday: true)
+        #expect(streak == 1)
+    }
+
+    // -- Only today logged --
+
+    @Test func entryOnlyTodayPotentialStreakIsOne() {
+        // User already logged today but has no history; streak is still 1.
+        let entries = [WeightEntry(weight: 150.0, timestamp: Date())]
+        let streak = WeightCalculations.currentStreak(from: entries, includingToday: true)
+        #expect(streak == 1)
+    }
+
+    // -- Yesterday logged (notification fires before today's log) --
+
+    @Test func entryYesterdayOnlyPotentialStreakIsTwo() {
+        // Logged yesterday, haven't logged today yet → logging today makes it 2.
+        let entries = [WeightEntry(weight: 150.0, timestamp: daysAgo(1))]
+        let streak = WeightCalculations.currentStreak(from: entries, includingToday: true)
+        #expect(streak == 2)
+    }
+
+    @Test func entriesTodayAndYesterdayPotentialStreakIsTwo() {
+        // Logged both today and yesterday; potential streak is still 2.
+        let entries = [
+            WeightEntry(weight: 150.0, timestamp: Date()),
+            WeightEntry(weight: 149.0, timestamp: daysAgo(1))
+        ]
+        let streak = WeightCalculations.currentStreak(from: entries, includingToday: true)
+        #expect(streak == 2)
+    }
+
+    // -- Multi-day runs --
+
+    @Test func threeDaysBeforeTodayPotentialStreakIsFour() {
+        let entries = (1...3).map { WeightEntry(weight: 150.0, timestamp: daysAgo($0)) }
+        let streak = WeightCalculations.currentStreak(from: entries, includingToday: true)
+        #expect(streak == 4)
+    }
+
+    @Test func fiveConsecutiveDaysBeforeTodayPotentialStreakIsSix() {
+        let entries = (1...5).map { WeightEntry(weight: 150.0, timestamp: daysAgo($0)) }
+        let streak = WeightCalculations.currentStreak(from: entries, includingToday: true)
+        #expect(streak == 6)
+    }
+
+    // -- Broken streaks --
+
+    @Test func gapTwoDaysAgoBreaksRunToOne() {
+        // Last entry was 2 days ago with nothing yesterday; logging today starts fresh → 1.
+        let entries = [WeightEntry(weight: 150.0, timestamp: daysAgo(2))]
+        let streak = WeightCalculations.currentStreak(from: entries, includingToday: true)
+        #expect(streak == 1)
+    }
+
+    @Test func gapInMiddleOfRunCapsStreak() {
+        // Logged 1 and 3 days ago but NOT 2 days ago — streak is consecutive from today.
+        let entries = [
+            WeightEntry(weight: 150.0, timestamp: daysAgo(1)),
+            WeightEntry(weight: 149.0, timestamp: daysAgo(3))
+        ]
+        let streak = WeightCalculations.currentStreak(from: entries, includingToday: true)
+        // Only yesterday is consecutive with today → 2
+        #expect(streak == 2)
+    }
+
+    // -- Multiple entries on the same day --
+
+    @Test func multipleEntriesSameDayCountAsOne() {
+        // Two entries yesterday should still only add one day to the streak.
+        let entries = [
+            WeightEntry(weight: 149.5, timestamp: daysAgo(1).addingTimeInterval(3600)),
+            WeightEntry(weight: 149.0, timestamp: daysAgo(1))
+        ]
+        let streak = WeightCalculations.currentStreak(from: entries, includingToday: true)
+        #expect(streak == 2)
+    }
+}
+
+// MARK: - Notification Streak Threshold Tests
+//
+// Verify the ≥ 2 threshold that separates the generic body ("Tap to log your weight.")
+// from the personalized streak body ("Keep your N-day streak going…").
+
+struct NotificationStreakThresholdTests {
+
+    private var calendar: Calendar { Calendar.current }
+
+    private func potentialStreak(daysBack: [Int]) -> Int {
+        let entries = daysBack.map {
+            WeightEntry(weight: 150.0, timestamp: calendar.date(byAdding: .day, value: -$0, to: Date())!)
+        }
+        return WeightCalculations.currentStreak(from: entries, includingToday: true)
+    }
+
+    @Test func newUserBelowThresholdForPersonalizedMessage() {
+        // No prior days → potential streak 1 → generic message territory.
+        let streak = WeightCalculations.currentStreak(from: [], includingToday: true)
+        #expect(streak < 2)
+    }
+
+    @Test func oneDayHistoryMeetsThresholdForPersonalizedMessage() {
+        // Yesterday logged → potential streak 2 → meets the ≥ 2 threshold.
+        let streak = potentialStreak(daysBack: [1])
+        #expect(streak >= 2)
+    }
+
+    @Test func twoDayHistoryStreakIsThree() {
+        let streak = potentialStreak(daysBack: [1, 2])
+        #expect(streak == 3)
+    }
+
+    @Test func nineDayHistoryStreakIsTen() {
+        let streak = potentialStreak(daysBack: Array(1...9))
+        #expect(streak == 10)
+    }
+
+    @Test func brokenStreakDropsBelowThreshold() {
+        // Only entry is 2 days ago (no yesterday) → potential streak 1 → generic message.
+        let streak = potentialStreak(daysBack: [2])
+        #expect(streak < 2)
+    }
+}
+
+// MARK: - NotificationManager ModelContext Tests
+
+struct NotificationManagerModelContextTests {
+
+    @Test func modelContextIsNilByDefault() {
+        let manager = NotificationManager()
+        #expect(manager.modelContext == nil)
+    }
+
+    @Test func modelContextCanBeAssigned() throws {
+        let config = ModelConfiguration(isStoredInMemoryOnly: true)
+        let container = try ModelContainer(for: WeightEntry.self, configurations: config)
+        let manager = NotificationManager()
+        manager.modelContext = ModelContext(container)
+        #expect(manager.modelContext != nil)
+    }
+
+    @Test func rescheduleRemindersWithoutContextDoesNotCrash() {
+        // If modelContext is nil, rescheduleReminders should silently use the generic body.
+        let manager = NotificationManager()
+        manager.rescheduleReminders() // should not throw or crash
+    }
+
+    @Test func rescheduleRemindersWithContextAndNoEntriesDoesNotCrash() throws {
+        let config = ModelConfiguration(isStoredInMemoryOnly: true)
+        let container = try ModelContainer(for: WeightEntry.self, configurations: config)
+        let manager = NotificationManager()
+        manager.modelContext = ModelContext(container)
+        manager.rescheduleReminders() // should not throw or crash
+    }
+}
+
 // MARK: - App Tint Tests
 
 struct AppTintTests {
