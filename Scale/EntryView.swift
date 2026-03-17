@@ -11,6 +11,7 @@ import SwiftData
 struct EntryView: View {
     @Environment(\.modelContext) private var modelContext
     @Environment(HealthKitManager.self) private var healthManager
+    @Environment(NotificationManager.self) private var notificationManager
     @Query(sort: \WeightEntry.timestamp, order: .reverse) private var entries: [WeightEntry]
     @Binding var selectedTab: Int
 
@@ -227,6 +228,9 @@ struct EntryView: View {
         let streak = WeightCalculations.currentStreak(from: entries, includingToday: true)
         let entry = WeightEntry(weight: currentWeight, streakCount: streak)
         modelContext.insert(entry)
+
+        // Reschedule reminders so tomorrow's notification reflects the updated streak.
+        notificationManager.rescheduleReminders()
 
         Task {
             let uuid = await healthManager.saveWeight(currentWeight, date: entry.timestamp)

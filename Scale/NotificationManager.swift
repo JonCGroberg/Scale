@@ -7,6 +7,7 @@
 
 import Foundation
 import UserNotifications
+import SwiftData
 
 /// A single saved reminder with a user-chosen name and time.
 struct Reminder: Identifiable, Codable, Equatable {
@@ -26,6 +27,9 @@ struct Reminder: Identifiable, Codable, Equatable {
 @Observable
 final class NotificationManager {
     private(set) var isAuthorized = false
+
+    /// A reference to the main model context, used to read the current streak when scheduling notifications.
+    var modelContext: ModelContext?
 
     private let center = UNUserNotificationCenter.current()
     private let categoryIdentifier = "WEIGHT_REMINDER"
@@ -91,7 +95,7 @@ final class NotificationManager {
 
             let content = UNMutableNotificationContent()
             content.title = reminder.name
-            content.body = "Tap to log your weight and keep your streak going."
+            content.body = notificationBody()
             content.sound = .default
             content.categoryIdentifier = categoryIdentifier
 
@@ -103,5 +107,27 @@ final class NotificationManager {
 
             center.add(request)
         }
+    }
+
+    // MARK: - Notification Body
+
+    /// Generates a streak-aware notification body.
+    /// A potential streak of 2 or more (i.e. logging today would continue a consecutive run)
+    /// surfaces a motivating message; otherwise a generic prompt is shown.
+    private func notificationBody() -> String {
+        guard let context = modelContext else {
+            return "Tap to log your weight."
+        }
+        let descriptor = FetchDescriptor<WeightEntry>(
+            sortBy: [SortDescriptor(\.timestamp, order: .reverse)]
+        )
+        let entries = (try? context.fetch(descriptor)) ?? []
+        // `includingToday: true` returns what the streak will be once today is logged,
+        // which is exactly what we want to motivate the user to act on.
+        let potentialStreak = WeightCalculations.currentStreak(from: entries, includingToday: true)
+        if potentialStreak >= 2 {
+            return "Keep your \(potentialStreak)-day streak going — log your weight today!"
+        }
+        return "Tap to log your weight."
     }
 }
