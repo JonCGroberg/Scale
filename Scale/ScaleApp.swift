@@ -52,6 +52,12 @@ struct ScaleApp: App {
             RootView(selectedTab: $selectedTab)
                 .environment(healthKitManager)
                 .environment(notificationManager)
+                .onAppear {
+                    // Provide the data store so NotificationManager can look up the
+                    // current streak when scheduling reminders.
+                    notificationManager.modelContext = sharedModelContainer.mainContext
+                    notificationManager.rescheduleReminders()
+                }
                 .task(id: autoSyncHealthKit) {
                     guard autoSyncHealthKit else { return }
                     let context = sharedModelContainer.mainContext
