@@ -8,6 +8,7 @@
 import Testing
 import Foundation
 import SwiftData
+import UserNotifications
 @testable import Scale
 
 // MARK: - WeightEntry Model Tests
