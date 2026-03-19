@@ -9,6 +9,7 @@ import SwiftUI
 import SwiftData
 import Charts
 import UIKit
+import PhotosUI
 
 struct LogView: View {
     private enum HeatmapLayout {
@@ -94,6 +95,13 @@ struct LogView: View {
     @State private var historyWidgets = HistoryWidget.defaultLayout
     @State private var isCustomizeHistoryPresented = false
     @State private var previewedPhotoEntry: WeightEntry?
+
+    // Photo adding
+    @State private var addPhotoEntry: WeightEntry?
+    @State private var showPhotoSource = false
+    @State private var showCamera = false
+    @State private var showPhotoLibrary = false
+    @State private var selectedLibraryItem: PhotosPickerItem?
 
     private var snapshot: WeightCalculations.LogSnapshot {
         WeightCalculations.logSnapshot(from: entries, chartPeriod: chartPeriod)
@@ -220,6 +228,46 @@ struct LogView: View {
             }
             .sheet(item: $previewedPhotoEntry) { entry in
                 photoPreviewSheet(for: entry)
+            }
+            .sheet(isPresented: $showCamera) {
+                if let entry = addPhotoEntry {
+                    LogPhotoCameraView { image in
+                        showCamera = false
+                        if let image,
+                           let data = image.jpegData(compressionQuality: 0.85) {
+                            entry.photoData = data
+                        }
+                        addPhotoEntry = nil
+                    }
+                    .ignoresSafeArea()
+                }
+            }
+            .photosPicker(
+                isPresented: $showPhotoLibrary,
+                selection: $selectedLibraryItem,
+                matching: .images
+            )
+            .onChange(of: selectedLibraryItem) { _, newItem in
+                guard let newItem else { return }
+                Task {
+                    if let data = try? await newItem.loadTransferable(type: Data.self),
+                       let _ = UIImage(data: data) {
+                        addPhotoEntry?.photoData = data
+                    }
+                    selectedLibraryItem = nil
+                    addPhotoEntry = nil
+                }
+            }
+            .confirmationDialog("Add Photo", isPresented: $showPhotoSource, titleVisibility: .visible) {
+                Button("Camera") {
+                    showCamera = true
+                }
+                Button("Photo Library") {
+                    showPhotoLibrary = true
+                }
+                Button("Cancel", role: .cancel) {
+                    addPhotoEntry = nil
+                }
             }
             .task {
                 loadHistoryWidgets()
@@ -559,6 +607,12 @@ struct LogView: View {
                             .background(.black.opacity(0.55), in: Circle())
                             .padding(4)
                     }
+            } else {
+                Image(systemName: "camera")
+                    .font(.body)
+                    .foregroundStyle(.tertiary)
+                    .frame(width: 52, height: 52)
+                    .background(.fill.tertiary, in: RoundedRectangle(cornerRadius: 14, style: .continuous))
             }
 
             HStack(alignment: .firstTextBaseline, spacing: 3) {
@@ -576,8 +630,30 @@ struct LogView: View {
         .padding(.vertical, 4)
         .contentShape(Rectangle())
         .onTapGesture {
-            guard entry.photoData != nil else { return }
-            previewedPhotoEntry = entry
+            if entry.photoData != nil {
+                previewedPhotoEntry = entry
+            } else {
+                addPhotoEntry = entry
+                showPhotoSource = true
+            }
+        }
+        .contextMenu {
+            Button {
+                addPhotoEntry = entry
+                showPhotoSource = true
+            } label: {
+                Label(
+                    entry.photoData != nil ? "Replace Photo" : "Add Photo",
+                    systemImage: "camera"
+                )
+            }
+            if entry.photoData != nil {
+                Button(role: .destructive) {
+                    entry.photoData = nil
+                } label: {
+                    Label("Remove Photo", systemImage: "trash")
+                }
+            }
         }
     }
 
@@ -599,10 +675,21 @@ struct LogView: View {
                 }
             }
             .toolbar {
+                ToolbarItem(placement: .topBarLeading) {
+                    Button {
+                        previewedPhotoEntry = nil
+                        addPhotoEntry = entry
+                        showPhotoSource = true
+                    } label: {
+                        Label("Replace", systemImage: "camera")
+                            .foregroundStyle(.white)
+                    }
+                }
                 ToolbarItem(placement: .topBarTrailing) {
                     Button("Done") {
                         previewedPhotoEntry = nil
                     }
+                    .foregroundStyle(.white)
                 }
             }
             .toolbarBackground(.hidden, for: .navigationBar)
@@ -872,6 +959,46 @@ struct LogView: View {
             !deletedEntries.contains { $0.persistentModelID == candidate.persistentModelID }
         }
         WeightWidgetSnapshotStore.refresh(using: remainingEntries)
+    }
+}
+
+private struct LogPhotoCameraView: UIViewControllerRepresentable {
+    let onImagePicked: (UIImage?) -> Void
+
+    func makeUIViewController(context: Context) -> UIImagePickerController {
+        let picker = UIImagePickerController()
+        picker.sourceType = .camera
+        picker.cameraCaptureMode = .photo
+        picker.delegate = context.coordinator
+        return picker
+    }
+
+    func updateUIViewController(_ uiViewController: UIImagePickerController, context: Context) {}
+
+    func makeCoordinator() -> Coordinator {
+        Coordinator(onImagePicked: onImagePicked)
+    }
+
+    final class Coordinator: NSObject, UINavigationControllerDelegate, UIImagePickerControllerDelegate {
+        private let onImagePicked: (UIImage?) -> Void
+
+        init(onImagePicked: @escaping (UIImage?) -> Void) {
+            self.onImagePicked = onImagePicked
+        }
+
+        func imagePickerControllerDidCancel(_ picker: UIImagePickerController) {
+            picker.dismiss(animated: true)
+            onImagePicked(nil)
+        }
+
+        func imagePickerController(
+            _ picker: UIImagePickerController,
+            didFinishPickingMediaWithInfo info: [UIImagePickerController.InfoKey: Any]
+        ) {
+            let image = (info[.editedImage] ?? info[.originalImage]) as? UIImage
+            picker.dismiss(animated: true)
+            onImagePicked(image)
+        }
     }
 }
 
