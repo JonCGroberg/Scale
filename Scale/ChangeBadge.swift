@@ -11,7 +11,7 @@ struct ChangeBadge: View {
     let entries: [WeightEntry]
 
     @AppStorage("appTint") private var appTint = AppTint.defaultValue.rawValue
-    @State private var currentIndex: Int = 1
+    @AppStorage("badgePeriodIndex") private var currentIndex: Int = 1
 
     private var period: TimePeriod {
         TimePeriod.allCases[currentIndex]
