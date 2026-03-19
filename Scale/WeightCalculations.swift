@@ -49,7 +49,7 @@ enum WeightCalculations {
     struct BadgeSummary: Equatable {
         let streak: Int
         let average: Double?
-        let percentChange: Double?
+        let weightChange: Double?
     }
 
     struct ChartSnapshot {
@@ -114,18 +114,17 @@ enum WeightCalculations {
     static func badgeSummary(from entries: [WeightEntry], over period: TimePeriod) -> BadgeSummary {
         let filtered = entriesWithin(period, from: entries).sorted { $0.timestamp < $1.timestamp }
         let average = filtered.isEmpty ? nil : filtered.reduce(0.0) { $0 + $1.weight } / Double(filtered.count)
-        let percentChange: Double?
-
-        if filtered.count >= 2, let first = filtered.first, let last = filtered.last, first.weight != 0 {
-            percentChange = ((last.weight - first.weight) / first.weight) * 100
+        let weightChange: Double?
+        if filtered.count >= 2, let first = filtered.first, let last = filtered.last {
+            weightChange = last.weight - first.weight
         } else {
-            percentChange = nil
+            weightChange = nil
         }
 
         return BadgeSummary(
             streak: currentStreak(from: entries),
             average: average,
-            percentChange: percentChange
+            weightChange: weightChange
         )
     }
 

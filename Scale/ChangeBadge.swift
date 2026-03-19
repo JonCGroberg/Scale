@@ -70,16 +70,22 @@ struct ChangeBadge: View {
                 .foregroundStyle(.secondary)
                 .contentTransition(.interpolate)
 
-            if let pct = summary.percentChange {
+            if let lbs = summary.weightChange {
                 Circle()
                     .fill(tintColor.opacity(0.4))
                     .frame(width: 4, height: 4)
 
-                Text(String(format: "%+.1f%%", pct))
-                    .font(.caption2)
-                    .fontWeight(.bold)
-                    .foregroundStyle(pct <= 0 ? .green : .red)
-                    .contentTransition(.numericText())
+                HStack(spacing: 2) {
+                    Image(systemName: "scalemass.fill")
+                        .font(.caption2)
+                        .foregroundStyle(lbs <= 0 ? .green : .red)
+
+                    Text(String(format: "%+.1f lbs", lbs))
+                        .font(.caption2)
+                        .fontWeight(.bold)
+                        .foregroundStyle(lbs <= 0 ? .green : .red)
+                        .contentTransition(.numericText())
+                }
             }
         }
         .padding(.horizontal, 14)
