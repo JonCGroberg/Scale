@@ -22,7 +22,11 @@ final class WeightEntry {
     var streakCount: Int
     /// The UUID of the corresponding HealthKit sample, used to delete it when this entry is removed.
     var healthKitUUID: UUID?
-    @Attribute(.externalStorage) var photoData: Data?
+    /// All progress photos attached to this entry.
+    var photosData: [Data]
+
+    /// Convenience accessor for the first (primary) photo.
+    var photoData: Data? { photosData.first }
 
     init(
         weight: Double,
@@ -37,6 +41,6 @@ final class WeightEntry {
         self.source = source
         self.streakCount = streakCount
         self.healthKitUUID = healthKitUUID
-        self.photoData = photoData
+        self.photosData = photoData.map { [$0] } ?? []
     }
 }

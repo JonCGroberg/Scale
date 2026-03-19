@@ -292,7 +292,7 @@ struct EntryView: View {
     }
 }
 
-private struct ProgressPhotoCameraView: UIViewControllerRepresentable {
+struct ProgressPhotoCameraView: UIViewControllerRepresentable {
     let onImagePicked: (UIImage?) -> Void
 
     func makeUIViewController(context: Context) -> UIImagePickerController {

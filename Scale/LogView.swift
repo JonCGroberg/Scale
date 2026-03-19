@@ -9,6 +9,7 @@ import SwiftUI
 import SwiftData
 import Charts
 import UIKit
+import PhotosUI
 
 struct LogView: View {
     private enum HeatmapLayout {
@@ -93,7 +94,7 @@ struct LogView: View {
     @State private var chartPeriod: TimePeriod = .threeMonths
     @State private var historyWidgets = HistoryWidget.defaultLayout
     @State private var isCustomizeHistoryPresented = false
-    @State private var previewedPhotoEntry: WeightEntry?
+    @State private var managedPhotoEntry: WeightEntry?
 
     private var snapshot: WeightCalculations.LogSnapshot {
         WeightCalculations.logSnapshot(from: entries, chartPeriod: chartPeriod)
@@ -218,8 +219,10 @@ struct LogView: View {
             .sheet(isPresented: $isCustomizeHistoryPresented) {
                 historyCustomizationSheet
             }
-            .sheet(item: $previewedPhotoEntry) { entry in
-                photoPreviewSheet(for: entry)
+            .sheet(item: $managedPhotoEntry) { entry in
+                PhotoManagementSheet(entry: entry) {
+                    managedPhotoEntry = nil
+                }
             }
             .task {
                 loadHistoryWidgets()
@@ -544,22 +547,42 @@ struct LogView: View {
 
             Spacer()
 
-            if let photoData = entry.photoData,
-               let uiImage = UIImage(data: photoData) {
-                Image(uiImage: uiImage)
-                    .resizable()
-                    .scaledToFill()
-                    .frame(width: 52, height: 52)
-                    .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
-                    .overlay(alignment: .bottomTrailing) {
-                        Image(systemName: "photo.fill")
-                            .font(.caption2.weight(.bold))
-                            .foregroundStyle(.white)
-                            .padding(5)
-                            .background(.black.opacity(0.55), in: Circle())
-                            .padding(4)
-                    }
+            Button {
+                managedPhotoEntry = entry
+            } label: {
+                if entry.photosData.isEmpty {
+                    Image(systemName: "camera.badge.plus")
+                        .font(.title3)
+                        .foregroundStyle(.tertiary)
+                        .frame(width: 52, height: 52)
+                        .background(.secondary.opacity(0.08), in: RoundedRectangle(cornerRadius: 14, style: .continuous))
+                } else if let uiImage = UIImage(data: entry.photosData[0]) {
+                    Image(uiImage: uiImage)
+                        .resizable()
+                        .scaledToFill()
+                        .frame(width: 52, height: 52)
+                        .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
+                        .overlay(alignment: .bottomTrailing) {
+                            if entry.photosData.count > 1 {
+                                Text("+\(entry.photosData.count - 1)")
+                                    .font(.caption2.weight(.bold))
+                                    .foregroundStyle(.white)
+                                    .padding(.horizontal, 5)
+                                    .padding(.vertical, 2)
+                                    .background(.black.opacity(0.6), in: Capsule())
+                                    .padding(4)
+                            } else {
+                                Image(systemName: "photo.fill")
+                                    .font(.caption2.weight(.bold))
+                                    .foregroundStyle(.white)
+                                    .padding(5)
+                                    .background(.black.opacity(0.55), in: Circle())
+                                    .padding(4)
+                            }
+                        }
+                }
             }
+            .buttonStyle(.plain)
 
             HStack(alignment: .firstTextBaseline, spacing: 3) {
                 Text(String(format: "%.1f", entry.weight))
@@ -574,40 +597,8 @@ struct LogView: View {
             }
         }
         .padding(.vertical, 4)
-        .contentShape(Rectangle())
-        .onTapGesture {
-            guard entry.photoData != nil else { return }
-            previewedPhotoEntry = entry
-        }
     }
 
-    private func photoPreviewSheet(for entry: WeightEntry) -> some View {
-        NavigationStack {
-            ZStack {
-                Color.black
-                    .ignoresSafeArea()
-
-                if let photoData = entry.photoData,
-                   let uiImage = UIImage(data: photoData) {
-                    Image(uiImage: uiImage)
-                        .resizable()
-                        .scaledToFit()
-                        .padding(20)
-                } else {
-                    ContentUnavailableView("No Photo", systemImage: "photo")
-                        .foregroundStyle(.white)
-                }
-            }
-            .toolbar {
-                ToolbarItem(placement: .topBarTrailing) {
-                    Button("Done") {
-                        previewedPhotoEntry = nil
-                    }
-                }
-            }
-            .toolbarBackground(.hidden, for: .navigationBar)
-        }
-    }
 
     private var monthLabels: some View {
         HStack(alignment: .center, spacing: HeatmapLayout.cellSpacing) {
@@ -872,6 +863,141 @@ struct LogView: View {
             !deletedEntries.contains { $0.persistentModelID == candidate.persistentModelID }
         }
         WeightWidgetSnapshotStore.refresh(using: remainingEntries)
+    }
+}
+
+// MARK: - Photo Management Sheet
+
+private struct PhotoManagementSheet: View {
+    @Bindable var entry: WeightEntry
+    let onDismiss: () -> Void
+
+    @State private var currentPage = 0
+    @State private var isPhotoPickerPresented = false
+    @State private var photoPickerItems: [PhotosPickerItem] = []
+    @State private var isCameraPresented = false
+    @State private var isLoadingPhotos = false
+
+    var body: some View {
+        NavigationStack {
+            ZStack {
+                Color.black.ignoresSafeArea()
+
+                if entry.photosData.isEmpty {
+                    emptyState
+                } else {
+                    photoGallery
+                }
+            }
+            .toolbar {
+                ToolbarItem(placement: .topBarLeading) {
+                    addPhotoMenu
+                }
+                ToolbarItem(placement: .topBarTrailing) {
+                    Button("Done", action: onDismiss)
+                }
+            }
+            .toolbarBackground(.hidden, for: .navigationBar)
+            .navigationTitle(
+                entry.photosData.isEmpty
+                    ? "Photos"
+                    : "\(currentPage + 1) of \(entry.photosData.count)"
+            )
+            .navigationBarTitleDisplayMode(.inline)
+        }
+        .photosPicker(
+            isPresented: $isPhotoPickerPresented,
+            selection: $photoPickerItems,
+            maxSelectionCount: 10,
+            matching: .images
+        )
+        .onChange(of: photoPickerItems) { _, items in
+            guard !items.isEmpty else { return }
+            isLoadingPhotos = true
+            Task {
+                for item in items {
+                    if let data = try? await item.loadTransferable(type: Data.self) {
+                        entry.photosData.append(data)
+                    }
+                }
+                photoPickerItems = []
+                isLoadingPhotos = false
+            }
+        }
+        .fullScreenCover(isPresented: $isCameraPresented) {
+            ProgressPhotoCameraView { image in
+                isCameraPresented = false
+                guard let image, let data = image.jpegData(compressionQuality: 0.85) else { return }
+                entry.photosData.append(data)
+            }
+            .ignoresSafeArea()
+        }
+    }
+
+    private var photoGallery: some View {
+        TabView(selection: $currentPage) {
+            ForEach(Array(entry.photosData.enumerated()), id: \.offset) { index, data in
+                ZStack(alignment: .topTrailing) {
+                    if let uiImage = UIImage(data: data) {
+                        Image(uiImage: uiImage)
+                            .resizable()
+                            .scaledToFit()
+                    }
+
+                    Button {
+                        withAnimation {
+                            entry.photosData.remove(at: index)
+                            if currentPage >= entry.photosData.count && currentPage > 0 {
+                                currentPage = entry.photosData.count - 1
+                            }
+                        }
+                    } label: {
+                        Image(systemName: "trash.circle.fill")
+                            .font(.title2)
+                            .symbolRenderingMode(.palette)
+                            .foregroundStyle(.white, .black.opacity(0.5))
+                            .padding(16)
+                    }
+                }
+                .tag(index)
+            }
+        }
+        .tabViewStyle(.page)
+        .indexViewStyle(.page(backgroundDisplayMode: .always))
+    }
+
+    private var emptyState: some View {
+        ContentUnavailableView {
+            Label("No Photos", systemImage: "photo.on.rectangle.angled")
+                .foregroundStyle(.white)
+        } description: {
+            Text("Attach progress photos to this entry.")
+                .foregroundStyle(.secondary)
+        } actions: {
+            addPhotoMenu
+        }
+    }
+
+    private var addPhotoMenu: some View {
+        Menu {
+            Button {
+                isCameraPresented = true
+            } label: {
+                Label("Take Photo", systemImage: "camera")
+            }
+
+            Button {
+                isPhotoPickerPresented = true
+            } label: {
+                Label("Choose from Library", systemImage: "photo.on.rectangle")
+            }
+        } label: {
+            if isLoadingPhotos {
+                ProgressView()
+            } else {
+                Label("Add Photo", systemImage: "plus")
+            }
+        }
     }
 }
 
