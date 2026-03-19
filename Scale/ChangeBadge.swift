@@ -11,7 +11,7 @@ struct ChangeBadge: View {
     let entries: [WeightEntry]
 
     @AppStorage("appTint") private var appTint = AppTint.defaultValue.rawValue
-    @State private var currentIndex: Int = 1  // default to month (index 1)
+    @State private var currentIndex: Int = 1
 
     private var period: TimePeriod {
         TimePeriod.allCases[currentIndex]
@@ -91,12 +91,10 @@ struct ChangeBadge: View {
                 .onEnded { value in
                     let threshold: CGFloat = 30
                     if value.translation.width < -threshold {
-                        // Swipe left → next period
                         withAnimation(.snappy) {
                             currentIndex = min(currentIndex + 1, TimePeriod.allCases.count - 1)
                         }
                     } else if value.translation.width > threshold {
-                        // Swipe right → previous period
                         withAnimation(.snappy) {
                             currentIndex = max(currentIndex - 1, 0)
                         }

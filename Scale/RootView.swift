@@ -10,6 +10,7 @@ import SwiftData
 
 struct RootView: View {
     @Binding var selectedTab: Int
+    @Query(sort: \WeightEntry.timestamp, order: .reverse) private var entries: [WeightEntry]
     @AppStorage("appTint") private var appTint = AppTint.defaultValue.rawValue
 
     private var selectedTint: AppTint {
@@ -32,6 +33,21 @@ struct RootView: View {
         }
         .tint(selectedTint.color)
         .id(appTint)
+        .onAppear {
+            WeightWidgetSnapshotStore.refresh(using: entries)
+        }
+        .onChange(of: widgetSnapshotSignature) { _, _ in
+            WeightWidgetSnapshotStore.refresh(using: entries)
+        }
+        .onChange(of: appTint) { _, _ in
+            WeightWidgetSnapshotStore.refresh(using: entries)
+        }
+    }
+
+    private var widgetSnapshotSignature: [String] {
+        entries.map { entry in
+            "\(entry.timestamp.timeIntervalSinceReferenceDate)-\(entry.weight)"
+        }
     }
 }
 

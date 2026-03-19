@@ -9,6 +9,7 @@ import Testing
 import Foundation
 import SwiftData
 import UserNotifications
+import XCTest
 @testable import Scale
 
 // MARK: - WeightEntry Model Tests
@@ -30,6 +31,12 @@ struct WeightEntryTests {
         let entry = WeightEntry(weight: 150.0, timestamp: date)
         #expect(entry.weight == 150.0)
         #expect(entry.timestamp == date)
+    }
+
+    @Test func initializesWithPhotoData() {
+        let photoData = Data([0x01, 0x02, 0x03])
+        let entry = WeightEntry(weight: 150.0, photoData: photoData)
+        #expect(entry.photoData == photoData)
     }
 
     @Test func insertEntry() throws {
@@ -70,6 +77,18 @@ struct WeightEntryTests {
 
         let entries = try context.fetch(FetchDescriptor<WeightEntry>())
         #expect(entries.first?.weight == 143.5)
+    }
+
+    @Test func persistsPhotoData() throws {
+        let container = try makeContainer()
+        let context = ModelContext(container)
+        let photoData = Data([0xAA, 0xBB, 0xCC])
+        let entry = WeightEntry(weight: 145.0, photoData: photoData)
+        context.insert(entry)
+        try context.save()
+
+        let entries = try context.fetch(FetchDescriptor<WeightEntry>())
+        #expect(entries.first?.photoData == photoData)
     }
 
     @Test func sortByTimestamp() throws {
@@ -492,6 +511,79 @@ struct DerivedSnapshotTests {
         #expect(snapshot.streaksByDay[todayKey] == 2)
         #expect(snapshot.streaksByDay[yesterdayKey] == 1)
     }
+
+    @Test func heatmapSnapshotBuildsRequestedWeekCount() {
+        let snapshot = WeightCalculations.heatmapSnapshot(from: [], weeks: 8)
+
+        #expect(snapshot.weeks.count == 8)
+        #expect(snapshot.weeks.allSatisfy { $0.count == 7 })
+    }
+
+    @Test func heatmapSnapshotAggregatesMultipleEntriesPerDay() {
+        let calendar = Calendar.current
+        let today = calendar.startOfDay(for: Date())
+        let entries = [
+            WeightEntry(weight: 180.0, timestamp: today.addingTimeInterval(60)),
+            WeightEntry(weight: 179.5, timestamp: today.addingTimeInterval(120)),
+            WeightEntry(weight: 179.0, timestamp: today.addingTimeInterval(180))
+        ]
+
+        let snapshot = WeightCalculations.heatmapSnapshot(from: entries, weeks: 1)
+        let todayCell = snapshot.weeks[0].first { calendar.isDate($0.date, inSameDayAs: today) }
+
+        #expect(todayCell?.entryCount == 3)
+        #expect(todayCell?.intensity == 4)
+    }
+
+    @Test func heatmapSnapshotLeavesFutureDaysEmpty() {
+        let calendar = Calendar.current
+        let today = calendar.startOfDay(for: Date())
+        let snapshot = WeightCalculations.heatmapSnapshot(from: [], weeks: 1)
+
+        let futureCells = snapshot.weeks[0].filter { $0.date > today }
+        #expect(futureCells.allSatisfy { $0.entryCount == 0 && $0.intensity == 0 })
+    }
+
+}
+
+final class WeightWidgetSnapshotXCTests: XCTestCase {
+
+    func testSnapshotUsesLatestEntryAndMonthSummary() {
+        let now = Date()
+        let entries = [
+            WeightEntry(weight: 182.4, timestamp: now),
+            WeightEntry(weight: 184.0, timestamp: now.addingTimeInterval(-86400)),
+            WeightEntry(weight: 185.1, timestamp: now.addingTimeInterval(-86400 * 5))
+        ]
+
+        let snapshot = WeightWidgetSnapshot.make(
+            from: entries,
+            tintRawValue: AppTint.green.rawValue,
+            now: now
+        )
+
+        XCTAssertEqual(snapshot.generatedAt, now)
+        XCTAssertEqual(snapshot.appTintRawValue, AppTint.green.rawValue)
+        XCTAssertEqual(snapshot.latestWeight, 182.4)
+        XCTAssertEqual(snapshot.latestTimestamp, now)
+        XCTAssertEqual(snapshot.streakCount, 2)
+        XCTAssertNotNil(snapshot.monthAverage)
+        XCTAssertNotNil(snapshot.monthPercentChange)
+    }
+
+    func testSnapshotIsEmptyWhenThereAreNoEntries() {
+        let snapshot = WeightWidgetSnapshot.make(
+            from: [],
+            tintRawValue: AppTint.blue.rawValue,
+            now: .now
+        )
+
+        XCTAssertNil(snapshot.latestWeight)
+        XCTAssertNil(snapshot.latestTimestamp)
+        XCTAssertEqual(snapshot.streakCount, 0)
+        XCTAssertNil(snapshot.monthAverage)
+        XCTAssertNil(snapshot.monthPercentChange)
+    }
 }
 
 // MARK: - TimePeriod Tests
@@ -586,7 +678,7 @@ struct ReminderModelTests {
         defaults.set(true, forKey: "remindersEnabled")
         #expect(defaults.bool(forKey: "remindersEnabled") == true)
 
-        defaults.set(false, forKey: "remindersEnabled")
+        defaults.set(false, forKey: "lets aremindersEnabled")
         #expect(defaults.bool(forKey: "remindersEnabled") == false)
     }
 

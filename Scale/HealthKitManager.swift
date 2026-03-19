@@ -145,6 +145,12 @@ final class HealthKitManager {
             }
             
             try modelContext.save()
+            let refreshedEntries = try modelContext.fetch(
+                FetchDescriptor<WeightEntry>(
+                    sortBy: [SortDescriptor(\WeightEntry.timestamp, order: .reverse)]
+                )
+            )
+            WeightWidgetSnapshotStore.refresh(using: refreshedEntries)
             importResult = .success(imported: importedCount, skipped: skippedCount, removed: removedCount)
         } catch {
             importResult = .error(error.localizedDescription)

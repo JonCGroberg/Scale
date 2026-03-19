@@ -65,6 +65,24 @@ enum WeightCalculations {
         let chart: ChartSnapshot
     }
 
+    struct HeatmapDay: Equatable {
+        let date: Date
+        let entryCount: Int
+        let intensity: Int
+    }
+
+    struct HeatmapMonthLabel: Equatable {
+        let title: String
+        let weekIndex: Int
+    }
+
+    struct HeatmapSnapshot: Equatable {
+        let weeks: [[HeatmapDay]]
+        let monthLabels: [HeatmapMonthLabel]
+
+        static let empty = HeatmapSnapshot(weeks: [], monthLabels: [])
+    }
+
 
     /// Calculate the weight change between the two most recent entries.
     /// - Parameter entries: Weight entries sorted most-recent-first.
@@ -128,6 +146,65 @@ enum WeightCalculations {
             streaksByDay: streaksByDay(from: entries),
             chart: chartSnapshot(from: entries, over: chartPeriod)
         )
+    }
+
+    static func heatmapSnapshot(from entries: [WeightEntry], weeks: Int = 26) -> HeatmapSnapshot {
+        guard weeks > 0 else { return .empty }
+
+        let calendar = Calendar.current
+        let today = calendar.startOfDay(for: Date())
+        let startOfCurrentWeek = calendar.dateInterval(of: .weekOfYear, for: today)?.start ?? today
+        guard let startDate = calendar.date(byAdding: .weekOfYear, value: -(weeks - 1), to: startOfCurrentWeek) else {
+            return .empty
+        }
+
+        let countsByDay = Dictionary(grouping: entries) { entry in
+            calendar.startOfDay(for: entry.timestamp)
+        }
+        .mapValues(\.count)
+
+        let maxCount = countsByDay.values.max() ?? 0
+        var heatmapWeeks: [[HeatmapDay]] = []
+        var monthLabels: [HeatmapMonthLabel] = []
+        var previousMonth: Int?
+
+        for weekIndex in 0..<weeks {
+            guard let weekStart = calendar.date(byAdding: .weekOfYear, value: weekIndex, to: startDate) else {
+                continue
+            }
+
+            let month = calendar.component(.month, from: weekStart)
+            if previousMonth != month {
+                monthLabels.append(
+                    HeatmapMonthLabel(
+                        title: weekStart.formatted(.dateTime.month(.abbreviated)),
+                        weekIndex: weekIndex
+                    )
+                )
+                previousMonth = month
+            }
+
+            var days: [HeatmapDay] = []
+            for weekdayOffset in 0..<7 {
+                guard let date = calendar.date(byAdding: .day, value: weekdayOffset, to: weekStart) else {
+                    continue
+                }
+
+                let day = calendar.startOfDay(for: date)
+                let count = day > today ? 0 : (countsByDay[day] ?? 0)
+                days.append(
+                    HeatmapDay(
+                        date: day,
+                        entryCount: count,
+                        intensity: heatmapIntensity(for: count, maxCount: maxCount)
+                    )
+                )
+            }
+
+            heatmapWeeks.append(days)
+        }
+
+        return HeatmapSnapshot(weeks: heatmapWeeks, monthLabels: monthLabels)
     }
 
     /// Parse a user-entered weight string into a valid positive Double.
@@ -265,5 +342,22 @@ enum WeightCalculations {
         ) else { return [] }
 
         return entries.filter { $0.timestamp >= cutoff }
+    }
+
+    private static func heatmapIntensity(for count: Int, maxCount: Int) -> Int {
+        guard count > 0, maxCount > 0 else { return 0 }
+        if maxCount == 1 { return 4 }
+
+        let scaled = Double(count) / Double(maxCount)
+        switch scaled {
+        case ..<0.34:
+            return 1
+        case ..<0.67:
+            return 2
+        case ..<1.0:
+            return 3
+        default:
+            return 4
+        }
     }
 }

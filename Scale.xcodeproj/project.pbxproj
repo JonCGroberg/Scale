@@ -6,6 +6,10 @@
 	objectVersion = 77;
 	objects = {
 
+/* Begin PBXBuildFile section */
+		D46C100D2F66D10000A1B2C3 /* ScaleWidget.appex in Embed App Extensions */ = {isa = PBXBuildFile; fileRef = D46C100C2F66D10000A1B2C3 /* ScaleWidget.appex */; settings = {ATTRIBUTES = (RemoveHeadersOnCopy, ); }; };
+/* End PBXBuildFile section */
+
 /* Begin PBXContainerItemProxy section */
 		D45B3F252F669AF2008AB112 /* PBXContainerItemProxy */ = {
 			isa = PBXContainerItemProxy;
@@ -21,13 +25,35 @@
 			remoteGlobalIDString = D45B3F142F669AF1008AB112;
 			remoteInfo = Scale;
 		};
+		D46C10162F66D10000A1B2C3 /* PBXContainerItemProxy */ = {
+			isa = PBXContainerItemProxy;
+			containerPortal = D45B3F0D2F669AF1008AB112 /* Project object */;
+			proxyType = 1;
+			remoteGlobalIDString = D46C10102F66D10000A1B2C3;
+			remoteInfo = ScaleWidget;
+		};
 /* End PBXContainerItemProxy section */
+
+/* Begin PBXCopyFilesBuildPhase section */
+		D46C100F2F66D10000A1B2C3 /* Embed App Extensions */ = {
+			isa = PBXCopyFilesBuildPhase;
+			buildActionMask = 2147483647;
+			dstPath = "";
+			dstSubfolderSpec = 13;
+			files = (
+				D46C100D2F66D10000A1B2C3 /* ScaleWidget.appex in Embed App Extensions */,
+			);
+			name = "Embed App Extensions";
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXCopyFilesBuildPhase section */
 
 /* Begin PBXFileReference section */
 		D45A9EFC2F66BC7B0014B7BA /* Scale.xctestplan */ = {isa = PBXFileReference; lastKnownFileType = text; path = Scale.xctestplan; sourceTree = "<group>"; };
 		D45B3F152F669AF1008AB112 /* Scale.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = Scale.app; sourceTree = BUILT_PRODUCTS_DIR; };
 		D45B3F242F669AF2008AB112 /* ScaleTests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = ScaleTests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
 		D45B3F2E2F669AF2008AB112 /* ScaleUITests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = ScaleUITests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
+		D46C100C2F66D10000A1B2C3 /* ScaleWidget.appex */ = {isa = PBXFileReference; explicitFileType = "wrapper.app-extension"; includeInIndex = 0; path = ScaleWidget.appex; sourceTree = BUILT_PRODUCTS_DIR; };
 /* End PBXFileReference section */
 
 /* Begin PBXFileSystemSynchronizedRootGroup section */
@@ -39,6 +65,11 @@
 		D45B3F272F669AF2008AB112 /* ScaleTests */ = {
 			isa = PBXFileSystemSynchronizedRootGroup;
 			path = ScaleTests;
+			sourceTree = "<group>";
+		};
+		D46C100E2F66D10000A1B2C3 /* ScaleWidget */ = {
+			isa = PBXFileSystemSynchronizedRootGroup;
+			path = ScaleWidget;
 			sourceTree = "<group>";
 		};
 /* End PBXFileSystemSynchronizedRootGroup section */
@@ -65,6 +96,13 @@
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
+		D46C10132F66D10000A1B2C3 /* Frameworks */ = {
+			isa = PBXFrameworksBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
 /* End PBXFrameworksBuildPhase section */
 
 /* Begin PBXGroup section */
@@ -74,6 +112,7 @@
 				D45A9EFC2F66BC7B0014B7BA /* Scale.xctestplan */,
 				D45B3F172F669AF1008AB112 /* Scale */,
 				D45B3F272F669AF2008AB112 /* ScaleTests */,
+				D46C100E2F66D10000A1B2C3 /* ScaleWidget */,
 				D45B3F162F669AF1008AB112 /* Products */,
 			);
 			sourceTree = "<group>";
@@ -84,6 +123,7 @@
 				D45B3F152F669AF1008AB112 /* Scale.app */,
 				D45B3F242F669AF2008AB112 /* ScaleTests.xctest */,
 				D45B3F2E2F669AF2008AB112 /* ScaleUITests.xctest */,
+				D46C100C2F66D10000A1B2C3 /* ScaleWidget.appex */,
 			);
 			name = Products;
 			sourceTree = "<group>";
@@ -98,10 +138,12 @@
 				D45B3F112F669AF1008AB112 /* Sources */,
 				D45B3F122F669AF1008AB112 /* Frameworks */,
 				D45B3F132F669AF1008AB112 /* Resources */,
+				D46C100F2F66D10000A1B2C3 /* Embed App Extensions */,
 			);
 			buildRules = (
 			);
 			dependencies = (
+				D46C10172F66D10000A1B2C3 /* PBXTargetDependency */,
 			);
 			fileSystemSynchronizedGroups = (
 				D45B3F172F669AF1008AB112 /* Scale */,
@@ -156,6 +198,28 @@
 			productReference = D45B3F2E2F669AF2008AB112 /* ScaleUITests.xctest */;
 			productType = "com.apple.product-type.bundle.ui-testing";
 		};
+		D46C10102F66D10000A1B2C3 /* ScaleWidget */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = D46C101B2F66D10000A1B2C3 /* Build configuration list for PBXNativeTarget "ScaleWidget" */;
+			buildPhases = (
+				D46C10122F66D10000A1B2C3 /* Sources */,
+				D46C10132F66D10000A1B2C3 /* Frameworks */,
+				D46C10142F66D10000A1B2C3 /* Resources */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+			);
+			fileSystemSynchronizedGroups = (
+				D46C100E2F66D10000A1B2C3 /* ScaleWidget */,
+			);
+			name = ScaleWidget;
+			packageProductDependencies = (
+			);
+			productName = ScaleWidget;
+			productReference = D46C100C2F66D10000A1B2C3 /* ScaleWidget.appex */;
+			productType = "com.apple.product-type.app-extension";
+		};
 /* End PBXNativeTarget section */
 
 /* Begin PBXProject section */
@@ -177,6 +241,9 @@
 						CreatedOnToolsVersion = 26.0.1;
 						TestTargetID = D45B3F142F669AF1008AB112;
 					};
+					D46C10102F66D10000A1B2C3 = {
+						CreatedOnToolsVersion = 26.0.1;
+					};
 				};
 			};
 			buildConfigurationList = D45B3F102F669AF1008AB112 /* Build configuration list for PBXProject "Scale" */;
@@ -196,6 +263,7 @@
 				D45B3F142F669AF1008AB112 /* Scale */,
 				D45B3F232F669AF2008AB112 /* ScaleTests */,
 				D45B3F2D2F669AF2008AB112 /* ScaleUITests */,
+				D46C10102F66D10000A1B2C3 /* ScaleWidget */,
 			);
 		};
 /* End PBXProject section */
@@ -216,6 +284,13 @@
 			runOnlyForDeploymentPostprocessing = 0;
 		};
 		D45B3F2C2F669AF2008AB112 /* Resources */ = {
+			isa = PBXResourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		D46C10142F66D10000A1B2C3 /* Resources */ = {
 			isa = PBXResourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
@@ -246,6 +321,13 @@
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
+		D46C10122F66D10000A1B2C3 /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
 /* End PBXSourcesBuildPhase section */
 
 /* Begin PBXTargetDependency section */
@@ -258,6 +340,11 @@
 			isa = PBXTargetDependency;
 			target = D45B3F142F669AF1008AB112 /* Scale */;
 			targetProxy = D45B3F2F2F669AF2008AB112 /* PBXContainerItemProxy */;
+		};
+		D46C10172F66D10000A1B2C3 /* PBXTargetDependency */ = {
+			isa = PBXTargetDependency;
+			target = D46C10102F66D10000A1B2C3 /* ScaleWidget */;
+			targetProxy = D46C10162F66D10000A1B2C3 /* PBXContainerItemProxy */;
 		};
 /* End PBXTargetDependency section */
 
@@ -408,7 +495,7 @@
 					"$(inherited)",
 					"@executable_path/Frameworks",
 				);
-				MARKETING_VERSION = 1.0;
+				MARKETING_VERSION = 1.1;
 				NEW_SETTING = "";
 				NSHealthShareUsageDescription = fadfasdf;
 				PRODUCT_BUNDLE_IDENTIFIER = groberg.Scale;
@@ -446,7 +533,7 @@
 					"$(inherited)",
 					"@executable_path/Frameworks",
 				);
-				MARKETING_VERSION = 1.0;
+				MARKETING_VERSION = 1.1;
 				NEW_SETTING = "";
 				NSHealthShareUsageDescription = fadfasdf;
 				PRODUCT_BUNDLE_IDENTIFIER = groberg.Scale;
@@ -545,6 +632,64 @@
 			};
 			name = Release;
 		};
+		D46C10182F66D10000A1B2C3 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				APPLICATION_EXTENSION_API_ONLY = YES;
+				CODE_SIGN_ENTITLEMENTS = ScaleWidget/ScaleWidget.entitlements;
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 1;
+				DEVELOPMENT_TEAM = N493N5JRGD;
+				GENERATE_INFOPLIST_FILE = NO;
+				INFOPLIST_FILE = ScaleWidgetInfo.plist;
+				IPHONEOS_DEPLOYMENT_TARGET = 26.0;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+					"@executable_path/../../Frameworks",
+				);
+				MARKETING_VERSION = 1.1;
+				PRODUCT_BUNDLE_IDENTIFIER = groberg.Scale.ScaleWidget;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SKIP_INSTALL = YES;
+				STRING_CATALOG_GENERATE_SYMBOLS = NO;
+				SWIFT_APPROACHABLE_CONCURRENCY = YES;
+				SWIFT_EMIT_LOC_STRINGS = NO;
+				SWIFT_UPCOMING_FEATURE_MEMBER_IMPORT_VISIBILITY = YES;
+				SWIFT_VERSION = 5.0;
+				TARGETED_DEVICE_FAMILY = "1,2";
+			};
+			name = Debug;
+		};
+		D46C10192F66D10000A1B2C3 /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				APPLICATION_EXTENSION_API_ONLY = YES;
+				CODE_SIGN_ENTITLEMENTS = ScaleWidget/ScaleWidget.entitlements;
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 1;
+				DEVELOPMENT_TEAM = N493N5JRGD;
+				GENERATE_INFOPLIST_FILE = NO;
+				INFOPLIST_FILE = ScaleWidgetInfo.plist;
+				IPHONEOS_DEPLOYMENT_TARGET = 26.0;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+					"@executable_path/../../Frameworks",
+				);
+				MARKETING_VERSION = 1.1;
+				PRODUCT_BUNDLE_IDENTIFIER = groberg.Scale.ScaleWidget;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SKIP_INSTALL = YES;
+				STRING_CATALOG_GENERATE_SYMBOLS = NO;
+				SWIFT_APPROACHABLE_CONCURRENCY = YES;
+				SWIFT_EMIT_LOC_STRINGS = NO;
+				SWIFT_UPCOMING_FEATURE_MEMBER_IMPORT_VISIBILITY = YES;
+				SWIFT_VERSION = 5.0;
+				TARGETED_DEVICE_FAMILY = "1,2";
+			};
+			name = Release;
+		};
 /* End XCBuildConfiguration section */
 
 /* Begin XCConfigurationList section */
@@ -580,6 +725,15 @@
 			buildConfigurations = (
 				D45B3F3F2F669AF2008AB112 /* Debug */,
 				D45B3F402F669AF2008AB112 /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Release;
+		};
+		D46C101B2F66D10000A1B2C3 /* Build configuration list for PBXNativeTarget "ScaleWidget" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				D46C10182F66D10000A1B2C3 /* Debug */,
+				D46C10192F66D10000A1B2C3 /* Release */,
 			);
 			defaultConfigurationIsVisible = 0;
 			defaultConfigurationName = Release;

@@ -7,6 +7,7 @@
 
 import SwiftUI
 import SwiftData
+import UIKit
 
 struct EntryView: View {
     @Environment(\.modelContext) private var modelContext
@@ -21,6 +22,9 @@ struct EntryView: View {
     @State private var weightText = ""
     @State private var showCamera = false
     @State private var saved = false
+    @State private var isSaveOptionsPresented = false
+    @State private var isProgressPhotoCameraPresented = false
+    @State private var isCameraUnavailableAlertPresented = false
     @FocusState private var weightFieldFocused: Bool
 
     private let step: Double = 0.1
@@ -81,12 +85,46 @@ struct EntryView: View {
                     currentWeight = latest.weight
                 }
             }
+            .confirmationDialog(
+                "Add a progress photo?",
+                isPresented: $isSaveOptionsPresented,
+                titleVisibility: .visible
+            ) {
+                Button("Take Progress Photo") {
+                    presentProgressPhotoCamera()
+                }
+
+                Button("Save Without Photo") {
+                    saveEntry(photoData: nil)
+                }
+
+                Button("Cancel", role: .cancel) { }
+            } message: {
+                Text("Attach a fresh photo to this weigh-in or skip it.")
+            }
+            .alert("Camera Unavailable", isPresented: $isCameraUnavailableAlertPresented) {
+                Button("Save Without Photo") {
+                    saveEntry(photoData: nil)
+                }
+                Button("Cancel", role: .cancel) { }
+            } message: {
+                Text("This device can’t take a progress photo right now.")
+            }
             .fullScreenCover(isPresented: $showCamera) {
                 ScaleScannerView { weight in
                     withAnimation(.snappy) {
                         currentWeight = weight
                     }
                 }
+            }
+            .fullScreenCover(isPresented: $isProgressPhotoCameraPresented) {
+                ProgressPhotoCameraView { image in
+                    isProgressPhotoCameraPresented = false
+                    guard let image else { return }
+                    let photoData = image.jpegData(compressionQuality: 0.85)
+                    saveEntry(photoData: photoData)
+                }
+                .ignoresSafeArea()
             }
         }
     }
@@ -167,7 +205,7 @@ struct EntryView: View {
 
     private var saveButton: some View {
         Button {
-            saveEntry()
+            isSaveOptionsPresented = true
         } label: {
             Text(saved ? "Saved" : "Save")
                 .contentTransition(.interpolate)
@@ -223,11 +261,21 @@ struct EntryView: View {
         isEditingWeight = false
     }
 
-    private func saveEntry() {
+    private func presentProgressPhotoCamera() {
+        guard UIImagePickerController.isSourceTypeAvailable(.camera) else {
+            isCameraUnavailableAlertPresented = true
+            return
+        }
+
+        isProgressPhotoCameraPresented = true
+    }
+
+    private func saveEntry(photoData: Data?) {
         // Compute the streak including today's new entry
         let streak = WeightCalculations.currentStreak(from: entries, includingToday: true)
-        let entry = WeightEntry(weight: currentWeight, streakCount: streak)
+        let entry = WeightEntry(weight: currentWeight, streakCount: streak, photoData: photoData)
         modelContext.insert(entry)
+        WeightWidgetSnapshotStore.refresh(using: [entry] + entries)
 
         // Reschedule reminders so tomorrow's notification reflects the updated streak.
         notificationManager.rescheduleReminders()
@@ -240,6 +288,46 @@ struct EntryView: View {
         Task { @MainActor in
             saved = true
             selectedTab = 1
+        }
+    }
+}
+
+private struct ProgressPhotoCameraView: UIViewControllerRepresentable {
+    let onImagePicked: (UIImage?) -> Void
+
+    func makeUIViewController(context: Context) -> UIImagePickerController {
+        let picker = UIImagePickerController()
+        picker.sourceType = .camera
+        picker.cameraCaptureMode = .photo
+        picker.delegate = context.coordinator
+        return picker
+    }
+
+    func updateUIViewController(_ uiViewController: UIImagePickerController, context: Context) { }
+
+    func makeCoordinator() -> Coordinator {
+        Coordinator(onImagePicked: onImagePicked)
+    }
+
+    final class Coordinator: NSObject, UINavigationControllerDelegate, UIImagePickerControllerDelegate {
+        private let onImagePicked: (UIImage?) -> Void
+
+        init(onImagePicked: @escaping (UIImage?) -> Void) {
+            self.onImagePicked = onImagePicked
+        }
+
+        func imagePickerControllerDidCancel(_ picker: UIImagePickerController) {
+            picker.dismiss(animated: true)
+            onImagePicked(nil)
+        }
+
+        func imagePickerController(
+            _ picker: UIImagePickerController,
+            didFinishPickingMediaWithInfo info: [UIImagePickerController.InfoKey: Any]
+        ) {
+            let image = (info[.editedImage] ?? info[.originalImage]) as? UIImage
+            picker.dismiss(animated: true)
+            onImagePicked(image)
         }
     }
 }
