@@ -96,6 +96,7 @@ struct LogView: View {
     @State private var isCustomizeHistoryPresented = false
     @State private var managedPhotoEntry: WeightEntry?
 
+
     private var snapshot: WeightCalculations.LogSnapshot {
         WeightCalculations.logSnapshot(from: entries, chartPeriod: chartPeriod)
     }
@@ -598,7 +599,6 @@ struct LogView: View {
         }
         .padding(.vertical, 4)
     }
-
 
     private var monthLabels: some View {
         HStack(alignment: .center, spacing: HeatmapLayout.cellSpacing) {
