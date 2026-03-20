@@ -87,6 +87,7 @@ struct LogView: View {
     @AppStorage("showChangePill") private var showChangePill = true
     @AppStorage("appTint") private var appTint = AppTint.defaultValue.rawValue
     @AppStorage("historyWidgetLayout") private var historyWidgetLayout = HistoryWidget.defaultStorageValue
+    @AppStorage("badgePeriodIndex") private var badgePeriodIndex: Int = 1
 
     @State private var isScrolling = false
     @State private var visibleSection = ""
@@ -118,6 +119,14 @@ struct LogView: View {
 
     private var currentLoggingStreak: Int {
         WeightCalculations.currentStreak(from: entries)
+    }
+
+    private var badgePeriod: TimePeriod {
+        TimePeriod.allCases[badgePeriodIndex]
+    }
+
+    private var badgePeriodChange: Double? {
+        WeightCalculations.percentageChange(from: entries, over: badgePeriod)
     }
 
     private var latestWeightText: String {
@@ -322,12 +331,8 @@ struct LogView: View {
                     .foregroundStyle(.secondary)
             }
 
-            HStack(spacing: 10) {
-                statChip(title: "Latest", value: latestWeightText)
-                statChip(title: "Total Entries", value: "\(entries.count)")
-            }
-
             HStack(alignment: .center, spacing: 10) {
+                statChip(title: "Latest", value: latestWeightText)
                 currentStreakPill
                 Spacer(minLength: 0)
             }
@@ -441,7 +446,11 @@ struct LogView: View {
                     .foregroundStyle(.secondary)
             } else {
                 HStack(alignment: .center, spacing: 10) {
-                    statChip(title: "Active Days", value: "\(activeHeatmapDays)")
+                    statChip(
+                        title: "\(badgePeriod.label) Change",
+                        value: badgePeriodChange.map { String(format: "%+.1f%%", $0) } ?? "—",
+                        valueColor: badgePeriodChange.map { $0 <= 0 ? .green : .red } ?? .primary
+                    )
                     currentStreakPill
                     Spacer(minLength: 0)
                 }
