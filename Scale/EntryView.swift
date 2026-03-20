@@ -94,7 +94,7 @@ struct EntryView: View {
                     presentProgressPhotoCamera()
                 }
 
-                Button("Save Without Photo") {
+                Button("No", role: .destructive) {
                     saveEntry(photoData: nil)
                 }
 
