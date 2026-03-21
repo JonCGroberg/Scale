@@ -41,7 +41,7 @@ struct WeightWidgetSnapshot: Codable, Equatable, Sendable {
             latestTimestamp: sortedEntries.first?.timestamp,
             streakCount: summary.streak,
             monthAverage: summary.average,
-            monthPercentChange: summary.percentChange
+            monthPercentChange: WeightCalculations.percentageChange(from: sortedEntries, over: .month)
         )
     }
 }

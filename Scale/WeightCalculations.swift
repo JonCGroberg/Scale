@@ -46,6 +46,11 @@ enum TimePeriod: String, CaseIterable {
 }
 
 enum WeightCalculations {
+    struct ChartPoint: Equatable {
+        let timestamp: Date
+        let weight: Double
+    }
+
     struct BadgeSummary: Equatable {
         let streak: Int
         let average: Double?
@@ -54,9 +59,10 @@ enum WeightCalculations {
 
     struct ChartSnapshot {
         let entries: [WeightEntry]
+        let smoothedEntries: [ChartPoint]
         let yDomain: ClosedRange<Double>
 
-        static let empty = ChartSnapshot(entries: [], yDomain: 0...1)
+        static let empty = ChartSnapshot(entries: [], smoothedEntries: [], yDomain: 0...1)
     }
 
     struct LogSnapshot {
@@ -135,8 +141,16 @@ enum WeightCalculations {
         let weights = filteredEntries.map(\.weight)
         let minWeight = (weights.min() ?? 0) - 1
         let maxWeight = (weights.max() ?? 0) + 1
+        let smoothedEntries = exponentiallySmoothedChartPoints(
+            from: filteredEntries,
+            alpha: smoothingAlpha(for: period)
+        )
 
-        return ChartSnapshot(entries: filteredEntries, yDomain: minWeight...maxWeight)
+        return ChartSnapshot(
+            entries: filteredEntries,
+            smoothedEntries: smoothedEntries,
+            yDomain: minWeight...maxWeight
+        )
     }
 
     static func logSnapshot(from entries: [WeightEntry], chartPeriod: TimePeriod) -> LogSnapshot {
@@ -211,6 +225,14 @@ enum WeightCalculations {
         let trimmed = text.trimmingCharacters(in: .whitespaces)
         guard let value = Double(trimmed), value > 0 else { return nil }
         return value
+    }
+
+    static func incrementWeight(_ weight: Double, step: Double = 0.1) -> Double {
+        steppedWeight(from: weight, delta: step)
+    }
+
+    static func decrementWeight(_ weight: Double, step: Double = 0.1) -> Double {
+        steppedWeight(from: weight, delta: -step)
     }
 
     /// Parse text recognized by the scale scanner.
@@ -343,6 +365,35 @@ enum WeightCalculations {
         return entries.filter { $0.timestamp >= cutoff }
     }
 
+    private static func smoothingAlpha(for period: TimePeriod) -> Double {
+        switch period {
+        case .week:
+            0.80
+        case .month:
+            0.70
+        case .threeMonths:
+            0.60
+        case .sixMonths:
+            0.50
+        case .year:
+            0.42
+        }
+    }
+
+    private static func exponentiallySmoothedChartPoints(
+        from entries: [WeightEntry],
+        alpha: Double
+    ) -> [ChartPoint] {
+        guard let firstEntry = entries.first else { return [] }
+
+        var smoothedWeight = firstEntry.weight
+
+        return entries.map { entry in
+            smoothedWeight = alpha * entry.weight + (1 - alpha) * smoothedWeight
+            return ChartPoint(timestamp: entry.timestamp, weight: smoothedWeight)
+        }
+    }
+
     private static func heatmapIntensity(for count: Int, maxCount: Int) -> Int {
         guard count > 0, maxCount > 0 else { return 0 }
         if maxCount == 1 { return 4 }
@@ -358,5 +409,10 @@ enum WeightCalculations {
         default:
             return 4
         }
+    }
+
+    private static func steppedWeight(from weight: Double, delta: Double) -> Double {
+        let updatedWeight = max(0, weight + delta)
+        return (updatedWeight * 10).rounded() / 10
     }
 }

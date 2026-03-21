@@ -15,21 +15,26 @@ struct EntryView: View {
     @Environment(NotificationManager.self) private var notificationManager
     @Query(sort: \WeightEntry.timestamp, order: .reverse) private var entries: [WeightEntry]
     @Binding var selectedTab: Int
+    @Binding var historyScrollRequest: Int
+    @Binding var historySelectedEntry: WeightEntry?
 
-    @AppStorage("showChangePill") private var showChangePill = true
+    @AppStorage("appTint") private var appTint = AppTint.defaultValue.rawValue
     @State private var currentWeight: Double = 142.5
     @State private var isEditingWeight = false
     @State private var weightText = ""
     @State private var showCamera = false
     @State private var saved = false
-    @State private var isSaveOptionsPresented = false
-    @State private var isProgressPhotoCameraPresented = false
-    @State private var isCameraUnavailableAlertPresented = false
     @FocusState private var weightFieldFocused: Bool
 
-    private let step: Double = 0.1
+    private let step = 0.1
+    private let bottomBarWidth: CGFloat = 320
+    private let weightDisplaySpacing: CGFloat = 16
 
     private var latestEntry: WeightEntry? { entries.first }
+
+    private var tintColor: Color {
+        (AppTint(rawValue: appTint) ?? .defaultValue).color
+    }
 
     var body: some View {
         NavigationStack {
@@ -38,46 +43,31 @@ struct EntryView: View {
                     .ignoresSafeArea()
 
                 VStack(spacing: 0) {
-                    if showChangePill, !entries.isEmpty {
-                        ChangeBadge(entries: entries)
-                            .onTapGesture { selectedTab = 1 }
-                            .padding(.top, 8)
-                            .padding(.bottom, 8)
-                            .padding(.horizontal, 16)
-                    }
-
                     Spacer()
 
-                    // Weight entry card
-                    GlassEffectContainer(spacing: 24) {
-                        VStack(spacing: 28) {
+                    VStack(spacing: 16) {
+                        VStack(spacing: 8) {
                             lastLoggedLabel
-
-                            weightDisplay
-
-                            stepperRow
-
-                            saveButton
                         }
-                        .padding(.vertical, 32)
-                        .padding(.horizontal, 40)
-                        .frame(maxWidth: .infinity)
-                        .glassEffect(in: .rect(cornerRadius: 24))
+
+                        weightDisplay
                     }
-                    .padding(.horizontal, 24)
+                    .padding(.horizontal, 32)
+                    .frame(maxWidth: .infinity)
 
                     Spacer()
-
-                    cameraButton
-                        .padding(.bottom, 24)
                 }
             }
             .toolbar(.hidden, for: .navigationBar)
             .safeAreaInset(edge: .bottom) {
-                if isEditingWeight {
-                    editActionsBar
-                        .padding(.horizontal, 24)
-                        .padding(.bottom, 12)
+                if !isEditingWeight {
+                    VStack(spacing: 12) {
+                        bottomActionRow
+                    }
+                    .padding(.horizontal, 24)
+                    .padding(.top, 12)
+                    .padding(.bottom, 12)
+                    .transition(.move(edge: .bottom).combined(with: .opacity))
                 }
             }
             .onAppear {
@@ -85,46 +75,32 @@ struct EntryView: View {
                     currentWeight = latest.weight
                 }
             }
-            .confirmationDialog(
-                "Add a progress photo?",
-                isPresented: $isSaveOptionsPresented,
-                titleVisibility: .visible
-            ) {
-                Button("Take Progress Photo") {
-                    presentProgressPhotoCamera()
-                }
-
-                Button("No", role: .destructive) {
-                    saveEntry(photoData: nil)
-                }
-
-                Button("Cancel", role: .cancel) { }
-            } message: {
-                Text("Attach a fresh photo to this weigh-in or skip it.")
-            }
-            .alert("Camera Unavailable", isPresented: $isCameraUnavailableAlertPresented) {
-                Button("Save Without Photo") {
-                    saveEntry(photoData: nil)
-                }
-                Button("Cancel", role: .cancel) { }
-            } message: {
-                Text("This device can’t take a progress photo right now.")
-            }
             .fullScreenCover(isPresented: $showCamera) {
                 ScaleScannerView { weight in
                     withAnimation(.snappy) {
                         currentWeight = weight
+                        saved = false
                     }
                 }
             }
-            .fullScreenCover(isPresented: $isProgressPhotoCameraPresented) {
-                ProgressPhotoCameraView { image in
-                    isProgressPhotoCameraPresented = false
-                    guard let image else { return }
-                    let photoData = image.jpegData(compressionQuality: 0.85)
-                    saveEntry(photoData: photoData)
+            .toolbar {
+                if isEditingWeight {
+                    ToolbarItem(placement: .keyboard) {
+                        HStack {
+                            Button("Cancel") {
+                                cancelWeightEdit()
+                            }
+                            .foregroundStyle(.red)
+
+                            Spacer()
+
+                            Button("Done") {
+                                commitWeightEdit()
+                            }
+                            .fontWeight(.semibold)
+                        }
+                    }
                 }
-                .ignoresSafeArea()
             }
         }
     }
@@ -148,33 +124,14 @@ struct EntryView: View {
     // MARK: - Weight Display
 
     private var weightDisplay: some View {
-        VStack(spacing: 4) {
-            HStack(alignment: .firstTextBaseline, spacing: 4) {
-                if isEditingWeight {
-                    TextField("0.0", text: $weightText)
-                        .font(.system(size: 64, weight: .bold, design: .rounded))
-                        .keyboardType(.decimalPad)
-                        .multilineTextAlignment(.center)
-                        .focused($weightFieldFocused)
-                        .fixedSize()
-                        .onSubmit { commitWeightEdit() }
-                } else {
-                    Text(String(format: "%.1f", currentWeight))
-                        .font(.system(size: 64, weight: .bold, design: .rounded))
-                        .contentTransition(.numericText())
-                }
+        VStack(spacing: weightDisplaySpacing) {
+            HStack(alignment: .firstTextBaseline, spacing: 8) {
+                weightValue
 
-                Text("lbs")
-                    .font(.title3)
-                    .fontWeight(.medium)
-                    .foregroundStyle(.secondary)
-                    .padding(.bottom, 4)
+                scanCameraButton
             }
-            .onTapGesture {
-                weightText = String(format: "%.1f", currentWeight)
-                isEditingWeight = true
-                weightFieldFocused = true
-            }
+
+            quickAdjustRow
         }
         .onChange(of: weightFieldFocused) { _, focused in
             if !focused && isEditingWeight {
@@ -183,66 +140,93 @@ struct EntryView: View {
         }
     }
 
-    // MARK: - Stepper
+    private var weightValue: some View {
+        HStack(alignment: .firstTextBaseline, spacing: 4) {
+            if isEditingWeight {
+                TextField("0.0", text: $weightText)
+                    .font(.system(size: 68, weight: .regular, design: .rounded))
+                    .keyboardType(.decimalPad)
+                    .multilineTextAlignment(.center)
+                    .focused($weightFieldFocused)
+                    .fixedSize()
+                    .onSubmit { commitWeightEdit() }
+            } else {
+                Text(String(format: "%.1f", currentWeight))
+                    .font(.system(size: 68, weight: .regular, design: .rounded))
+                    .contentTransition(.numericText())
+            }
 
-    private var stepperRow: some View {
-        Stepper("Weight") {
-            withAnimation(.snappy) {
-                currentWeight += step
-            }
-        } onDecrement: {
-            withAnimation(.snappy) {
-                currentWeight -= step
-            }
+            Text("lbs")
+                .font(.title2.weight(.medium))
+                .fontWeight(.medium)
+                .foregroundStyle(.secondary)
+                .padding(.bottom, 4)
         }
-        .labelsHidden()
-        .onChange(of: currentWeight) {
-            saved = false
+        .contentShape(Rectangle())
+        .onTapGesture {
+            weightText = String(format: "%.1f", currentWeight)
+            isEditingWeight = true
+            weightFieldFocused = true
         }
     }
 
-    // MARK: - Save Button
-
-    private var saveButton: some View {
-        Button {
-            isSaveOptionsPresented = true
-        } label: {
-            Text(saved ? "Saved" : "Save")
-                .contentTransition(.interpolate)
+    private var bottomActionRow: some View {
+        GlassEffectContainer(spacing: 18) {
+            HStack {
+                Button {
+                    saveEntry()
+                } label: {
+                    HStack(spacing: 8) {
+                        Image(systemName: saved ? "checkmark.circle.fill" : "square.and.arrow.down.fill")
+                            .contentTransition(.symbolEffect(.replace))
+                        Text(saved ? "Saved" : "Save")
+                    }
+                    .font(.headline.weight(.semibold))
+                    .frame(maxWidth: .infinity)
+                    .frame(height: 42)
+                }
+                .buttonStyle(.glassProminent)
+                .disabled(saved)
+            }
+            .frame(maxWidth: .infinity)
+            .padding(.horizontal, 6)
+            .padding(.vertical, 6)
         }
-        .buttonStyle(.glass)
-        .controlSize(.large)
-        .disabled(saved)
+        .frame(width: bottomBarWidth)
     }
 
-    // MARK: - Camera Button
-
-    private var cameraButton: some View {
+    private var scanCameraButton: some View {
         Button {
             showCamera = true
         } label: {
-            Label("Scan Scale", systemImage: "camera.viewfinder")
-                .font(.subheadline.weight(.medium))
+            Image(systemName: "camera.viewfinder")
+                .font(.subheadline.weight(.semibold))
+                .foregroundStyle(tintColor)
+                .frame(width: 34, height: 34)
         }
-        .buttonStyle(.glass)
+        .buttonStyle(.plain)
     }
 
-    private var editActionsBar: some View {
-        HStack(spacing: 12) {
-            Button("Cancel") {
-                cancelWeightEdit()
+    private var quickAdjustRow: some View {
+        HStack(spacing: 16) {
+            quickAdjustButton(systemImage: "minus") {
+                adjustWeight(by: -step)
             }
 
-            Spacer()
-
-            Button("Done") {
-                commitWeightEdit()
+            quickAdjustButton(systemImage: "plus") {
+                adjustWeight(by: step)
             }
-            .fontWeight(.semibold)
         }
-        .padding(.horizontal, 16)
-        .padding(.vertical, 12)
-        .background(.ultraThinMaterial, in: Capsule())
+    }
+
+    private func quickAdjustButton(systemImage: String, action: @escaping () -> Void) -> some View {
+        Button(action: action) {
+            Image(systemName: systemImage)
+                .font(.title3.weight(.semibold))
+                .foregroundStyle(tintColor)
+                .frame(width: 52, height: 44)
+        }
+        .buttonStyle(.glass)
     }
 
     // MARK: - Actions
@@ -256,24 +240,30 @@ struct EntryView: View {
         if let value = WeightCalculations.parseWeight(from: weightText) {
             withAnimation(.snappy) {
                 currentWeight = value
+                saved = false
             }
         }
         isEditingWeight = false
+        weightFieldFocused = false
     }
 
-    private func presentProgressPhotoCamera() {
-        guard UIImagePickerController.isSourceTypeAvailable(.camera) else {
-            isCameraUnavailableAlertPresented = true
-            return
+    private func adjustWeight(by delta: Double) {
+        let nextWeight = max(currentWeight + delta, 0.1)
+        let roundedWeight = (nextWeight * 10).rounded() / 10
+
+        withAnimation(.snappy) {
+            currentWeight = roundedWeight
+            saved = false
         }
-
-        isProgressPhotoCameraPresented = true
     }
 
-    private func saveEntry(photoData: Data?) {
+    private func saveEntry() {
         // Compute the streak including today's new entry
         let streak = WeightCalculations.currentStreak(from: entries, includingToday: true)
-        let entry = WeightEntry(weight: currentWeight, streakCount: streak, photoData: photoData)
+        let entry = WeightEntry(
+            weight: currentWeight,
+            streakCount: streak
+        )
         modelContext.insert(entry)
         WeightWidgetSnapshotStore.refresh(using: [entry] + entries)
 
@@ -287,6 +277,8 @@ struct EntryView: View {
 
         Task { @MainActor in
             saved = true
+            historySelectedEntry = entry
+            historyScrollRequest += 1
             selectedTab = 1
         }
     }
@@ -335,7 +327,12 @@ struct ProgressPhotoCameraView: UIViewControllerRepresentable {
 
 
 #Preview {
-    EntryView(selectedTab: .constant(0))
+    EntryView(
+        selectedTab: .constant(0),
+        historyScrollRequest: .constant(0),
+        historySelectedEntry: .constant(nil)
+    )
         .modelContainer(for: WeightEntry.self, inMemory: true)
         .environment(HealthKitManager())
+        .environment(NotificationManager())
 }

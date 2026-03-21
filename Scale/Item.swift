@@ -18,12 +18,13 @@ final class WeightEntry {
     var weight: Double
     var timestamp: Date
     var source: WeightSource
+    var note: String?
     /// The consecutive-day logging streak at the time this entry was saved.
     var streakCount: Int
     /// The UUID of the corresponding HealthKit sample, used to delete it when this entry is removed.
     var healthKitUUID: UUID?
     /// All progress photos attached to this entry.
-    var photosData: [Data]
+    var photosData: [Data] = []
 
     /// Convenience accessor for the first (primary) photo.
     var photoData: Data? { photosData.first }
@@ -32,6 +33,7 @@ final class WeightEntry {
         weight: Double,
         timestamp: Date = Date(),
         source: WeightSource = .manual,
+        note: String? = nil,
         streakCount: Int = 0,
         healthKitUUID: UUID? = nil,
         photoData: Data? = nil
@@ -39,6 +41,7 @@ final class WeightEntry {
         self.weight = weight
         self.timestamp = timestamp
         self.source = source
+        self.note = note
         self.streakCount = streakCount
         self.healthKitUUID = healthKitUUID
         self.photosData = photoData.map { [$0] } ?? []

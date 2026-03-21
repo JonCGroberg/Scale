@@ -87,22 +87,10 @@ final class NotificationManager {
         guard enabled, !reminders.isEmpty else { return }
 
         for reminder in reminders {
-            var dateComponents = DateComponents()
-            dateComponents.hour = reminder.hour
-            dateComponents.minute = reminder.minute
-
-            let trigger = UNCalendarNotificationTrigger(dateMatching: dateComponents, repeats: true)
-
-            let content = UNMutableNotificationContent()
-            content.title = reminder.name
-            content.body = notificationBody()
-            content.sound = .default
-            content.categoryIdentifier = categoryIdentifier
-
-            let request = UNNotificationRequest(
-                identifier: "weightReminder_\(reminder.id.uuidString)",
-                content: content,
-                trigger: trigger
+            let request = Self.makeNotificationRequest(
+                reminder: reminder,
+                body: notificationBody(),
+                categoryIdentifier: categoryIdentifier
             )
 
             center.add(request)
@@ -116,7 +104,7 @@ final class NotificationManager {
     /// surfaces a motivating message; otherwise a generic prompt is shown.
     private func notificationBody() -> String {
         guard let context = modelContext else {
-            return "Tap to log your weight."
+            return Self.notificationBody(forPotentialStreak: 0)
         }
         let descriptor = FetchDescriptor<WeightEntry>(
             sortBy: [SortDescriptor(\.timestamp, order: .reverse)]
@@ -125,9 +113,47 @@ final class NotificationManager {
         // `includingToday: true` returns what the streak will be once today is logged,
         // which is exactly what we want to motivate the user to act on.
         let potentialStreak = WeightCalculations.currentStreak(from: entries, includingToday: true)
+        return Self.notificationBody(forPotentialStreak: potentialStreak)
+    }
+
+    static func notificationBody(forPotentialStreak potentialStreak: Int) -> String {
         if potentialStreak >= 2 {
             return "Keep your \(potentialStreak)-day streak going — log your weight today!"
         }
         return "Tap to log your weight."
+    }
+
+    static func reminderDateComponents(for reminder: Reminder) -> DateComponents {
+        var dateComponents = DateComponents()
+        dateComponents.hour = reminder.hour
+        dateComponents.minute = reminder.minute
+        return dateComponents
+    }
+
+    static func requestIdentifier(for reminder: Reminder) -> String {
+        "weightReminder_\(reminder.id.uuidString)"
+    }
+
+    static func makeNotificationRequest(
+        reminder: Reminder,
+        body: String,
+        categoryIdentifier: String
+    ) -> UNNotificationRequest {
+        let trigger = UNCalendarNotificationTrigger(
+            dateMatching: reminderDateComponents(for: reminder),
+            repeats: true
+        )
+
+        let content = UNMutableNotificationContent()
+        content.title = reminder.name
+        content.body = body
+        content.sound = .default
+        content.categoryIdentifier = categoryIdentifier
+
+        return UNNotificationRequest(
+            identifier: requestIdentifier(for: reminder),
+            content: content,
+            trigger: trigger
+        )
     }
 }

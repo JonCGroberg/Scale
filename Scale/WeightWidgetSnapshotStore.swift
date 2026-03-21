@@ -24,8 +24,12 @@ enum WeightWidgetSnapshotStore {
     }
 
     static func load() -> WeightWidgetSnapshot {
+        load(from: snapshotURL())
+    }
+
+    static func load(from url: URL?) -> WeightWidgetSnapshot {
         guard
-            let url = snapshotURL(),
+            let url,
             let data = try? Data(contentsOf: url),
             let snapshot = try? decoder.decode(WeightWidgetSnapshot.self, from: data)
         else {
@@ -37,7 +41,16 @@ enum WeightWidgetSnapshotStore {
 
     @discardableResult
     static func write(_ snapshot: WeightWidgetSnapshot) -> Bool {
-        guard let url = snapshotURL() else { return false }
+        write(snapshot, to: snapshotURL())
+    }
+
+    @discardableResult
+    static func write(
+        _ snapshot: WeightWidgetSnapshot,
+        to url: URL?,
+        reloadTimelines: Bool = true
+    ) -> Bool {
+        guard let url else { return false }
 
         let encoder = JSONEncoder()
         encoder.dateEncodingStrategy = .iso8601
@@ -45,8 +58,10 @@ enum WeightWidgetSnapshotStore {
         do {
             let data = try encoder.encode(snapshot)
             try data.write(to: url, options: [.atomic])
-            WidgetCenter.shared.reloadTimelines(ofKind: widgetKind)
-            WidgetCenter.shared.reloadTimelines(ofKind: addWeightWidgetKind)
+            if reloadTimelines {
+                WidgetCenter.shared.reloadTimelines(ofKind: widgetKind)
+                WidgetCenter.shared.reloadTimelines(ofKind: addWeightWidgetKind)
+            }
             return true
         } catch {
             return false

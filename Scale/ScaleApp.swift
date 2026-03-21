@@ -15,20 +15,16 @@ struct ScaleApp: App {
         let schema = Schema([
             WeightEntry.self,
         ])
-        let modelConfiguration = ModelConfiguration(schema: schema, isStoredInMemoryOnly: false)
+        let diskConfiguration = ModelConfiguration(schema: schema, isStoredInMemoryOnly: false)
+        let inMemoryConfiguration = ModelConfiguration(schema: schema, isStoredInMemoryOnly: true)
 
         do {
-            return try ModelContainer(for: schema, configurations: [modelConfiguration])
+            return try Self.makeModelContainer(schema: schema, configuration: diskConfiguration)
         } catch {
-            // If the existing store is incompatible with the current schema,
-            // delete it and create a fresh one.
-            let url = modelConfiguration.url
+            NSLog("Falling back to in-memory SwiftData store after persistent store failure: %@", String(describing: error))
+
             do {
-                try FileManager.default.removeItem(at: url)
-                // Also remove journal/wal files if present
-                try? FileManager.default.removeItem(at: url.deletingLastPathComponent().appendingPathComponent(url.lastPathComponent + "-wal"))
-                try? FileManager.default.removeItem(at: url.deletingLastPathComponent().appendingPathComponent(url.lastPathComponent + "-shm"))
-                return try ModelContainer(for: schema, configurations: [modelConfiguration])
+                return try ModelContainer(for: schema, configurations: [inMemoryConfiguration])
             } catch {
                 fatalError("Could not create ModelContainer: \(error)")
             }
@@ -69,6 +65,46 @@ struct ScaleApp: App {
         }
         .modelContainer(sharedModelContainer)
     }
+
+    static func makeModelContainer(
+        schema: Schema,
+        configuration: ModelConfiguration,
+        fileManager: FileManager = .default
+    ) throws -> ModelContainer {
+        do {
+            return try ModelContainer(for: schema, configurations: [configuration])
+        } catch {
+            try resetStoreFiles(for: configuration, fileManager: fileManager)
+            return try ModelContainer(for: schema, configurations: [configuration])
+        }
+    }
+
+    static func resetStoreFiles(
+        for configuration: ModelConfiguration,
+        fileManager: FileManager
+    ) throws {
+        let storeURL = configuration.url
+
+        if fileManager.fileExists(atPath: storeURL.path()) {
+            try fileManager.removeItem(at: storeURL)
+        }
+
+        let siblingURLs = try fileManager.contentsOfDirectory(
+            at: storeURL.deletingLastPathComponent(),
+            includingPropertiesForKeys: nil
+        )
+
+        for siblingURL in storeCompanionURLs(for: storeURL, among: siblingURLs) {
+            try? fileManager.removeItem(at: siblingURL)
+        }
+    }
+
+    static func storeCompanionURLs(for storeURL: URL, among siblingURLs: [URL]) -> [URL] {
+        let baseName = storeURL.lastPathComponent
+        return siblingURLs.filter { siblingURL in
+            siblingURL != storeURL && siblingURL.lastPathComponent.hasPrefix(baseName)
+        }
+    }
 }
 // MARK: - Notification Delegate
 
@@ -93,4 +129,3 @@ final class NotificationDelegate: NSObject, UNUserNotificationCenterDelegate {
 extension Notification.Name {
     static let didTapWeightReminder = Notification.Name("didTapWeightReminder")
 }
-

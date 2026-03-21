@@ -45,17 +45,10 @@ struct ChangeBadge: View {
             }
 
             if let avg = summary.average {
-                HStack(spacing: 4) {
-                    Image(systemName: "chart.line.text.clipboard")
-                        .font(.caption2)
-                        .fontWeight(.semibold)
-                        .foregroundStyle(tintColor)
-
-                    Text(String(format: "%.1f lbs", avg))
-                        .font(.caption)
-                        .fontWeight(.bold)
-                        .contentTransition(.numericText())
-                }
+                Text(String(format: "%.1f lbs", avg))
+                    .font(.caption)
+                    .fontWeight(.bold)
+                    .contentTransition(.numericText())
 
                 Circle()
                     .fill(tintColor.opacity(0.4))
@@ -75,17 +68,11 @@ struct ChangeBadge: View {
                     .fill(tintColor.opacity(0.4))
                     .frame(width: 4, height: 4)
 
-                HStack(spacing: 2) {
-                    Image(systemName: "scalemass.fill")
-                        .font(.caption2)
-                        .foregroundStyle(lbs <= 0 ? .green : .red)
-
-                    Text(String(format: "%+.1f lbs", lbs))
-                        .font(.caption2)
-                        .fontWeight(.bold)
-                        .foregroundStyle(lbs <= 0 ? .green : .red)
-                        .contentTransition(.numericText())
-                }
+                Text(String(format: "%+.1f lbs", lbs))
+                    .font(.caption2)
+                    .fontWeight(.bold)
+                    .foregroundStyle(tintColor)
+                    .contentTransition(.numericText())
             }
         }
         .padding(.horizontal, 14)

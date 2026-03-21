@@ -39,6 +39,32 @@ struct WeightEntryTests {
         #expect(entry.photoData == photoData)
     }
 
+    @Test func initializesWithNote() {
+        let entry = WeightEntry(weight: 150.0, note: "Felt strong today")
+        #expect(entry.note == "Felt strong today")
+    }
+
+    @Test func initializesWithSourceStreakAndHealthKitIdentifier() {
+        let uuid = UUID()
+        let entry = WeightEntry(
+            weight: 151.2,
+            source: .appleHealth,
+            streakCount: 7,
+            healthKitUUID: uuid
+        )
+
+        #expect(entry.source == .appleHealth)
+        #expect(entry.streakCount == 7)
+        #expect(entry.healthKitUUID == uuid)
+    }
+
+    @Test func photoDataReturnsNilWhenNoPhotosExist() {
+        let entry = WeightEntry(weight: 150.0)
+
+        #expect(entry.photosData.isEmpty)
+        #expect(entry.photoData == nil)
+    }
+
     @Test func insertEntry() throws {
         let container = try makeContainer()
         let context = ModelContext(container)
@@ -91,6 +117,17 @@ struct WeightEntryTests {
         #expect(entries.first?.photoData == photoData)
     }
 
+    @Test func persistsNote() throws {
+        let container = try makeContainer()
+        let context = ModelContext(container)
+        let entry = WeightEntry(weight: 145.0, note: "Post-workout")
+        context.insert(entry)
+        try context.save()
+
+        let entries = try context.fetch(FetchDescriptor<WeightEntry>())
+        #expect(entries.first?.note == "Post-workout")
+    }
+
     @Test func sortByTimestamp() throws {
         let container = try makeContainer()
         let context = ModelContext(container)
@@ -107,6 +144,23 @@ struct WeightEntryTests {
         descriptor.fetchLimit = 1
         let latest = try context.fetch(descriptor)
         #expect(latest.first?.weight == 148.0)
+    }
+}
+
+// MARK: - Weight Source Tests
+
+struct WeightSourceTests {
+
+    @Test func rawValuesMatchStoredRepresentations() {
+        #expect(WeightSource.manual.rawValue == "manual")
+        #expect(WeightSource.appleHealth.rawValue == "appleHealth")
+    }
+
+    @Test func codableRoundTripPreservesSource() throws {
+        let encoded = try JSONEncoder().encode(WeightSource.appleHealth)
+        let decoded = try JSONDecoder().decode(WeightSource.self, from: encoded)
+
+        #expect(decoded == .appleHealth)
     }
 }
 
@@ -215,6 +269,34 @@ struct WeightParsingTests {
 
     @Test func parseWeightAcceptsLargeValue() {
         #expect(WeightCalculations.parseWeight(from: "350.5") == 350.5)
+    }
+}
+
+// MARK: - Weight Stepper Tests
+
+struct WeightStepperTests {
+
+    @Test func decrementReducesWeightByOneTenth() {
+        let updatedWeight = WeightCalculations.decrementWeight(142.5)
+        #expect(updatedWeight == 142.4)
+    }
+
+    @Test func incrementRaisesWeightByOneTenth() {
+        let updatedWeight = WeightCalculations.incrementWeight(142.5)
+        #expect(updatedWeight == 142.6)
+    }
+
+    @Test func decrementClampsAtZero() {
+        let updatedWeight = WeightCalculations.decrementWeight(0.0)
+        #expect(updatedWeight == 0.0)
+    }
+
+    @Test func stepperRoundsFloatingPointNoiseToOneDecimalPlace() {
+        let decrementedWeight = WeightCalculations.decrementWeight(142.3)
+        let incrementedWeight = WeightCalculations.incrementWeight(142.3)
+
+        #expect(decrementedWeight == 142.2)
+        #expect(incrementedWeight == 142.4)
     }
 }
 
@@ -457,6 +539,18 @@ struct PercentageChangeTests {
         let expected = ((155.0 - 150.0) / 150.0) * 100
         #expect(abs(pct! - expected) < 0.01)
     }
+
+    @Test func percentageIsNilWhenStartingWeightIsZero() {
+        let now = Date()
+        let entries = [
+            WeightEntry(weight: 180.0, timestamp: now),
+            WeightEntry(weight: 0.0, timestamp: now.addingTimeInterval(-5 * 86400))
+        ]
+
+        let pct = WeightCalculations.percentageChange(from: entries, over: .month)
+
+        #expect(pct == nil)
+    }
 }
 
 // MARK: - Derived Snapshot Tests
@@ -475,7 +569,7 @@ struct DerivedSnapshotTests {
 
         #expect(summary.streak == WeightCalculations.currentStreak(from: entries))
         #expect(summary.average == WeightCalculations.averageWeight(from: entries, over: .week))
-        #expect(summary.percentChange == WeightCalculations.percentageChange(from: entries, over: .week))
+        #expect(summary.weightChange == 4.0)
     }
 
     @Test func chartSnapshotFiltersAndSortsEntriesInPeriod() {
@@ -488,10 +582,26 @@ struct DerivedSnapshotTests {
         let snapshot = WeightCalculations.chartSnapshot(from: entries, over: .week)
 
         #expect(snapshot.entries.count == 2)
+        #expect(snapshot.smoothedEntries.count == 2)
         #expect(snapshot.entries[0].timestamp == midEntry.timestamp)
         #expect(snapshot.entries[1].timestamp == recentEntry.timestamp)
         #expect(snapshot.yDomain.lowerBound == 178.0)
         #expect(snapshot.yDomain.upperBound == 182.0)
+    }
+
+    @Test func chartSnapshotBuildsDampedSmoothedSeries() {
+        let now = Date()
+        let firstEntry = WeightEntry(weight: 180.0, timestamp: now.addingTimeInterval(-6 * 86400))
+        let secondEntry = WeightEntry(weight: 190.0, timestamp: now.addingTimeInterval(-4 * 86400))
+        let thirdEntry = WeightEntry(weight: 170.0, timestamp: now.addingTimeInterval(-2 * 86400))
+        let entries = [thirdEntry, secondEntry, firstEntry]
+
+        let snapshot = WeightCalculations.chartSnapshot(from: entries, over: .month)
+
+        #expect(snapshot.smoothedEntries.count == 3)
+        #expect(snapshot.smoothedEntries[0].weight == 180.0)
+        #expect(abs(snapshot.smoothedEntries[1].weight - 187.0) < 0.0001)
+        #expect(abs(snapshot.smoothedEntries[2].weight - 175.1) < 0.0001)
     }
 
     @Test func logSnapshotBuildsGroupedEntriesAndStreaks() {
@@ -508,6 +618,7 @@ struct DerivedSnapshotTests {
 
         #expect(snapshot.groupedEntries.count == 2)
         #expect(snapshot.chart.entries.count == 3)
+        #expect(snapshot.chart.smoothedEntries.count == 3)
         #expect(snapshot.streaksByDay[todayKey] == 2)
         #expect(snapshot.streaksByDay[yesterdayKey] == 1)
     }
@@ -542,6 +653,21 @@ struct DerivedSnapshotTests {
 
         let futureCells = snapshot.weeks[0].filter { $0.date > today }
         #expect(futureCells.allSatisfy { $0.entryCount == 0 && $0.intensity == 0 })
+    }
+
+    @Test func chartSnapshotIsEmptyWhenPeriodHasNoEntries() {
+        let oldEntry = WeightEntry(weight: 180.0, timestamp: Date().addingTimeInterval(-500 * 86400))
+
+        let snapshot = WeightCalculations.chartSnapshot(from: [oldEntry], over: .week)
+
+        #expect(snapshot.entries.isEmpty)
+        #expect(snapshot.smoothedEntries.isEmpty)
+        #expect(snapshot.yDomain == 0...1)
+    }
+
+    @Test func heatmapSnapshotReturnsEmptyForNonPositiveWeekCounts() {
+        #expect(WeightCalculations.heatmapSnapshot(from: [], weeks: 0) == .empty)
+        #expect(WeightCalculations.heatmapSnapshot(from: [], weeks: -3) == .empty)
     }
 
 }
@@ -582,6 +708,36 @@ final class WeightWidgetSnapshotXCTests: XCTestCase {
         XCTAssertNil(snapshot.latestTimestamp)
         XCTAssertEqual(snapshot.streakCount, 0)
         XCTAssertNil(snapshot.monthAverage)
+        XCTAssertNil(snapshot.monthPercentChange)
+    }
+
+    func testSnapshotUsesMostRecentEntryAfterSorting() {
+        let now = Date()
+        let older = WeightEntry(weight: 190.0, timestamp: now.addingTimeInterval(-86400))
+        let newer = WeightEntry(weight: 188.2, timestamp: now)
+
+        let snapshot = WeightWidgetSnapshot.make(
+            from: [older, newer],
+            tintRawValue: AppTint.red.rawValue,
+            now: now
+        )
+
+        XCTAssertEqual(snapshot.latestWeight, 188.2)
+        XCTAssertEqual(snapshot.latestTimestamp, now)
+        XCTAssertEqual(snapshot.appTintRawValue, AppTint.red.rawValue)
+    }
+
+    func testSnapshotLeavesMonthPercentChangeNilForSingleEntry() {
+        let now = Date()
+        let snapshot = WeightWidgetSnapshot.make(
+            from: [WeightEntry(weight: 175.0, timestamp: now)],
+            tintRawValue: AppTint.orange.rawValue,
+            now: now
+        )
+
+        XCTAssertEqual(snapshot.latestWeight, 175.0)
+        XCTAssertEqual(snapshot.streakCount, 1)
+        XCTAssertEqual(snapshot.monthAverage, 175.0)
         XCTAssertNil(snapshot.monthPercentChange)
     }
 }
@@ -629,7 +785,34 @@ struct TimePeriodTests {
 
 // MARK: - Reminder Model Tests
 
+@MainActor
 struct ReminderModelTests {
+    private let remindersEnabledKey = "remindersEnabled"
+    private let savedRemindersKey = "savedReminders"
+
+    private func withClearedReminderDefaults(_ body: () throws -> Void) rethrows {
+        let defaults = UserDefaults.standard
+        let existingEnabled = defaults.object(forKey: remindersEnabledKey)
+        let existingReminders = defaults.object(forKey: savedRemindersKey)
+
+        defaults.removeObject(forKey: remindersEnabledKey)
+        defaults.removeObject(forKey: savedRemindersKey)
+        defer {
+            if let existingEnabled {
+                defaults.set(existingEnabled, forKey: remindersEnabledKey)
+            } else {
+                defaults.removeObject(forKey: remindersEnabledKey)
+            }
+
+            if let existingReminders {
+                defaults.set(existingReminders, forKey: savedRemindersKey)
+            } else {
+                defaults.removeObject(forKey: savedRemindersKey)
+            }
+        }
+
+        try body()
+    }
 
     @Test func reminderDefaultValues() {
         let reminder = Reminder()
@@ -669,40 +852,58 @@ struct ReminderModelTests {
     }
 
     @Test func enabledFlagDefaultsToFalse() {
-        UserDefaults.standard.removeObject(forKey: "remindersEnabled")
-        #expect(UserDefaults.standard.bool(forKey: "remindersEnabled") == false)
+        withClearedReminderDefaults {
+            #expect(UserDefaults.standard.bool(forKey: remindersEnabledKey) == false)
+        }
     }
 
     @Test func enabledFlagToggles() {
-        let defaults = UserDefaults.standard
-        defaults.set(true, forKey: "remindersEnabled")
-        #expect(defaults.bool(forKey: "remindersEnabled") == true)
+        withClearedReminderDefaults {
+            let defaults = UserDefaults.standard
+            defaults.set(true, forKey: remindersEnabledKey)
+            #expect(defaults.bool(forKey: remindersEnabledKey) == true)
 
-        defaults.set(false, forKey: "lets aremindersEnabled")
-        #expect(defaults.bool(forKey: "remindersEnabled") == false)
+            defaults.set(false, forKey: remindersEnabledKey)
+            #expect(defaults.bool(forKey: remindersEnabledKey) == false)
+        }
     }
 
     @Test func saveAndLoadReminders() {
-        let manager = NotificationManager()
-        let reminders = [
-            Reminder(name: "Morning", hour: 8, minute: 0),
-            Reminder(name: "Night", hour: 21, minute: 30)
-        ]
-        manager.saveReminders(reminders)
-        let loaded = manager.loadReminders()
-        #expect(loaded == reminders)
+        withClearedReminderDefaults {
+            let manager = NotificationManager()
+            let reminders = [
+                Reminder(name: "Morning", hour: 8, minute: 0),
+                Reminder(name: "Night", hour: 21, minute: 30)
+            ]
+            manager.saveReminders(reminders)
+            let loaded = manager.loadReminders()
+            #expect(loaded == reminders)
+        }
     }
 
     @Test func loadRemindersReturnsEmptyWhenNoneSaved() {
-        UserDefaults.standard.removeObject(forKey: "savedReminders")
-        let manager = NotificationManager()
-        let loaded = manager.loadReminders()
-        #expect(loaded.isEmpty)
+        withClearedReminderDefaults {
+            let manager = NotificationManager()
+            let loaded = manager.loadReminders()
+            #expect(loaded.isEmpty)
+        }
+    }
+
+    @Test func loadRemindersReturnsEmptyForCorruptData() {
+        withClearedReminderDefaults {
+            UserDefaults.standard.set(Data([0xDE, 0xAD, 0xBE, 0xEF]), forKey: savedRemindersKey)
+
+            let manager = NotificationManager()
+            let loaded = manager.loadReminders()
+
+            #expect(loaded.isEmpty)
+        }
     }
 }
 
 // MARK: - Notification Name Tests
 
+@MainActor
 struct NotificationNameTests {
 
     @Test func notificationNameIsCorrect() {
@@ -746,11 +947,244 @@ private final class UnsafeSendable<T>: @unchecked Sendable {
 // MARK: - NotificationManager Initialization Tests
 
 struct NotificationManagerTests {
+    private let remindersEnabledKey = "remindersEnabled"
+    private let savedRemindersKey = "savedReminders"
+
+    private func withClearedReminderDefaults(_ body: () throws -> Void) rethrows {
+        let defaults = UserDefaults.standard
+        let existingEnabled = defaults.object(forKey: remindersEnabledKey)
+        let existingReminders = defaults.object(forKey: savedRemindersKey)
+
+        defaults.removeObject(forKey: remindersEnabledKey)
+        defaults.removeObject(forKey: savedRemindersKey)
+        defer {
+            if let existingEnabled {
+                defaults.set(existingEnabled, forKey: remindersEnabledKey)
+            } else {
+                defaults.removeObject(forKey: remindersEnabledKey)
+            }
+
+            if let existingReminders {
+                defaults.set(existingReminders, forKey: savedRemindersKey)
+            } else {
+                defaults.removeObject(forKey: savedRemindersKey)
+            }
+        }
+
+        try body()
+    }
 
     @Test func initializedWithIsAuthorizedFalse() {
         let manager = NotificationManager()
         // Before any authorization request, the default should be false
         #expect(manager.isAuthorized == false)
+    }
+
+    @Test func loadRemindersRoundTripsEmptyArray() {
+        withClearedReminderDefaults {
+            let manager = NotificationManager()
+            manager.saveReminders([])
+            #expect(manager.loadReminders().isEmpty)
+        }
+    }
+
+    @Test func notificationBodyUsesGenericCopyBelowThreshold() {
+        #expect(NotificationManager.notificationBody(forPotentialStreak: 0) == "Tap to log your weight.")
+        #expect(NotificationManager.notificationBody(forPotentialStreak: 1) == "Tap to log your weight.")
+    }
+
+    @Test func notificationBodyIncludesStreakAtThresholdAndAbove() {
+        #expect(NotificationManager.notificationBody(forPotentialStreak: 2) == "Keep your 2-day streak going — log your weight today!")
+        #expect(NotificationManager.notificationBody(forPotentialStreak: 9) == "Keep your 9-day streak going — log your weight today!")
+    }
+
+    @Test func reminderDateComponentsMatchReminderTime() {
+        let reminder = Reminder(name: "Evening", hour: 21, minute: 45)
+
+        let components = NotificationManager.reminderDateComponents(for: reminder)
+
+        #expect(components.hour == 21)
+        #expect(components.minute == 45)
+    }
+
+    @Test func requestIdentifierUsesReminderID() {
+        let reminder = Reminder(id: UUID(uuidString: "00000000-0000-0000-0000-000000000123")!)
+
+        #expect(
+            NotificationManager.requestIdentifier(for: reminder)
+            == "weightReminder_00000000-0000-0000-0000-000000000123"
+        )
+    }
+
+    @Test func makeNotificationRequestUsesReminderBodyAndCategory() {
+        let reminder = Reminder(
+            id: UUID(uuidString: "00000000-0000-0000-0000-000000000456")!,
+            name: "Morning Weigh In",
+            hour: 7,
+            minute: 15
+        )
+
+        let request = NotificationManager.makeNotificationRequest(
+            reminder: reminder,
+            body: "Test body",
+            categoryIdentifier: "WEIGHT_REMINDER"
+        )
+
+        #expect(request.identifier == "weightReminder_00000000-0000-0000-0000-000000000456")
+        #expect(request.content.title == "Morning Weigh In")
+        #expect(request.content.body == "Test body")
+        #expect(request.content.categoryIdentifier == "WEIGHT_REMINDER")
+
+        let trigger = request.trigger as? UNCalendarNotificationTrigger
+        #expect(trigger != nil)
+        #expect(trigger?.repeats == true)
+        #expect(trigger?.dateComponents.hour == 7)
+        #expect(trigger?.dateComponents.minute == 15)
+    }
+}
+
+// MARK: - HealthKit Import Plan Tests
+
+struct HealthKitImportPlanTests {
+
+    private func sample(
+        uuid: UUID = UUID(),
+        daysAgo: Int,
+        weight: Double,
+        bundleID: String = "com.example.health"
+    ) -> HealthKitManager.ImportedSample {
+        HealthKitManager.ImportedSample(
+            uuid: uuid,
+            startDate: Calendar.current.date(byAdding: .day, value: -daysAgo, to: Date())!,
+            weightInPounds: weight,
+            sourceBundleIdentifier: bundleID
+        )
+    }
+
+    @Test func importPlanSkipsSelfAuthoredAndDuplicateEntries() {
+        let duplicateDate = Calendar.current.date(byAdding: .day, value: -2, to: Date())!
+        let existing = [
+            WeightEntry(weight: 180.0, timestamp: duplicateDate),
+            WeightEntry(weight: 179.0)
+        ]
+        let samples = [
+            HealthKitManager.ImportedSample(
+                uuid: UUID(),
+                startDate: duplicateDate,
+                weightInPounds: 181.0,
+                sourceBundleIdentifier: "com.example.health"
+            ),
+            sample(daysAgo: 1, weight: 178.0, bundleID: "com.groberg.Scale"),
+            sample(daysAgo: 3, weight: 177.0)
+        ]
+
+        let plan = HealthKitManager.makeImportPlan(
+            samples: samples,
+            existingEntries: existing,
+            ourBundleID: "com.groberg.Scale"
+        )
+
+        #expect(plan.importedCount == 1)
+        #expect(plan.skippedCount == 2)
+        #expect(plan.insertedEntries.count == 1)
+        #expect(plan.insertedEntries[0].weightInPounds == 177.0)
+    }
+
+    @Test func importPlanRemovesStaleAppleHealthEntries() {
+        let staleUUID = UUID()
+        let retainedUUID = UUID()
+        let existing = [
+            WeightEntry(weight: 180.0, source: .appleHealth, healthKitUUID: staleUUID),
+            WeightEntry(weight: 179.0, source: .appleHealth, healthKitUUID: retainedUUID),
+            WeightEntry(weight: 178.0, source: .manual)
+        ]
+        let samples = [
+            sample(uuid: retainedUUID, daysAgo: 1, weight: 179.0),
+            sample(daysAgo: 3, weight: 177.0)
+        ]
+
+        let plan = HealthKitManager.makeImportPlan(
+            samples: samples,
+            existingEntries: existing,
+            ourBundleID: "com.groberg.Scale"
+        )
+
+        #expect(plan.removedCount == 1)
+        #expect(plan.removedEntryIDs.count == 1)
+        #expect(plan.removedEntryIDs.contains(existing[0].persistentModelID))
+        #expect(!plan.removedEntryIDs.contains(existing[1].persistentModelID))
+    }
+
+    @Test func importPlanDoesNotRemoveManualEntriesWithoutMatchingSamples() {
+        let existing = [
+            WeightEntry(weight: 180.0, source: .manual),
+            WeightEntry(weight: 179.0, source: .manual)
+        ]
+
+        let plan = HealthKitManager.makeImportPlan(
+            samples: [],
+            existingEntries: existing,
+            ourBundleID: "com.groberg.Scale"
+        )
+
+        #expect(plan.removedCount == 0)
+        #expect(plan.removedEntryIDs.isEmpty)
+    }
+}
+
+// MARK: - Store Reset Tests
+
+struct StoreResetTests {
+
+    @Test func companionURLsMatchStoreSidecarFilesOnly() {
+        let directory = URL(filePath: "/tmp/ScaleTests")
+        let storeURL = directory.appending(path: "default.store")
+        let siblings = [
+            storeURL,
+            directory.appending(path: "default.store-wal"),
+            directory.appending(path: "default.store-shm"),
+            directory.appending(path: "default.sqlite"),
+            directory.appending(path: "other.store-wal")
+        ]
+
+        let companions = ScaleApp.storeCompanionURLs(for: storeURL, among: siblings)
+
+        #expect(companions.count == 2)
+        #expect(companions.contains(directory.appending(path: "default.store-wal")))
+        #expect(companions.contains(directory.appending(path: "default.store-shm")))
+    }
+
+    @Test func companionURLsReturnEmptyWhenNoMatchesExist() {
+        let directory = URL(filePath: "/tmp/ScaleTests")
+        let storeURL = directory.appending(path: "default.store")
+        let siblings = [
+            directory.appending(path: "other.store"),
+            directory.appending(path: "other.store-wal")
+        ]
+
+        #expect(ScaleApp.storeCompanionURLs(for: storeURL, among: siblings).isEmpty)
+    }
+
+    @Test func resetStoreFilesDeletesStoreAndCompanions() throws {
+        let rootURL = URL(filePath: NSTemporaryDirectory()).appending(path: UUID().uuidString, directoryHint: .isDirectory)
+        try FileManager.default.createDirectory(at: rootURL, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: rootURL) }
+        let storeURL = rootURL.appending(path: "Scale.sqlite")
+        let walURL = rootURL.appending(path: "Scale.sqlite-wal")
+        let shmURL = rootURL.appending(path: "Scale.sqlite-shm")
+        let unrelatedURL = rootURL.appending(path: "Other.sqlite")
+        try Data().write(to: storeURL)
+        try Data().write(to: walURL)
+        try Data().write(to: shmURL)
+        try Data().write(to: unrelatedURL)
+
+        let configuration = ModelConfiguration(url: storeURL)
+        try ScaleApp.resetStoreFiles(for: configuration, fileManager: .default)
+
+        #expect(!FileManager.default.fileExists(atPath: storeURL.path()))
+        #expect(!FileManager.default.fileExists(atPath: walURL.path()))
+        #expect(!FileManager.default.fileExists(atPath: shmURL.path()))
+        #expect(FileManager.default.fileExists(atPath: unrelatedURL.path()))
     }
 }
 
@@ -928,6 +1362,88 @@ struct NotificationManagerModelContextTests {
     }
 }
 
+// MARK: - Streak Map Tests
+
+struct StreakMapTests {
+
+    private var calendar: Calendar { Calendar.current }
+
+    private func day(_ offset: Int) -> Date {
+        calendar.date(byAdding: .day, value: offset, to: calendar.startOfDay(for: Date()))!
+    }
+
+    @Test func streaksByDayAssignsRunLengthsAndZerosForIsolatedDays() {
+        let entries = [
+            WeightEntry(weight: 150.0, timestamp: day(-5)),
+            WeightEntry(weight: 149.0, timestamp: day(-4)),
+            WeightEntry(weight: 148.0, timestamp: day(-2))
+        ]
+
+        let streaks = WeightCalculations.streaksByDay(from: entries)
+
+        #expect(streaks[calendar.startOfDay(for: day(-5))] == 1)
+        #expect(streaks[calendar.startOfDay(for: day(-4))] == 2)
+        #expect(streaks[calendar.startOfDay(for: day(-2))] == 0)
+    }
+
+    @Test func streaksByDayReturnsEmptyForNoEntries() {
+        #expect(WeightCalculations.streaksByDay(from: []).isEmpty)
+    }
+
+    @Test func currentStreakIsZeroWhenTodayHasNoEntry() {
+        let entries = [WeightEntry(weight: 150.0, timestamp: day(-1))]
+
+        #expect(WeightCalculations.currentStreak(from: entries) == 0)
+    }
+}
+
+// MARK: - Widget Snapshot Store Tests
+
+@MainActor
+final class WeightWidgetSnapshotStoreXCTests: XCTestCase {
+
+    func testLoadFallsBackToEmptySnapshotWhenNoContainerIsAvailable() {
+        let snapshot = WeightWidgetSnapshotStore.load()
+
+        XCTAssertNotNil(snapshot)
+    }
+
+    func testWriteReturnsFalseWhenNoContainerIsAvailable() {
+        let result = WeightWidgetSnapshotStore.write(.empty)
+
+        XCTAssertFalse(result)
+    }
+
+    func testWriteAndLoadRoundTripSnapshotAtExplicitURL() throws {
+        let url = URL(filePath: NSTemporaryDirectory()).appending(path: "\(UUID().uuidString).json")
+        defer { try? FileManager.default.removeItem(at: url) }
+        let snapshot = WeightWidgetSnapshot.make(
+            from: [WeightEntry(weight: 182.4, timestamp: .now)],
+            tintRawValue: AppTint.green.rawValue,
+            now: .now
+        )
+
+        XCTAssertTrue(WeightWidgetSnapshotStore.write(snapshot, to: url, reloadTimelines: false))
+        XCTAssertEqual(WeightWidgetSnapshotStore.load(from: url), snapshot)
+    }
+
+    func testLoadReturnsEmptyForCorruptSnapshotData() throws {
+        let url = URL(filePath: NSTemporaryDirectory()).appending(path: "\(UUID().uuidString).json")
+        defer { try? FileManager.default.removeItem(at: url) }
+        try Data("not-json".utf8).write(to: url)
+
+        XCTAssertEqual(WeightWidgetSnapshotStore.load(from: url), .empty)
+    }
+
+    func testLoadReturnsEmptyWhenURLIsNil() {
+        XCTAssertEqual(WeightWidgetSnapshotStore.load(from: nil), .empty)
+    }
+
+    func testWriteReturnsFalseWhenURLIsNil() {
+        XCTAssertFalse(WeightWidgetSnapshotStore.write(.empty, to: nil, reloadTimelines: false))
+    }
+}
+
 // MARK: - App Tint Tests
 
 struct AppTintTests {
@@ -946,5 +1462,14 @@ struct AppTintTests {
 
     @Test func rawValueLookupFindsLavenderTint() {
         #expect(AppTint(rawValue: "lavender") == .lavender)
+    }
+
+    @Test func titlesMatchDisplayNames() {
+        #expect(AppTint.blue.title == "Blue")
+        #expect(AppTint.green.title == "Green")
+        #expect(AppTint.orange.title == "Orange")
+        #expect(AppTint.pink.title == "Pink")
+        #expect(AppTint.lavender.title == "Lavender")
+        #expect(AppTint.red.title == "Red")
     }
 }

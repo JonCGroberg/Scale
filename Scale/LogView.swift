@@ -12,6 +12,18 @@ import UIKit
 import PhotosUI
 
 struct LogView: View {
+    private struct LogGroup: Identifiable {
+        let offset: Int
+        let key: String
+        let value: [WeightEntry]
+
+        var id: String { key }
+    }
+
+    private enum ScrollAnchor: String {
+        case logsSection
+    }
+
     private enum HeatmapLayout {
         static let cellSize: CGFloat = 10
         static let cellSpacing: CGFloat = 4
@@ -89,6 +101,9 @@ struct LogView: View {
     @AppStorage("historyWidgetLayout") private var historyWidgetLayout = HistoryWidget.defaultStorageValue
     @AppStorage("badgePeriodIndex") private var badgePeriodIndex: Int = 1
 
+    let scrollToLogsTrigger: Int
+    let focusedEntry: WeightEntry?
+
     @State private var isScrolling = false
     @State private var visibleSection = ""
     @State private var hideYearTask: Task<Void, Never>?
@@ -96,6 +111,7 @@ struct LogView: View {
     @State private var historyWidgets = HistoryWidget.defaultLayout
     @State private var isCustomizeHistoryPresented = false
     @State private var managedPhotoEntry: WeightEntry?
+    @State private var selectedEntry: WeightEntry?
 
 
     private var snapshot: WeightCalculations.LogSnapshot {
@@ -134,8 +150,18 @@ struct LogView: View {
         return String(format: "%.1f lbs", latest.weight)
     }
 
+    private var chartPeriodIndex: Int {
+        TimePeriod.allCases.firstIndex(of: chartPeriod) ?? 0
+    }
+
     private var hiddenHistoryWidgets: [HistoryWidget] {
         HistoryWidget.allCases.filter { !historyWidgets.contains($0) }
+    }
+
+    private var logGroups: [LogGroup] {
+        snapshot.groupedEntries.enumerated().map { index, element in
+            LogGroup(offset: index, key: element.key, value: element.value)
+        }
     }
 
     var body: some View {
@@ -147,32 +173,36 @@ struct LogView: View {
                 if entries.isEmpty {
                     emptyState
                 } else {
-                    VStack(spacing: 0) {
-                        List {
-                            historyContent
-                        }
-                        .listStyle(.insetGrouped)
-                        .contentMargins(.top, 32)
-                        .contentMargins(.horizontal, 24)
-                        .scrollContentBackground(.hidden)
-                        .onScrollPhaseChange { _, newPhase in
-                            switch newPhase {
-                            case .idle:
-                                hideYearTask?.cancel()
-                                hideYearTask = Task {
-                                    try? await Task.sleep(for: .seconds(0.8))
-                                    guard !Task.isCancelled else { return }
-                                    withAnimation(.easeOut(duration: 0.3)) {
-                                        isScrolling = false
+                    ScrollViewReader { proxy in
+                        VStack(spacing: 0) {
+                            List {
+                                historyContent
+                            }
+                            .listStyle(.insetGrouped)
+                            .contentMargins(.top, 32)
+                            .contentMargins(.horizontal, 24)
+                            .onScrollPhaseChange { _, newPhase in
+                                switch newPhase {
+                                case .idle:
+                                    hideYearTask?.cancel()
+                                    hideYearTask = Task {
+                                        try? await Task.sleep(for: .seconds(0.8))
+                                        guard !Task.isCancelled else { return }
+                                        withAnimation(.easeOut(duration: 0.3)) {
+                                            isScrolling = false
+                                        }
+                                    }
+                                default:
+                                    hideYearTask?.cancel()
+                                    if !isScrolling {
+                                        withAnimation(.easeIn(duration: 0.15)) {
+                                            isScrolling = true
+                                        }
                                     }
                                 }
-                            default:
-                                hideYearTask?.cancel()
-                                if !isScrolling {
-                                    withAnimation(.easeIn(duration: 0.15)) {
-                                        isScrolling = true
-                                    }
-                                }
+                            }
+                            .onChange(of: scrollToLogsTrigger) { _, _ in
+                                scrollToLogs(using: proxy)
                             }
                         }
                     }
@@ -200,25 +230,19 @@ struct LogView: View {
             .safeAreaInset(edge: .top, spacing: 0) {
                 Group {
                     if !entries.isEmpty {
-                        ZStack {
-                            if showChangePill {
-                                ChangeBadge(entries: entries)
+                        HStack {
+                            Spacer(minLength: 0)
+
+                            Button {
+                                isCustomizeHistoryPresented = true
+                            } label: {
+                                Image(systemName: "slider.horizontal.3")
+                                    .font(.caption.weight(.semibold))
+                                    .padding(.horizontal, 12)
+                                    .padding(.vertical, 10)
+                                    .background(.ultraThinMaterial, in: Capsule())
                             }
-                            
-                            HStack {
-                                Spacer(minLength: 0)
-                                
-                                Button {
-                                    isCustomizeHistoryPresented = true
-                                } label: {
-                                    Image(systemName: "slider.horizontal.3")
-                                        .font(.caption.weight(.semibold))
-                                        .padding(.horizontal, 12)
-                                        .padding(.vertical, 10)
-                                        .background(.ultraThinMaterial, in: Capsule())
-                                }
-                                .buttonStyle(.plain)
-                            }
+                            .buttonStyle(.plain)
                         }
                         .frame(maxWidth: .infinity, alignment: .trailing)
                     }
@@ -228,6 +252,14 @@ struct LogView: View {
             }
             .sheet(isPresented: $isCustomizeHistoryPresented) {
                 historyCustomizationSheet
+            }
+            .sheet(item: $selectedEntry) { entry in
+                LogEntryDetailSheet(
+                    entry: entry,
+                    tintColor: tintColor
+                ) {
+                    selectedEntry = nil
+                }
             }
             .sheet(item: $managedPhotoEntry) { entry in
                 PhotoManagementSheet(entry: entry) {
@@ -291,35 +323,50 @@ struct LogView: View {
 
     @ViewBuilder
     private var logSections: some View {
-        ForEach(snapshot.groupedEntries, id: \.key) { month, monthEntries in
-            Section {
-                ForEach(monthEntries) { entry in
-                    logRow(entry: entry, streak: streakForEntry(entry))
-                        .deleteDisabled(entry.source == .appleHealth)
-                }
-                .onDelete { offsets in
-                    deleteEntries(monthEntries, at: offsets)
-                }
-            } header: {
-                Text(month.uppercased())
-                    .font(.footnote)
-                    .fontWeight(.semibold)
-                    .foregroundStyle(.secondary)
-                    .textCase(nil)
-                    .onGeometryChange(for: CGFloat.self) { proxy in
-                        proxy.frame(in: .global).minY
-                    } action: { minY in
-                        if minY < 160, visibleSection != month {
-                            visibleSection = month
-                        }
-                    }
-            }
+        ForEach(logGroups) { group in
+            logSection(for: group)
         }
         .listSectionSpacing(0)
+        .background(alignment: .top) {
+            Color.clear
+                .frame(height: 0)
+                .id(ScrollAnchor.logsSection.rawValue)
+        }
+    }
+
+    private func logSection(for group: LogGroup) -> some View {
+        Section {
+            ForEach(group.value) { entry in
+                let streak = streakForEntry(entry)
+                logRow(entry: entry, streak: streak)
+                    .deleteDisabled(entry.source == .appleHealth)
+            }
+            .onDelete { offsets in
+                deleteEntries(group.value, at: offsets)
+            }
+        } header: {
+            logSectionHeader(for: group)
+        }
+        .padding(.top, group.offset == 0 ? 12 : 0)
+    }
+
+    private func logSectionHeader(for group: LogGroup) -> some View {
+        Text(group.key.uppercased())
+            .font(.footnote)
+            .fontWeight(.semibold)
+            .foregroundStyle(.secondary)
+            .textCase(nil)
+            .onGeometryChange(for: CGFloat.self) { proxy in
+                proxy.frame(in: .global).minY
+            } action: { minY in
+                if minY < 160, visibleSection != group.key {
+                    visibleSection = group.key
+                }
+            }
     }
 
     private var overviewWidget: some View {
-        VStack(alignment: .leading, spacing: 14) {
+        VStack(alignment: .leading, spacing: 12) {
             HStack(alignment: .firstTextBaseline) {
                 Text("Overview")
                     .font(.headline)
@@ -337,64 +384,71 @@ struct LogView: View {
                 Spacer(minLength: 0)
             }
         }
-        .padding(18)
+        .padding(16)
         .background(cardBackground)
     }
 
     private var weightChart: some View {
-        VStack(spacing: 14) {
-            VStack(alignment: .leading, spacing: 6) {
-                HStack(alignment: .firstTextBaseline) {
-                    Text("Trend")
-                        .font(.headline)
+        VStack(spacing: 12) {
+            HStack(alignment: .firstTextBaseline) {
+                Text("Trend")
+                    .font(.headline)
 
-                    Spacer()
+                Spacer()
 
-                    Text(chartPeriod.label)
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                }
-
-                Text("See how your weight has changed over the selected period.")
-                    .font(.subheadline)
+                Text(chartPeriod.label)
+                    .font(.caption)
                     .foregroundStyle(.secondary)
-                    .fixedSize(horizontal: false, vertical: true)
             }
 
-            HStack(spacing: 10) {
-                statChip(title: "Current", value: latestWeightText)
-                statChip(title: "Data Points", value: "\(snapshot.chart.entries.count)")
-            }
-
-            Picker("Period", selection: $chartPeriod) {
-                ForEach(TimePeriod.allCases, id: \.self) { period in
-                    Text(period.rawValue).tag(period)
+            HStack(spacing: 8) {
+                ForEach(Array(TimePeriod.allCases.enumerated()), id: \.element) { index, period in
+                    Circle()
+                        .fill(index == chartPeriodIndex ? tintColor : Color.secondary.opacity(0.25))
+                        .frame(width: index == chartPeriodIndex ? 8 : 6, height: index == chartPeriodIndex ? 8 : 6)
+                        .contentShape(Rectangle())
+                        .onTapGesture {
+                            withAnimation(.snappy) {
+                                chartPeriod = period
+                            }
+                        }
                 }
             }
-            .pickerStyle(.segmented)
+            .animation(.snappy, value: chartPeriod)
 
             if snapshot.chart.entries.count >= 2 {
-                Chart(snapshot.chart.entries) { entry in
-                    LineMark(
-                        x: .value("Date", entry.timestamp),
-                        y: .value("Weight", entry.weight)
-                    )
-                    .interpolationMethod(.catmullRom)
-                    .foregroundStyle(tintColor)
-
-                    AreaMark(
-                        x: .value("Date", entry.timestamp),
-                        yStart: .value("Min", snapshot.chart.yDomain.lowerBound),
-                        yEnd: .value("Weight", entry.weight)
-                    )
-                    .interpolationMethod(.catmullRom)
-                    .foregroundStyle(
-                        .linearGradient(
-                            colors: [tintColor.opacity(0.25), tintColor.opacity(0.0)],
-                            startPoint: .top,
-                            endPoint: .bottom
+                Chart {
+                    ForEach(snapshot.chart.smoothedEntries, id: \.timestamp) { entry in
+                        LineMark(
+                            x: .value("Date", entry.timestamp),
+                            y: .value("Weight", entry.weight)
                         )
-                    )
+                        .interpolationMethod(.catmullRom)
+                        .foregroundStyle(tintColor)
+
+                        AreaMark(
+                            x: .value("Date", entry.timestamp),
+                            yStart: .value("Min", snapshot.chart.yDomain.lowerBound),
+                            yEnd: .value("Weight", entry.weight)
+                        )
+                        .interpolationMethod(.catmullRom)
+                        .foregroundStyle(
+                            .linearGradient(
+                                colors: [tintColor.opacity(0.25), tintColor.opacity(0.0)],
+                                startPoint: .top,
+                                endPoint: .bottom
+                            )
+                        )
+                    }
+
+                    ForEach(snapshot.chart.entries, id: \.timestamp) { entry in
+                        PointMark(
+                            x: .value("Date", entry.timestamp),
+                            y: .value("Weight", entry.weight)
+                        )
+                        .foregroundStyle(tintColor)
+                        .symbolSize(36)
+                    }
                 }
                 .chartYScale(domain: snapshot.chart.yDomain)
                 .chartXAxis {
@@ -416,28 +470,35 @@ struct LogView: View {
                     .frame(maxWidth: .infinity)
             }
         }
-        .padding(18)
+        .padding(16)
         .background(cardBackground)
+        .contentShape(Rectangle())
+        .gesture(
+            DragGesture(minimumDistance: 24)
+                .onEnded { value in
+                    let horizontalDistance = value.translation.width
+                    let verticalDistance = value.translation.height
+
+                    guard abs(horizontalDistance) > abs(verticalDistance), abs(horizontalDistance) > 40 else {
+                        return
+                    }
+
+                    updateChartPeriod(by: horizontalDistance < 0 ? 1 : -1)
+                }
+        )
     }
 
     private var contributionCalendar: some View {
-        VStack(alignment: .leading, spacing: 14) {
-            VStack(alignment: .leading, spacing: 6) {
-                HStack(alignment: .firstTextBaseline) {
-                    Text("Consistency")
-                        .font(.headline)
+        VStack(alignment: .leading, spacing: 12) {
+            HStack(alignment: .firstTextBaseline) {
+                Text("Consistency")
+                    .font(.headline)
 
-                    Spacer()
+                Spacer()
 
-                    Text("Last 26 weeks")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                }
-
-                Text("A quick view of how regularly you’ve logged your weight.")
-                    .font(.subheadline)
+                Text("Last 26 weeks")
+                    .font(.caption)
                     .foregroundStyle(.secondary)
-                    .fixedSize(horizontal: false, vertical: true)
             }
 
             if heatmap.weeks.isEmpty {
@@ -449,7 +510,7 @@ struct LogView: View {
                     statChip(
                         title: "\(badgePeriod.label) Change",
                         value: badgePeriodChange.map { String(format: "%+.1f%%", $0) } ?? "—",
-                        valueColor: badgePeriodChange.map { $0 <= 0 ? .green : .red } ?? .primary
+                        valueColor: badgePeriodChange.map { _ in tintColor } ?? .primary
                     )
                     currentStreakPill
                     Spacer(minLength: 0)
@@ -490,7 +551,7 @@ struct LogView: View {
                 }
             }
         }
-        .padding(18)
+        .padding(16)
         .background(cardBackground)
     }
 
@@ -509,6 +570,16 @@ struct LogView: View {
     private func streakForEntry(_ entry: WeightEntry) -> Int {
         let day = Calendar.current.startOfDay(for: entry.timestamp)
         return snapshot.streaksByDay[day] ?? 0
+    }
+
+    private func updateChartPeriod(by offset: Int) {
+        let periods = TimePeriod.allCases
+        let nextIndex = min(max(chartPeriodIndex + offset, periods.startIndex), periods.index(before: periods.endIndex))
+        guard periods[nextIndex] != chartPeriod else { return }
+
+        withAnimation(.snappy) {
+            chartPeriod = periods[nextIndex]
+        }
     }
 
     // MARK: - Log Row
@@ -536,23 +607,21 @@ struct LogView: View {
                     }
                 }
 
-                Text(entry.timestamp, format: .dateTime.weekday(.wide).hour().minute())
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-
-                HStack(spacing: 3) {
-                    if entry.source == .appleHealth {
-                        Image(systemName: "heart.fill")
-                            .foregroundStyle(tintColor)
-                        Text("Apple Health")
-                    } else {
-                        Image(systemName: "pencil.line")
-                            .foregroundStyle(.secondary)
-                        Text("Manual")
+                HStack(spacing: 4) {
+                    HStack(spacing: 3) {
+                        if entry.source == .appleHealth {
+                            Image(systemName: "heart.fill")
+                                .foregroundStyle(tintColor)
+                            Text("Apple Health")
+                        } else {
+                            ScaleAppIconView(size: 14)
+                            Text("Scale")
+                        }
                     }
                 }
-                .font(.caption2)
+                .font(.caption)
                 .foregroundStyle(.secondary)
+
             }
 
             Spacer()
@@ -560,17 +629,11 @@ struct LogView: View {
             Button {
                 managedPhotoEntry = entry
             } label: {
-                if entry.photosData.isEmpty {
-                    Image(systemName: "camera.badge.plus")
-                        .font(.title3)
-                        .foregroundStyle(.tertiary)
-                        .frame(width: 52, height: 52)
-                        .background(.secondary.opacity(0.08), in: RoundedRectangle(cornerRadius: 14, style: .continuous))
-                } else if let uiImage = UIImage(data: entry.photosData[0]) {
+                if let uiImage = entry.photosData.first.flatMap(UIImage.init(data:)) {
                     Image(uiImage: uiImage)
                         .resizable()
                         .scaledToFill()
-                        .frame(width: 52, height: 52)
+                        .frame(width: 44, height: 44)
                         .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
                         .overlay(alignment: .bottomTrailing) {
                             if entry.photosData.count > 1 {
@@ -578,18 +641,21 @@ struct LogView: View {
                                     .font(.caption2.weight(.bold))
                                     .foregroundStyle(.white)
                                     .padding(.horizontal, 5)
-                                    .padding(.vertical, 2)
+                                    .padding(.vertical, 4)
                                     .background(.black.opacity(0.6), in: Capsule())
-                                    .padding(4)
-                            } else {
-                                Image(systemName: "photo.fill")
-                                    .font(.caption2.weight(.bold))
-                                    .foregroundStyle(.white)
-                                    .padding(5)
-                                    .background(.black.opacity(0.55), in: Circle())
                                     .padding(4)
                             }
                         }
+                } else {
+                    ZStack {
+                        RoundedRectangle(cornerRadius: 14, style: .continuous)
+                            .fill(.secondary.opacity(0.12))
+
+                        Image(systemName: "photo.badge.plus")
+                            .font(.title3.weight(.semibold))
+                            .foregroundStyle(.secondary)
+                    }
+                    .frame(width: 44, height: 44)
                 }
             }
             .buttonStyle(.plain)
@@ -606,7 +672,12 @@ struct LogView: View {
                     .foregroundStyle(tintColor.opacity(0.7))
             }
         }
-        .padding(.vertical, 4)
+        .contentShape(Rectangle())
+        .id(entry.persistentModelID)
+        .padding(.vertical, 1)
+        .onTapGesture {
+            selectedEntry = entry
+        }
     }
 
     private var monthLabels: some View {
@@ -699,7 +770,7 @@ struct LogView: View {
         }
         .frame(maxWidth: .infinity, alignment: .leading)
         .padding(.horizontal, 12)
-        .padding(.vertical, 11)
+        .padding(.vertical, 8)
         .background(
             (backgroundColor ?? tintColor.opacity(0.08)),
             in: RoundedRectangle(cornerRadius: 14, style: .continuous)
@@ -707,24 +778,12 @@ struct LogView: View {
     }
 
     private var currentStreakPill: some View {
-        HStack(spacing: 6) {
-            Image(systemName: "flame.fill")
-                .font(.caption)
-                .foregroundStyle(.orange)
-
-            Text("\(currentLoggingStreak)")
-                .font(.subheadline)
-                .fontWeight(.bold)
-                .foregroundStyle(.orange)
-
-            Text("Current Streak")
-                .font(.caption)
-                .fontWeight(.semibold)
-                .foregroundStyle(.secondary)
-        }
-        .padding(.horizontal, 12)
-        .padding(.vertical, 9)
-        .background(.orange.opacity(0.12), in: Capsule())
+        statChip(
+            title: "Current Streak",
+            value: "\(currentLoggingStreak)",
+            valueColor: .orange,
+            backgroundColor: .orange.opacity(0.12)
+        )
     }
 
     private var historyCustomizationSheet: some View {
@@ -823,6 +882,29 @@ struct LogView: View {
         historyWidgetLayout = historyWidgets.map(\.rawValue).joined(separator: ",")
     }
 
+    private func ensureLogsWidgetVisible() {
+        guard !historyWidgets.contains(.logs) else { return }
+        historyWidgets.append(.logs)
+        saveHistoryWidgets()
+    }
+
+    private func scrollToLogs(using proxy: ScrollViewProxy) {
+        ensureLogsWidgetVisible()
+
+        Task { @MainActor in
+            try? await Task.sleep(for: .milliseconds(50))
+            withAnimation(.snappy) {
+                if let focusedEntry {
+                    proxy.scrollTo(ScrollAnchor.logsSection, anchor: .top)
+                    proxy.scrollTo(focusedEntry.persistentModelID, anchor: .center)
+                    selectedEntry = focusedEntry
+                } else {
+                    proxy.scrollTo(ScrollAnchor.logsSection, anchor: .top)
+                }
+            }
+        }
+    }
+
     private func decodeHistoryWidgets(from storage: String) -> [HistoryWidget] {
         if storage.isEmpty {
             return HistoryWidget.defaultLayout
@@ -872,6 +954,205 @@ struct LogView: View {
             !deletedEntries.contains { $0.persistentModelID == candidate.persistentModelID }
         }
         WeightWidgetSnapshotStore.refresh(using: remainingEntries)
+    }
+}
+
+private struct LogEntryDetailSheet: View {
+    @Bindable var entry: WeightEntry
+    let tintColor: Color
+    let onDismiss: () -> Void
+
+    @State private var isPhotoManagementPresented = false
+    @State private var weightText = ""
+    @FocusState private var weightFieldFocused: Bool
+
+    private var sourceLabel: String {
+        switch entry.source {
+        case .appleHealth:
+            "Apple Health"
+        case .manual:
+            "Scale"
+        }
+    }
+
+    private var canEditWeight: Bool {
+        entry.source == .manual
+    }
+
+    private var noteBinding: Binding<String> {
+        Binding(
+            get: { entry.note ?? "" },
+            set: { newValue in
+                let trimmed = newValue.trimmingCharacters(in: .whitespacesAndNewlines)
+                entry.note = trimmed.isEmpty ? nil : newValue
+            }
+        )
+    }
+
+    var body: some View {
+        NavigationStack {
+            List {
+                Section {
+                    Group {
+                        if canEditWeight {
+                            HStack(alignment: .firstTextBaseline, spacing: 4) {
+                                TextField("Weight", text: $weightText)
+                                    .font(.system(size: 40, weight: .semibold, design: .rounded))
+                                    .foregroundStyle(tintColor)
+                                    .keyboardType(.decimalPad)
+                                    .focused($weightFieldFocused)
+                                    .onSubmit { commitWeightChanges() }
+
+                                Text("lbs")
+                                    .font(.title3.weight(.medium))
+                                    .foregroundStyle(tintColor.opacity(0.7))
+                            }
+                        } else {
+                            HStack(alignment: .firstTextBaseline, spacing: 4) {
+                                Text(String(format: "%.1f", entry.weight))
+                                    .font(.system(size: 40, weight: .semibold, design: .rounded))
+                                    .foregroundStyle(tintColor)
+
+                                Text("lbs")
+                                    .font(.title3.weight(.medium))
+                                    .foregroundStyle(tintColor.opacity(0.7))
+                            }
+                        }
+                    }
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .listRowBackground(Color.clear)
+                }
+
+                Section("Details") {
+                    detailRow(
+                        title: "Logged",
+                        value: entry.timestamp.formatted(.dateTime.weekday(.wide).month(.wide).day().year().hour().minute())
+                    )
+                    detailRow(
+                        title: "Source",
+                        value: sourceLabel,
+                        icon: {
+                            if entry.source == .appleHealth {
+                                Image(systemName: "heart.fill")
+                            } else {
+                                ScaleAppIconView(size: 20)
+                            }
+                        }
+                    )
+                    detailRow(title: "Streak", value: "\(entry.streakCount) days", systemImage: "flame.fill")
+                    Button {
+                        isPhotoManagementPresented = true
+                    } label: {
+                        Label(
+                            entry.photosData.isEmpty ? "Add Photos" : "Manage Photos",
+                            systemImage: entry.photosData.isEmpty ? "photo.badge.plus" : "photo.on.rectangle.angled"
+                        )
+                    }
+                }
+
+                Section("Note") {
+                    TextEditor(text: noteBinding)
+                        .frame(minHeight: 140)
+                }
+            }
+            .navigationTitle("Log Entry")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .topBarTrailing) {
+                    Button("Done") {
+                        commitWeightChanges()
+                        onDismiss()
+                    }
+                }
+            }
+            .onAppear {
+                weightText = String(format: "%.1f", entry.weight)
+            }
+            .onChange(of: weightFieldFocused) { _, focused in
+                if !focused {
+                    commitWeightChanges()
+                }
+            }
+        }
+        .presentationDetents([.fraction(0.38), .medium, .large])
+        .presentationDragIndicator(.visible)
+        .sheet(isPresented: $isPhotoManagementPresented) {
+            PhotoManagementSheet(entry: entry) {
+                isPhotoManagementPresented = false
+            }
+        }
+    }
+
+    private func commitWeightChanges() {
+        guard canEditWeight, let parsedWeight = WeightCalculations.parseWeight(from: weightText) else { return }
+        entry.weight = parsedWeight
+        weightText = String(format: "%.1f", parsedWeight)
+    }
+
+    private func detailRow<Icon: View>(
+        title: String,
+        value: String,
+        @ViewBuilder icon: () -> Icon
+    ) -> some View {
+        HStack(spacing: 12) {
+            icon()
+                .foregroundStyle(tintColor)
+                .frame(width: 20)
+
+            Text(title)
+
+            Spacer()
+
+            Text(value)
+                .foregroundStyle(.secondary)
+                .multilineTextAlignment(.trailing)
+        }
+    }
+
+    private func detailRow(title: String, value: String, systemImage: String? = nil) -> some View {
+        detailRow(title: title, value: value) {
+            if let systemImage {
+                Image(systemName: systemImage)
+            }
+        }
+    }
+}
+
+private struct ScaleAppIconView: View {
+    let size: CGFloat
+
+    var body: some View {
+        Group {
+            if let iconImage = Bundle.main.primaryAppIconImage {
+                Image(uiImage: iconImage)
+                    .resizable()
+                    .scaledToFill()
+            } else {
+                Image(systemName: "scalemass.fill")
+                    .resizable()
+                    .scaledToFit()
+                    .padding(size * 0.18)
+                    .foregroundStyle(.secondary)
+                    .background(.secondary.opacity(0.12))
+            }
+        }
+        .frame(width: size, height: size)
+        .clipShape(RoundedRectangle(cornerRadius: size * 0.23, style: .continuous))
+    }
+}
+
+private extension Bundle {
+    var primaryAppIconImage: UIImage? {
+        guard
+            let icons = object(forInfoDictionaryKey: "CFBundleIcons") as? [String: Any],
+            let primaryIcon = icons["CFBundlePrimaryIcon"] as? [String: Any],
+            let iconFiles = primaryIcon["CFBundleIconFiles"] as? [String],
+            let iconName = iconFiles.last ?? iconFiles.first
+        else {
+            return nil
+        }
+
+        return UIImage(named: iconName)
     }
 }
 
@@ -1011,25 +1292,10 @@ private struct PhotoManagementSheet: View {
 }
 
 #Preview {
-    let container = try! ModelContainer(for: WeightEntry.self, configurations: ModelConfiguration(isStoredInMemoryOnly: true))
-    let context = container.mainContext
-
-    let calendar = Calendar.current
-    let now = Date()
-    let sampleWeights: [(Int, Double)] = [
-        (0, 185.2), (1, 184.8), (2, 185.0), (3, 184.5),
-        (4, 184.3), (7, 183.9), (8, 183.5), (14, 184.1),
-        (30, 182.8), (60, 182.2), (90, 181.5), (120, 181.0),
-        (150, 180.5), (180, 180.0), (210, 179.5), (240, 179.0),
-        (300, 178.5), (365, 178.0)
-    ]
-    for (daysAgo, weight) in sampleWeights {
-        let date = calendar.date(byAdding: .day, value: -daysAgo, to: now)!
-        let entry = WeightEntry(weight: weight, timestamp: date)
-        context.insert(entry)
-    }
-
-    return LogView()
-        .modelContainer(container)
+    LogView(
+        scrollToLogsTrigger: 0,
+        focusedEntry: nil
+    )
+        .modelContainer(for: WeightEntry.self, inMemory: true)
         .environment(HealthKitManager())
 }

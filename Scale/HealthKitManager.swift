@@ -11,6 +11,26 @@ import SwiftData
 
 @Observable
 final class HealthKitManager {
+    struct ImportedSample: Equatable {
+        let uuid: UUID
+        let startDate: Date
+        let weightInPounds: Double
+        let sourceBundleIdentifier: String
+    }
+
+    struct PendingImportEntry: Equatable {
+        let uuid: UUID
+        let timestamp: Date
+        let weightInPounds: Double
+    }
+
+    struct ImportPlan: Equatable {
+        let removedEntryIDs: [PersistentIdentifier]
+        let insertedEntries: [PendingImportEntry]
+        let importedCount: Int
+        let skippedCount: Int
+        let removedCount: Int
+    }
     
     // MARK: - State
     
@@ -99,49 +119,36 @@ final class HealthKitManager {
             )
             let samples = try await descriptor.result(for: healthStore)
             
-            // Build set of existing timestamps for duplicate prevention
             let existingEntries = try modelContext.fetch(FetchDescriptor<WeightEntry>())
-            let existingTimestamps: Set<Int> = Set(
-                existingEntries.map { Int($0.timestamp.timeIntervalSinceReferenceDate.rounded()) }
-            )
-            
-            // Build set of HealthKit sample UUIDs for removal detection
-            let healthKitUUIDs: Set<UUID> = Set(samples.map(\.uuid))
-            
-            // Remove local Apple Health entries whose samples no longer exist in HealthKit
-            var removedCount = 0
-            let healthEntries = existingEntries.filter { $0.source == .appleHealth && $0.healthKitUUID != nil }
-            for entry in healthEntries {
-                if let uuid = entry.healthKitUUID, !healthKitUUIDs.contains(uuid) {
-                    modelContext.delete(entry)
-                    removedCount += 1
-                }
-            }
-            
-            // Import samples, skipping duplicates and samples we authored
-            var importedCount = 0
-            var skippedCount = 0
             let poundUnit = HKUnit.pound()
             let ourBundleID = Bundle.main.bundleIdentifier ?? ""
-            
-            for sample in samples {
-                // Skip samples that our app wrote to HealthKit
-                if sample.sourceRevision.source.bundleIdentifier == ourBundleID {
-                    skippedCount += 1
-                    continue
-                }
-                
-                let roundedTimestamp = Int(sample.startDate.timeIntervalSinceReferenceDate.rounded())
-                
-                if existingTimestamps.contains(roundedTimestamp) {
-                    skippedCount += 1
-                    continue
-                }
-                
-                let weightInPounds = sample.quantity.doubleValue(for: poundUnit)
-                let entry = WeightEntry(weight: weightInPounds, timestamp: sample.startDate, source: .appleHealth, healthKitUUID: sample.uuid)
+
+            let importedSamples = samples.map {
+                ImportedSample(
+                    uuid: $0.uuid,
+                    startDate: $0.startDate,
+                    weightInPounds: $0.quantity.doubleValue(for: poundUnit),
+                    sourceBundleIdentifier: $0.sourceRevision.source.bundleIdentifier
+                )
+            }
+            let plan = Self.makeImportPlan(
+                samples: importedSamples,
+                existingEntries: existingEntries,
+                ourBundleID: ourBundleID
+            )
+
+            for entry in existingEntries where plan.removedEntryIDs.contains(entry.persistentModelID) {
+                modelContext.delete(entry)
+            }
+
+            for pendingEntry in plan.insertedEntries {
+                let entry = WeightEntry(
+                    weight: pendingEntry.weightInPounds,
+                    timestamp: pendingEntry.timestamp,
+                    source: .appleHealth,
+                    healthKitUUID: pendingEntry.uuid
+                )
                 modelContext.insert(entry)
-                importedCount += 1
             }
             
             try modelContext.save()
@@ -151,11 +158,64 @@ final class HealthKitManager {
                 )
             )
             WeightWidgetSnapshotStore.refresh(using: refreshedEntries)
-            importResult = .success(imported: importedCount, skipped: skippedCount, removed: removedCount)
+            importResult = .success(
+                imported: plan.importedCount,
+                skipped: plan.skippedCount,
+                removed: plan.removedCount
+            )
         } catch {
             importResult = .error(error.localizedDescription)
         }
         
         isImporting = false
+    }
+
+    static func makeImportPlan(
+        samples: [ImportedSample],
+        existingEntries: [WeightEntry],
+        ourBundleID: String
+    ) -> ImportPlan {
+        let existingTimestamps = Set(
+            existingEntries.map { Int($0.timestamp.timeIntervalSinceReferenceDate.rounded()) }
+        )
+        let healthKitUUIDs = Set(samples.map(\.uuid))
+        let removableEntries = existingEntries.filter {
+            guard $0.source == .appleHealth, let uuid = $0.healthKitUUID else {
+                return false
+            }
+            return !healthKitUUIDs.contains(uuid)
+        }
+
+        var insertedEntries: [PendingImportEntry] = []
+        var skippedCount = 0
+
+        for sample in samples {
+            if sample.sourceBundleIdentifier == ourBundleID {
+                skippedCount += 1
+                continue
+            }
+
+            let roundedTimestamp = Int(sample.startDate.timeIntervalSinceReferenceDate.rounded())
+            if existingTimestamps.contains(roundedTimestamp) {
+                skippedCount += 1
+                continue
+            }
+
+            insertedEntries.append(
+                PendingImportEntry(
+                    uuid: sample.uuid,
+                    timestamp: sample.startDate,
+                    weightInPounds: sample.weightInPounds
+                )
+            )
+        }
+
+        return ImportPlan(
+            removedEntryIDs: removableEntries.map(\.persistentModelID),
+            insertedEntries: insertedEntries,
+            importedCount: insertedEntries.count,
+            skippedCount: skippedCount,
+            removedCount: removableEntries.count
+        )
     }
 }
