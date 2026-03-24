@@ -259,6 +259,14 @@ enum WeightCalculations {
         return ((last.weight - first.weight) / first.weight) * 100
     }
 
+    static func weightChangeLbs(from entries: [WeightEntry], over period: TimePeriod) -> Double? {
+        let filtered = entriesWithin(period, from: entries).sorted { $0.timestamp < $1.timestamp }
+        guard filtered.count >= 2,
+              let first = filtered.first,
+              let last = filtered.last else { return nil }
+        return last.weight - first.weight
+    }
+
     /// Current logging streak: consecutive days (including today) with at least one entry.
     /// - Parameters:
     ///   - entries: Weight entries sorted most-recent-first.

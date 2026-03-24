@@ -145,6 +145,10 @@ struct LogView: View {
         WeightCalculations.percentageChange(from: entries, over: badgePeriod)
     }
 
+    private var badgePeriodChangeLbs: Double? {
+        WeightCalculations.weightChangeLbs(from: entries, over: badgePeriod)
+    }
+
     private var latestWeightText: String {
         guard let latest = entries.first else { return "--" }
         return String(format: "%.1f lbs", latest.weight)
@@ -509,8 +513,9 @@ struct LogView: View {
                 HStack(alignment: .center, spacing: 10) {
                     statChip(
                         title: "\(badgePeriod.label) Change",
-                        value: badgePeriodChange.map { String(format: "%+.1f%%", $0) } ?? "—",
-                        valueColor: badgePeriodChange.map { _ in tintColor } ?? .primary
+                        value: badgePeriodChangeLbs.map { String(format: "%+.1f lbs", $0) } ?? "—",
+                        subtitle: badgePeriodChange.map { String(format: "%+.1f%%", $0) },
+                        valueColor: badgePeriodChangeLbs.map { _ in tintColor } ?? .primary
                     )
                     currentStreakPill
                     Spacer(minLength: 0)
@@ -755,14 +760,23 @@ struct LogView: View {
     private func statChip(
         title: String,
         value: String,
+        subtitle: String? = nil,
         valueColor: Color = .primary,
         backgroundColor: Color? = nil
     ) -> some View {
         VStack(alignment: .leading, spacing: 2) {
-            Text(value)
-                .font(.headline)
-                .fontWeight(.semibold)
-                .foregroundStyle(valueColor)
+            HStack(alignment: .firstTextBaseline, spacing: 4) {
+                Text(value)
+                    .font(.headline)
+                    .fontWeight(.semibold)
+                    .foregroundStyle(valueColor)
+
+                if let subtitle {
+                    Text(subtitle)
+                        .font(.caption2)
+                        .foregroundStyle(valueColor.opacity(0.7))
+                }
+            }
 
             Text(title)
                 .font(.caption)
