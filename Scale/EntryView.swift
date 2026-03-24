@@ -188,7 +188,7 @@ struct EntryView: View {
                 .buttonStyle(.glassProminent)
                 .disabled(saved)
             }
-            .frame(maxWidth: .infinity)
+            .frame(maxWidth: 150)
             .padding(.horizontal, 6)
             .padding(.vertical, 6)
         }

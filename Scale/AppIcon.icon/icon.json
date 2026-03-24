@@ -29,19 +29,19 @@
           "fill-specializations" : [
             {
               "value" : {
-                "solid" : "display-p3:0.44946,0.44946,0.44946,1.00000"
+                "solid" : "display-p3:0.80383,0.80383,0.80383,1.00000"
               }
             },
             {
               "appearance" : "dark",
               "value" : {
-                "solid" : "gray:0.44957,1.00000"
+                "solid" : "display-p3:0.16236,0.16236,0.16236,1.00000"
               }
             },
             {
               "appearance" : "tinted",
               "value" : {
-                "solid" : "display-p3:0.93884,1.00000,0.93593,0.25454"
+                "solid" : "display-p3:1.00000,1.00000,1.00000,1.00000"
               }
             }
           ],
@@ -88,19 +88,19 @@
           "fill-specializations" : [
             {
               "value" : {
-                "solid" : "display-p3:0.00000,0.00000,0.00000,1.00000"
+                "solid" : "display-p3:0.07996,0.07996,0.07996,1.00000"
               }
             },
             {
               "appearance" : "dark",
               "value" : {
-                "solid" : "display-p3:0.00000,0.00000,0.00000,1.00000"
+                "solid" : "display-p3:0.79410,0.79410,0.79410,1.00000"
               }
             },
             {
               "appearance" : "tinted",
               "value" : {
-                "solid" : "gray:0.87623,0.00000"
+                "solid" : "display-p3:0.50000,0.50000,0.50000,0.45233"
               }
             }
           ],
@@ -134,15 +134,28 @@
           "fill-specializations" : [
             {
               "value" : {
-                "solid" : "display-p3:0.00000,0.00000,0.00000,1.00000"
+                "linear-gradient" : [
+                  "display-p3:0.20000,0.20000,0.20000,1.00000",
+                  "display-p3:0.00000,0.00000,0.00000,1.00000"
+                ],
+                "orientation" : {
+                  "start" : {
+                    "x" : 0.49999999999999983,
+                    "y" : 0
+                  },
+                  "stop" : {
+                    "x" : 0.5,
+                    "y" : 0.7
+                  }
+                }
               }
             },
             {
               "appearance" : "dark",
               "value" : {
                 "linear-gradient" : [
-                  "gray:0.00000,1.00000",
-                  "gray:0.00000,1.00000"
+                  "display-p3:1.00000,1.00000,1.00000,1.00000",
+                  "display-p3:1.00000,1.00000,1.00000,1.00000"
                 ],
                 "orientation" : {
                   "start" : {
@@ -158,7 +171,9 @@
             },
             {
               "appearance" : "tinted",
-              "value" : "automatic"
+              "value" : {
+                "solid" : "display-p3:0.06069,0.14100,0.26217,1.00000"
+              }
             }
           ],
           "glass-specializations" : [
@@ -175,7 +190,7 @@
           "name" : "1 – Layer 3",
           "opacity-specializations" : [
             {
-              "value" : 0.92
+              "value" : 0.89
             },
             {
               "appearance" : "dark",
@@ -198,7 +213,7 @@
           "fill-specializations" : [
             {
               "value" : {
-                "solid" : "display-p3:0.00000,0.00000,0.00000,0.20169"
+                "solid" : "display-p3:0.43286,0.43286,0.43286,1.00000"
               }
             },
             {

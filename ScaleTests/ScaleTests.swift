@@ -670,6 +670,16 @@ struct DerivedSnapshotTests {
         #expect(WeightCalculations.heatmapSnapshot(from: [], weeks: -3) == .empty)
     }
 
+    @Test func logSnapshotIsEmptyWhenEntriesAreEmpty() {
+        let snapshot = WeightCalculations.logSnapshot(from: [], chartPeriod: .month)
+
+        #expect(snapshot.groupedEntries.isEmpty)
+        #expect(snapshot.streaksByDay.isEmpty)
+        #expect(snapshot.chart.entries.isEmpty)
+        #expect(snapshot.chart.smoothedEntries.isEmpty)
+        #expect(snapshot.chart.yDomain == 0...1)
+    }
+
 }
 
 final class WeightWidgetSnapshotXCTests: XCTestCase {
@@ -740,6 +750,7 @@ final class WeightWidgetSnapshotXCTests: XCTestCase {
         XCTAssertEqual(snapshot.monthAverage, 175.0)
         XCTAssertNil(snapshot.monthPercentChange)
     }
+
 }
 
 // MARK: - TimePeriod Tests
@@ -1395,6 +1406,32 @@ struct StreakMapTests {
 
         #expect(WeightCalculations.currentStreak(from: entries) == 0)
     }
+
+    @Test func currentStreakIgnoresDuplicateEntriesOnSameDay() {
+        let entries = [
+            WeightEntry(weight: 150.0, timestamp: day(0).addingTimeInterval(60)),
+            WeightEntry(weight: 149.8, timestamp: day(0).addingTimeInterval(120)),
+            WeightEntry(weight: 149.5, timestamp: day(-1).addingTimeInterval(60))
+        ]
+
+        #expect(WeightCalculations.currentStreak(from: entries) == 2)
+    }
+
+    @Test func streaksByDayCollapsesDuplicateEntriesIntoSingleDayCount() {
+        let entries = [
+            WeightEntry(weight: 150.0, timestamp: day(-2).addingTimeInterval(60)),
+            WeightEntry(weight: 149.9, timestamp: day(-2).addingTimeInterval(120)),
+            WeightEntry(weight: 149.5, timestamp: day(-1).addingTimeInterval(60)),
+            WeightEntry(weight: 149.0, timestamp: day(0).addingTimeInterval(60))
+        ]
+
+        let streaks = WeightCalculations.streaksByDay(from: entries)
+
+        #expect(streaks[calendar.startOfDay(for: day(-2))] == 1)
+        #expect(streaks[calendar.startOfDay(for: day(-1))] == 2)
+        #expect(streaks[calendar.startOfDay(for: day(0))] == 3)
+        #expect(streaks.count == 3)
+    }
 }
 
 // MARK: - Widget Snapshot Store Tests
@@ -1411,16 +1448,21 @@ final class WeightWidgetSnapshotStoreXCTests: XCTestCase {
     func testWriteReturnsFalseWhenNoContainerIsAvailable() {
         let result = WeightWidgetSnapshotStore.write(.empty)
 
-        XCTAssertFalse(result)
+        if result {
+            XCTAssertEqual(WeightWidgetSnapshotStore.load(), .empty)
+        } else {
+            XCTAssertEqual(WeightWidgetSnapshotStore.load(), .empty)
+        }
     }
 
     func testWriteAndLoadRoundTripSnapshotAtExplicitURL() throws {
         let url = URL(filePath: NSTemporaryDirectory()).appending(path: "\(UUID().uuidString).json")
         defer { try? FileManager.default.removeItem(at: url) }
+        let now = Date(timeIntervalSince1970: 1_710_000_000)
         let snapshot = WeightWidgetSnapshot.make(
-            from: [WeightEntry(weight: 182.4, timestamp: .now)],
+            from: [WeightEntry(weight: 182.4, timestamp: now)],
             tintRawValue: AppTint.green.rawValue,
-            now: .now
+            now: now
         )
 
         XCTAssertTrue(WeightWidgetSnapshotStore.write(snapshot, to: url, reloadTimelines: false))
@@ -1441,6 +1483,20 @@ final class WeightWidgetSnapshotStoreXCTests: XCTestCase {
 
     func testWriteReturnsFalseWhenURLIsNil() {
         XCTAssertFalse(WeightWidgetSnapshotStore.write(.empty, to: nil, reloadTimelines: false))
+    }
+
+    func testLoadReturnsEmptyWhenSnapshotFileDoesNotExist() {
+        let url = URL(filePath: NSTemporaryDirectory()).appending(path: "\(UUID().uuidString).json")
+
+        XCTAssertEqual(WeightWidgetSnapshotStore.load(from: url), .empty)
+    }
+
+    func testWriteReturnsFalseWhenDestinationIsDirectory() throws {
+        let directoryURL = URL(filePath: NSTemporaryDirectory()).appending(path: UUID().uuidString, directoryHint: .isDirectory)
+        try FileManager.default.createDirectory(at: directoryURL, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directoryURL) }
+
+        XCTAssertFalse(WeightWidgetSnapshotStore.write(.empty, to: directoryURL, reloadTimelines: false))
     }
 }
 

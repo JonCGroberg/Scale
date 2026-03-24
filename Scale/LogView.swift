@@ -240,7 +240,8 @@ struct LogView: View {
                                     .font(.caption.weight(.semibold))
                                     .padding(.horizontal, 12)
                                     .padding(.vertical, 10)
-                                    .background(.ultraThinMaterial, in: Capsule())
+                                    .glassEffect()
+                                    .shadow(color: .black.opacity(0.08), radius: 4, y: 2)
                             }
                             .buttonStyle(.plain)
                         }
