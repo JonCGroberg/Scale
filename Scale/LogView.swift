@@ -428,7 +428,7 @@ struct LogView: View {
 
             if snapshot.chart.entries.count >= 2 {
                 Chart {
-                    ForEach(snapshot.chart.smoothedEntries, id: \.timestamp) { entry in
+                    ForEach(snapshot.chart.entries, id: \.timestamp) { entry in
                         LineMark(
                             x: .value("Date", entry.timestamp),
                             y: .value("Weight", entry.weight)
@@ -449,6 +449,16 @@ struct LogView: View {
                                 endPoint: .bottom
                             )
                         )
+                    }
+
+                    ForEach(snapshot.chart.trendEntries, id: \.timestamp) { entry in
+                        LineMark(
+                            x: .value("Date", entry.timestamp),
+                            y: .value("Trend", entry.weight)
+                        )
+                        .interpolationMethod(.catmullRom)
+                        .foregroundStyle(tintColor.opacity(0.7))
+                        .lineStyle(StrokeStyle(lineWidth: 2, dash: [4, 4]))
                     }
 
                     ForEach(snapshot.chart.entries, id: \.timestamp) { entry in
