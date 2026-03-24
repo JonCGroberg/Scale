@@ -27,37 +27,44 @@ struct ChangeBadge: View {
 
     var body: some View {
         HStack(spacing: 6) {
-            if summary.streak > 0 {
-                HStack(spacing: 2) {
-                    Image(systemName: "flame.fill")
-                        .font(.caption2)
-                        .foregroundStyle(.orange)
+            HStack(spacing: 2) {
+                Image(systemName: "flame.fill")
+                    .font(.caption2)
+                    .foregroundStyle(.orange)
 
-                    Text("\(summary.streak)")
-                        .font(.caption)
-                        .fontWeight(.bold)
-                        .contentTransition(.numericText())
-                }
-
-                Circle()
-                    .fill(tintColor.opacity(0.4))
-                    .frame(width: 4, height: 4)
+                Text("\(summary.streak)")
+                    .font(.caption)
+                    .fontWeight(.bold)
+                    .contentTransition(.numericText())
             }
 
+            Circle()
+                .fill(tintColor.opacity(0.4))
+                .frame(width: 4, height: 4)
+
             if let lbs = summary.weightChange {
-                let direction = lbs >= 0 ? "Up" : "Down"
-                Text("\(direction) \(String(format: "%.1f", abs(lbs))) lbs this \(period.label)")
+                Text(String(format: "%+.1f lbs", lbs))
                     .font(.caption)
-                    .fontWeight(.semibold)
+                    .fontWeight(.bold)
                     .foregroundStyle(tintColor)
                     .contentTransition(.numericText())
             } else {
-                Text("No change this \(period.label)")
+                Text("-- lbs")
                     .font(.caption)
-                    .fontWeight(.semibold)
+                    .fontWeight(.bold)
                     .foregroundStyle(.secondary)
-                    .contentTransition(.interpolate)
             }
+
+            Circle()
+                .fill(tintColor.opacity(0.4))
+                .frame(width: 4, height: 4)
+
+            Text(period.label.uppercased())
+                .font(.caption2)
+                .fontWeight(.semibold)
+                .tracking(0.3)
+                .foregroundStyle(.secondary)
+                .contentTransition(.interpolate)
         }
         .padding(.horizontal, 14)
         .padding(.vertical, 10)
