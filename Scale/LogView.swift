@@ -269,6 +269,11 @@ struct LogView: View {
             .task {
                 loadHistoryWidgets()
             }
+            .sensoryFeedback(.selection, trigger: chartPeriod)
+            .sensoryFeedback(.impact(weight: .light), trigger: selectedEntry) { _, new in new != nil }
+            .sensoryFeedback(.impact(weight: .light), trigger: managedPhotoEntry) { _, new in new != nil }
+            .sensoryFeedback(.impact(weight: .light), trigger: isCustomizeHistoryPresented) { _, new in new }
+            .sensoryFeedback(.selection, trigger: historyWidgets)
         }
     }
 

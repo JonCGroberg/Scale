@@ -74,6 +74,7 @@ struct RootView: View {
                         guard selectedTab == 0 else { return }
                         selectedTab = 1
                     }
+                    .sensoryFeedback(.impact(weight: .light), trigger: selectedTab) { old, new in old == 0 && new == 1 }
 
                 Spacer(minLength: 0)
             }

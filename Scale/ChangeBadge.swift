@@ -94,5 +94,6 @@ struct ChangeBadge: View {
                     }
                 }
         )
+        .sensoryFeedback(.selection, trigger: currentIndex)
     }
 }

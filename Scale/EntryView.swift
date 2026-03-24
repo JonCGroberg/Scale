@@ -102,6 +102,10 @@ struct EntryView: View {
                     }
                 }
             }
+            .sensoryFeedback(.success, trigger: saved) { _, new in new }
+            .sensoryFeedback(.selection, trigger: currentWeight)
+            .sensoryFeedback(.selection, trigger: isEditingWeight) { _, new in new }
+            .sensoryFeedback(.impact(weight: .light), trigger: showCamera) { _, new in new }
         }
     }
 
