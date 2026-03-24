@@ -27,7 +27,7 @@ struct EntryView: View {
     @FocusState private var weightFieldFocused: Bool
 
     private let step = 0.1
-    private let bottomBarWidth: CGFloat = 320
+    private let bottomBarWidth: CGFloat = 360
     private let weightDisplaySpacing: CGFloat = 16
 
     private var latestEntry: WeightEntry? { entries.first }
