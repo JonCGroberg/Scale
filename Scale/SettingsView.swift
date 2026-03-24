@@ -127,6 +127,12 @@ struct SettingsView: View {
             .onAppear {
                 reminders = notificationManager.loadReminders()
             }
+            .sensoryFeedback(.selection, trigger: reminders.count)
+            .sensoryFeedback(.impact(weight: .medium), trigger: healthManager.isImporting) { _, new in new }
+            .sensoryFeedback(.success, trigger: healthManager.importResult) { _, new in
+                if case .success = new { return true }
+                return false
+            }
         }
     }
 

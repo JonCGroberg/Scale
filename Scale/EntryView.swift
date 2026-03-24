@@ -24,6 +24,7 @@ struct EntryView: View {
     @State private var weightText = ""
     @State private var showCamera = false
     @State private var saved = false
+    @State private var pendingEntry: WeightEntry?
     @FocusState private var weightFieldFocused: Bool
 
     private let step = 0.1
@@ -102,6 +103,10 @@ struct EntryView: View {
                     }
                 }
             }
+            .sensoryFeedback(.success, trigger: saved) { _, new in new }
+            .sensoryFeedback(.selection, trigger: currentWeight)
+            .sensoryFeedback(.selection, trigger: isEditingWeight) { _, new in new }
+            .sensoryFeedback(.impact(weight: .light), trigger: showCamera) { _, new in new }
         }
     }
 
@@ -174,19 +179,22 @@ struct EntryView: View {
         GlassEffectContainer(spacing: 18) {
             HStack {
                 Button {
-                    saveEntry()
+                    if saved {
+                        navigateToHistory()
+                    } else {
+                        saveEntry()
+                    }
                 } label: {
                     HStack(spacing: 8) {
                         Image(systemName: saved ? "checkmark.circle.fill" : "square.and.arrow.down.fill")
                             .contentTransition(.symbolEffect(.replace))
-                        Text(saved ? "Saved" : "Save")
+                        Text(saved ? "Done" : "Save")
                     }
                     .font(.headline.weight(.semibold))
                     .frame(maxWidth: .infinity)
                     .frame(height: 42)
                 }
                 .buttonStyle(.glassProminent)
-                .disabled(saved)
             }
             .frame(maxWidth: 150)
             .padding(.horizontal, 6)
@@ -275,12 +283,14 @@ struct EntryView: View {
             entry.healthKitUUID = uuid
         }
 
-        Task { @MainActor in
-            saved = true
-            historySelectedEntry = entry
-            historyScrollRequest += 1
-            selectedTab = 1
-        }
+        saved = true
+        pendingEntry = entry
+    }
+
+    private func navigateToHistory() {
+        historySelectedEntry = pendingEntry
+        historyScrollRequest += 1
+        selectedTab = 1
     }
 }
 
