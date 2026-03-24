@@ -60,9 +60,10 @@ enum WeightCalculations {
     struct ChartSnapshot {
         let entries: [WeightEntry]
         let smoothedEntries: [ChartPoint]
+        let trendEntries: [ChartPoint]
         let yDomain: ClosedRange<Double>
 
-        static let empty = ChartSnapshot(entries: [], smoothedEntries: [], yDomain: 0...1)
+        static let empty = ChartSnapshot(entries: [], smoothedEntries: [], trendEntries: [], yDomain: 0...1)
     }
 
     struct LogSnapshot {
@@ -141,14 +142,20 @@ enum WeightCalculations {
         let weights = filteredEntries.map(\.weight)
         let minWeight = (weights.min() ?? 0) - 1
         let maxWeight = (weights.max() ?? 0) + 1
+        let alpha = smoothingAlpha(for: period)
         let smoothedEntries = exponentiallySmoothedChartPoints(
             from: filteredEntries,
-            alpha: smoothingAlpha(for: period)
+            alpha: alpha
+        )
+        let trendEntries = exponentiallySmoothedChartPoints(
+            from: filteredEntries,
+            alpha: alpha / 4
         )
 
         return ChartSnapshot(
             entries: filteredEntries,
             smoothedEntries: smoothedEntries,
+            trendEntries: trendEntries,
             yDomain: minWeight...maxWeight
         )
     }
