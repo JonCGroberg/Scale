@@ -1074,7 +1074,7 @@ private struct LogEntryDetailSheet: View {
                 }
             }
         }
-        .presentationDetents([.fraction(0.38), .medium, .large])
+        .presentationDetents([.medium, .large])
         .presentationDragIndicator(.visible)
         .sheet(isPresented: $isPhotoManagementPresented) {
             PhotoManagementSheet(entry: entry) {
