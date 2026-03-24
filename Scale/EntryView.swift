@@ -25,6 +25,7 @@ struct EntryView: View {
     @State private var showCamera = false
     @State private var saved = false
     @State private var pendingEntry: WeightEntry?
+    @State private var weightChangeFeedbackToken = 0
     @FocusState private var weightFieldFocused: Bool
 
     private let step = 0.1
@@ -81,6 +82,7 @@ struct EntryView: View {
                     withAnimation(.snappy) {
                         currentWeight = weight
                         saved = false
+                        weightChangeFeedbackToken += 1
                     }
                 }
             }
@@ -104,7 +106,7 @@ struct EntryView: View {
                 }
             }
             .sensoryFeedback(.success, trigger: saved) { _, new in new }
-            .sensoryFeedback(.selection, trigger: currentWeight)
+            .sensoryFeedback(.selection, trigger: weightChangeFeedbackToken)
             .sensoryFeedback(.selection, trigger: isEditingWeight) { _, new in new }
             .sensoryFeedback(.impact(weight: .light), trigger: showCamera) { _, new in new }
         }
@@ -196,7 +198,7 @@ struct EntryView: View {
                 }
                 .buttonStyle(.glassProminent)
             }
-            .frame(maxWidth: 150)
+            .frame(maxWidth: .infinity)
             .padding(.horizontal, 6)
             .padding(.vertical, 6)
         }
@@ -249,6 +251,7 @@ struct EntryView: View {
             withAnimation(.snappy) {
                 currentWeight = value
                 saved = false
+                weightChangeFeedbackToken += 1
             }
         }
         isEditingWeight = false
@@ -262,6 +265,7 @@ struct EntryView: View {
         withAnimation(.snappy) {
             currentWeight = roundedWeight
             saved = false
+            weightChangeFeedbackToken += 1
         }
     }
 
@@ -290,6 +294,8 @@ struct EntryView: View {
     private func navigateToHistory() {
         historySelectedEntry = pendingEntry
         historyScrollRequest += 1
+        pendingEntry = nil
+        saved = false
         selectedTab = 1
     }
 }
