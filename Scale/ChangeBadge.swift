@@ -44,35 +44,19 @@ struct ChangeBadge: View {
                     .frame(width: 4, height: 4)
             }
 
-            if let avg = summary.average {
-                Text(String(format: "%.1f lbs", avg))
-                    .font(.caption)
-                    .fontWeight(.bold)
-                    .contentTransition(.numericText())
-
-                Circle()
-                    .fill(tintColor.opacity(0.4))
-                    .frame(width: 4, height: 4)
-            }
-
-            Text("\(period.label) Avg")
-                .font(.caption2)
-                .fontWeight(.semibold)
-                .textCase(.uppercase)
-                .tracking(0.3)
-                .foregroundStyle(.secondary)
-                .contentTransition(.interpolate)
-
             if let lbs = summary.weightChange {
-                Circle()
-                    .fill(tintColor.opacity(0.4))
-                    .frame(width: 4, height: 4)
-
-                Text(String(format: "%+.1f lbs", lbs))
-                    .font(.caption2)
-                    .fontWeight(.bold)
+                let direction = lbs >= 0 ? "Up" : "Down"
+                Text("\(direction) \(String(format: "%.1f", abs(lbs))) lbs this \(period.label)")
+                    .font(.caption)
+                    .fontWeight(.semibold)
                     .foregroundStyle(tintColor)
                     .contentTransition(.numericText())
+            } else {
+                Text("No change this \(period.label)")
+                    .font(.caption)
+                    .fontWeight(.semibold)
+                    .foregroundStyle(.secondary)
+                    .contentTransition(.interpolate)
             }
         }
         .padding(.horizontal, 14)
