@@ -27,53 +27,44 @@ struct ChangeBadge: View {
 
     var body: some View {
         HStack(spacing: 6) {
-            if summary.streak > 0 {
-                HStack(spacing: 2) {
-                    Image(systemName: "flame.fill")
-                        .font(.caption2)
-                        .foregroundStyle(.orange)
+            HStack(spacing: 2) {
+                Image(systemName: "flame.fill")
+                    .font(.caption2)
+                    .foregroundStyle(.orange)
 
-                    Text("\(summary.streak)")
-                        .font(.caption)
-                        .fontWeight(.bold)
-                        .contentTransition(.numericText())
-                }
-
-                Circle()
-                    .fill(tintColor.opacity(0.4))
-                    .frame(width: 4, height: 4)
-            }
-
-            if let avg = summary.average {
-                Text(String(format: "%.1f lbs", avg))
+                Text("\(summary.streak)")
                     .font(.caption)
                     .fontWeight(.bold)
                     .contentTransition(.numericText())
-
-                Circle()
-                    .fill(tintColor.opacity(0.4))
-                    .frame(width: 4, height: 4)
             }
 
-            Text("\(period.label) Avg")
-                .font(.caption2)
-                .fontWeight(.semibold)
-                .textCase(.uppercase)
-                .tracking(0.3)
-                .foregroundStyle(.secondary)
-                .contentTransition(.interpolate)
+            Circle()
+                .fill(tintColor.opacity(0.4))
+                .frame(width: 4, height: 4)
 
             if let lbs = summary.weightChange {
-                Circle()
-                    .fill(tintColor.opacity(0.4))
-                    .frame(width: 4, height: 4)
-
                 Text(String(format: "%+.1f lbs", lbs))
-                    .font(.caption2)
+                    .font(.caption)
                     .fontWeight(.bold)
                     .foregroundStyle(tintColor)
                     .contentTransition(.numericText())
+            } else {
+                Text("-- lbs")
+                    .font(.caption)
+                    .fontWeight(.bold)
+                    .foregroundStyle(.secondary)
             }
+
+            Circle()
+                .fill(tintColor.opacity(0.4))
+                .frame(width: 4, height: 4)
+
+            Text(period.label.uppercased())
+                .font(.caption2)
+                .fontWeight(.semibold)
+                .tracking(0.3)
+                .foregroundStyle(.secondary)
+                .contentTransition(.interpolate)
         }
         .padding(.horizontal, 14)
         .padding(.vertical, 10)
