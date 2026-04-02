@@ -14,6 +14,8 @@ struct ScaleApp: App {
     var sharedModelContainer: ModelContainer = {
         let schema = Schema([
             WeightEntry.self,
+            WorkoutEntry.self,
+            DailyActivitySummary.self,
         ])
         let diskConfiguration = ModelConfiguration(schema: schema, isStoredInMemoryOnly: false)
         let inMemoryConfiguration = ModelConfiguration(schema: schema, isStoredInMemoryOnly: true)
@@ -57,7 +59,7 @@ struct ScaleApp: App {
                 .task(id: autoSyncHealthKit) {
                     guard autoSyncHealthKit else { return }
                     let context = sharedModelContainer.mainContext
-                    await healthKitManager.importWeightData(modelContext: context)
+                    await healthKitManager.importAllData(modelContext: context)
                 }
                 .onReceive(NotificationCenter.default.publisher(for: .didTapWeightReminder)) { _ in
                     selectedTab = 0

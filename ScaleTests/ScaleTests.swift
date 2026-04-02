@@ -7,6 +7,7 @@
 
 import Testing
 import Foundation
+import SwiftUI
 import SwiftData
 import UserNotifications
 import XCTest
@@ -1143,6 +1144,177 @@ struct HealthKitImportPlanTests {
     }
 }
 
+// MARK: - HealthKit Workout Import Plan Tests
+
+struct HealthKitWorkoutImportPlanTests {
+
+    private func workout(
+        uuid: UUID = UUID(),
+        daysAgo: Int,
+        bundleID: String = "com.example.health",
+        activityTypeRawValue: UInt = 37,
+        duration: TimeInterval = 1_800,
+        energyBurnedKilocalories: Double? = 320,
+        distanceMiles: Double? = 3.1
+    ) -> HealthKitManager.ImportedWorkout {
+        HealthKitManager.ImportedWorkout(
+            uuid: uuid,
+            startDate: Calendar.current.date(byAdding: .day, value: -daysAgo, to: Date())!,
+            activityTypeRawValue: activityTypeRawValue,
+            duration: duration,
+            energyBurnedKilocalories: energyBurnedKilocalories,
+            distanceMiles: distanceMiles,
+            sourceBundleIdentifier: bundleID
+        )
+    }
+
+    @Test func workoutImportPlanSkipsSelfAuthoredAndExistingEntries() {
+        let retainedUUID = UUID()
+        let existing = [
+            WorkoutEntry(
+                activityTypeRawValue: 37,
+                duration: 1_500,
+                source: .appleHealth,
+                healthKitUUID: retainedUUID
+            )
+        ]
+        let workouts = [
+            workout(uuid: retainedUUID, daysAgo: 1),
+            workout(daysAgo: 2, bundleID: "com.groberg.Scale"),
+            workout(daysAgo: 3, activityTypeRawValue: 13, duration: 2_400)
+        ]
+
+        let plan = HealthKitManager.makeWorkoutImportPlan(
+            workouts: workouts,
+            existingEntries: existing,
+            ourBundleID: "com.groberg.Scale"
+        )
+
+        #expect(plan.importedCount == 1)
+        #expect(plan.skippedCount == 2)
+        #expect(plan.insertedEntries.count == 1)
+        #expect(plan.insertedEntries[0].activityTypeRawValue == 13)
+        #expect(plan.insertedEntries[0].duration == 2_400)
+    }
+
+    @Test func workoutImportPlanRemovesStaleHealthKitEntries() {
+        let staleUUID = UUID()
+        let retainedUUID = UUID()
+        let existing = [
+            WorkoutEntry(activityTypeRawValue: 37, duration: 1_000, source: .appleHealth, healthKitUUID: staleUUID),
+            WorkoutEntry(activityTypeRawValue: 13, duration: 2_000, source: .appleHealth, healthKitUUID: retainedUUID),
+            WorkoutEntry(activityTypeRawValue: 20, duration: 3_000, source: .appleHealth, healthKitUUID: nil)
+        ]
+
+        let plan = HealthKitManager.makeWorkoutImportPlan(
+            workouts: [workout(uuid: retainedUUID, daysAgo: 1)],
+            existingEntries: existing,
+            ourBundleID: "com.groberg.Scale"
+        )
+
+        #expect(plan.removedCount == 1)
+        #expect(plan.removedEntryIDs.contains(existing[0].persistentModelID))
+        #expect(!plan.removedEntryIDs.contains(existing[1].persistentModelID))
+        #expect(!plan.removedEntryIDs.contains(existing[2].persistentModelID))
+    }
+
+    @Test func workoutImportPlanKeepsEntriesWithoutHealthKitUUIDs() {
+        let existing = [
+            WorkoutEntry(activityTypeRawValue: 37, duration: 1_000, source: .appleHealth, healthKitUUID: nil)
+        ]
+
+        let plan = HealthKitManager.makeWorkoutImportPlan(
+            workouts: [],
+            existingEntries: existing,
+            ourBundleID: "com.groberg.Scale"
+        )
+
+        #expect(plan.removedCount == 0)
+        #expect(plan.removedEntryIDs.isEmpty)
+        #expect(plan.importedCount == 0)
+    }
+}
+
+// MARK: - HealthKit Daily Activity Import Plan Tests
+
+struct HealthKitDailyActivityImportPlanTests {
+
+    @Test func dailyActivityImportPlanInsertsUpdatesSkipsAndRemovesEntries() {
+        let calendar = Calendar.current
+        let today = calendar.startOfDay(for: Date())
+        let yesterday = calendar.date(byAdding: .day, value: -1, to: today)!
+        let twoDaysAgo = calendar.date(byAdding: .day, value: -2, to: today)!
+        let threeDaysAgo = calendar.date(byAdding: .day, value: -3, to: today)!
+
+        let unchanged = DailyActivitySummary(date: today, stepCount: 5_000, activeEnergyBurnedKilocalories: 400)
+        let needsUpdate = DailyActivitySummary(date: yesterday, stepCount: 4_000, activeEnergyBurnedKilocalories: 300)
+        let removable = DailyActivitySummary(date: twoDaysAgo, stepCount: 3_000, activeEnergyBurnedKilocalories: 200)
+
+        let imported = [
+            HealthKitManager.ImportedDailyActivitySummary(date: today, stepCount: 5_000, activeEnergyBurnedKilocalories: 400),
+            HealthKitManager.ImportedDailyActivitySummary(date: yesterday, stepCount: 4_500, activeEnergyBurnedKilocalories: 350),
+            HealthKitManager.ImportedDailyActivitySummary(date: threeDaysAgo, stepCount: 6_000, activeEnergyBurnedKilocalories: 500)
+        ]
+
+        let plan = HealthKitManager.makeDailyActivityImportPlan(
+            summaries: imported,
+            existingEntries: [unchanged, needsUpdate, removable]
+        )
+
+        #expect(plan.importedCount == 1)
+        #expect(plan.updatedCount == 1)
+        #expect(plan.skippedCount == 1)
+        #expect(plan.removedCount == 1)
+        #expect(plan.insertedEntries.first?.date == threeDaysAgo)
+        #expect(plan.updatedEntries.count == 1)
+        #expect(plan.updatedEntries[0].0 == needsUpdate.persistentModelID)
+        #expect(plan.updatedEntries[0].1 == 4_500)
+        #expect(abs(plan.updatedEntries[0].2 - 350) < 0.001)
+        #expect(plan.removedEntryIDs == [removable.persistentModelID])
+    }
+
+    @Test func dailyActivityImportPlanTreatsTinyEnergyDeltasAsUnchanged() {
+        let date = Calendar.current.startOfDay(for: Date())
+        let existing = DailyActivitySummary(date: date, stepCount: 8_000, activeEnergyBurnedKilocalories: 250)
+        let imported = HealthKitManager.ImportedDailyActivitySummary(
+            date: date,
+            stepCount: 8_000,
+            activeEnergyBurnedKilocalories: 250.0005
+        )
+
+        let plan = HealthKitManager.makeDailyActivityImportPlan(
+            summaries: [imported],
+            existingEntries: [existing]
+        )
+
+        #expect(plan.updatedCount == 0)
+        #expect(plan.skippedCount == 1)
+        #expect(plan.importedCount == 0)
+        #expect(plan.removedCount == 0)
+    }
+
+    @Test func dailyActivityImportPlanInsertsAllEntriesWhenStoreIsEmpty() {
+        let calendar = Calendar.current
+        let today = calendar.startOfDay(for: Date())
+        let yesterday = calendar.date(byAdding: .day, value: -1, to: today)!
+        let imported = [
+            HealthKitManager.ImportedDailyActivitySummary(date: yesterday, stepCount: 3_000, activeEnergyBurnedKilocalories: 200),
+            HealthKitManager.ImportedDailyActivitySummary(date: today, stepCount: 5_000, activeEnergyBurnedKilocalories: 400)
+        ]
+
+        let plan = HealthKitManager.makeDailyActivityImportPlan(
+            summaries: imported,
+            existingEntries: []
+        )
+
+        #expect(plan.importedCount == 2)
+        #expect(plan.updatedCount == 0)
+        #expect(plan.skippedCount == 0)
+        #expect(plan.removedCount == 0)
+        #expect(plan.insertedEntries.map(\.date) == [yesterday, today])
+    }
+}
+
 // MARK: - Store Reset Tests
 
 struct StoreResetTests {
@@ -1527,5 +1699,874 @@ struct AppTintTests {
         #expect(AppTint.pink.title == "Pink")
         #expect(AppTint.lavender.title == "Lavender")
         #expect(AppTint.red.title == "Red")
+    }
+}
+
+// MARK: - Change Pill Visibility Tests
+
+struct ChangePillVisibilityTests {
+
+    @Test func pillVisibleOnLogTab() {
+        #expect(RootView.isPillVisible(selectedTab: 0) == true)
+    }
+
+    @Test func pillVisibleOnJournalTab() {
+        #expect(RootView.isPillVisible(selectedTab: 1) == true)
+    }
+
+    @Test func pillHiddenOnSettingsTab() {
+        #expect(RootView.isPillVisible(selectedTab: 2) == false)
+    }
+
+    @Test func pillVisibleForUnknownTabIndex() {
+        // Any future tab that isn't Settings should still show the pill
+        #expect(RootView.isPillVisible(selectedTab: 3) == true)
+        #expect(RootView.isPillVisible(selectedTab: 99) == true)
+    }
+
+    @Test func selectedTabUpdateIgnoredWhenRetappingCurrentTab() {
+        #expect(RootView.shouldUpdateSelectedTab(from: 1, to: 1) == false)
+    }
+
+    @Test func selectedTabUpdateAllowedWhenChangingTabs() {
+        #expect(RootView.shouldUpdateSelectedTab(from: 0, to: 1) == true)
+    }
+
+    @Test func journalRetapMapsToBottomScrollAction() {
+        #expect(RootView.actionForTabTap(currentTab: 1, tappedTab: 1) == .scrollJournalToBottom)
+    }
+
+    @Test func nonJournalRetapMapsToIgnoreAction() {
+        #expect(RootView.actionForTabTap(currentTab: 0, tappedTab: 0) == .ignore)
+        #expect(RootView.actionForTabTap(currentTab: 2, tappedTab: 2) == .ignore)
+    }
+
+    @Test func changingTabsMapsToSwitchAction() {
+        #expect(RootView.actionForTabTap(currentTab: 0, tappedTab: 1) == .switchTab)
+        #expect(RootView.actionForTabTap(currentTab: 1, tappedTab: 2) == .switchTab)
+    }
+
+    @Test func journalRetapTriggersBottomScroll() {
+        #expect(RootView.shouldScrollJournalToBottom(tappedIndex: 1, wasReselected: true) == true)
+    }
+
+    @Test func journalFirstSelectionDoesNotTriggerBottomScroll() {
+        #expect(RootView.shouldScrollJournalToBottom(tappedIndex: 1, wasReselected: false) == false)
+    }
+
+    @Test func nonJournalRetapDoesNotTriggerBottomScroll() {
+        #expect(RootView.shouldScrollJournalToBottom(tappedIndex: 0, wasReselected: true) == false)
+        #expect(RootView.shouldScrollJournalToBottom(tappedIndex: 2, wasReselected: true) == false)
+    }
+}
+
+// MARK: - Tab Bar Reselect Tests
+
+@MainActor
+struct TabBarControllerObserverTests {
+
+    @Test func attachSeedsCurrentSelectedIndexForReselectDetection() {
+        let controller = UITabBarController()
+        controller.viewControllers = [UIViewController(), UIViewController(), UIViewController()]
+        controller.selectedIndex = 1
+
+        var receivedTap: (index: Int, wasReselected: Bool)?
+        let coordinator = TabBarControllerObserver.Coordinator { tappedIndex, wasReselected in
+            receivedTap = (tappedIndex, wasReselected)
+        }
+
+        coordinator.attach(to: controller)
+        coordinator.tabBarController(controller, didSelect: controller.viewControllers![1])
+
+        #expect(receivedTap?.index == 1)
+        #expect(receivedTap?.wasReselected == true)
+    }
+
+    @Test func selectingDifferentTabReportsNonReselect() {
+        let controller = UITabBarController()
+        controller.viewControllers = [UIViewController(), UIViewController(), UIViewController()]
+        controller.selectedIndex = 0
+
+        var receivedTap: (index: Int, wasReselected: Bool)?
+        let coordinator = TabBarControllerObserver.Coordinator { tappedIndex, wasReselected in
+            receivedTap = (tappedIndex, wasReselected)
+        }
+
+        coordinator.attach(to: controller)
+        controller.selectedIndex = 1
+        coordinator.tabBarController(controller, didSelect: controller.viewControllers![1])
+
+        #expect(receivedTap?.index == 1)
+        #expect(receivedTap?.wasReselected == false)
+    }
+
+    @Test func switchingToJournalThenRetappingReportsReselectOnlyOnSecondTap() {
+        let controller = UITabBarController()
+        controller.viewControllers = [UIViewController(), UIViewController(), UIViewController()]
+        controller.selectedIndex = 0
+
+        var receivedTaps: [(index: Int, wasReselected: Bool)] = []
+        let coordinator = TabBarControllerObserver.Coordinator { tappedIndex, wasReselected in
+            receivedTaps.append((tappedIndex, wasReselected))
+        }
+
+        coordinator.attach(to: controller)
+
+        controller.selectedIndex = 1
+        coordinator.tabBarController(controller, didSelect: controller.viewControllers![1])
+        coordinator.tabBarController(controller, didSelect: controller.viewControllers![1])
+
+        #expect(receivedTaps.count == 2)
+        #expect(receivedTaps[0].index == 1)
+        #expect(receivedTaps[0].wasReselected == false)
+        #expect(receivedTaps[1].index == 1)
+        #expect(receivedTaps[1].wasReselected == true)
+    }
+}
+
+// MARK: - Journal Scroll Target Tests
+
+struct JournalScrollTargetTests {
+
+    @Test func nilFocusedEntryTargetsTodayAtBottom() {
+        let calendar = Calendar(identifier: .gregorian)
+        let now = Date(timeIntervalSince1970: 1_710_000_000)
+
+        let targetDay = JournalView.targetDay(for: nil, now: now, calendar: calendar)
+
+        #expect(targetDay == calendar.startOfDay(for: now))
+        #expect(JournalView.targetAnchor(hasFocusedEntry: false) == .bottom)
+    }
+
+    @Test func focusedEntryTargetsEntryDayAtTop() {
+        let calendar = Calendar(identifier: .gregorian)
+        let entryDate = Date(timeIntervalSince1970: 1_709_000_123)
+
+        let targetDay = JournalView.targetDay(for: entryDate, calendar: calendar)
+
+        #expect(targetDay == calendar.startOfDay(for: entryDate))
+        #expect(JournalView.targetAnchor(hasFocusedEntry: true) == .top)
+    }
+
+    @Test func nilFocusedEntryUsesBottomAnchor() {
+        #expect(JournalView.targetAnchor(hasFocusedEntry: false) == .bottom)
+    }
+
+    @Test func nearTopThresholdMatchesScrollGeometryRule() {
+        #expect(JournalView.isNearTop(contentOffsetY: 50, topInset: 0) == true)
+        #expect(JournalView.isNearTop(contentOffsetY: 80, topInset: 0) == true)
+        #expect(JournalView.isNearTop(contentOffsetY: 81, topInset: 0) == false)
+        #expect(JournalView.isNearTop(contentOffsetY: 100, topInset: 40) == true)
+        #expect(JournalView.isNearTop(contentOffsetY: 121, topInset: 40) == false)
+    }
+
+    @Test func aprilFirstCountsAsLoggableWhenItIsToday() {
+        let calendar = Calendar(identifier: .gregorian)
+        let now = calendar.date(from: DateComponents(year: 2026, month: 4, day: 1, hour: 9, minute: 30))!
+        let aprilFirst = calendar.date(from: DateComponents(year: 2026, month: 4, day: 1, hour: 0, minute: 1))!
+
+        #expect(JournalView.isLoggableDay(aprilFirst, now: now, calendar: calendar) == true)
+    }
+
+    @Test func tomorrowIsNotLoggable() {
+        let calendar = Calendar(identifier: .gregorian)
+        let now = calendar.date(from: DateComponents(year: 2026, month: 4, day: 1, hour: 9, minute: 30))!
+        let tomorrow = calendar.date(from: DateComponents(year: 2026, month: 4, day: 2, hour: 0, minute: 1))!
+
+        #expect(JournalView.isLoggableDay(tomorrow, now: now, calendar: calendar) == false)
+    }
+
+    @Test func unloggedDayWithWorkoutsStillOpensCreateSheet() {
+        #expect(
+            JournalView.shouldPresentCreateSheet(
+                hasLoggedWeight: false,
+                hasWorkouts: true
+            ) == true
+        )
+    }
+
+    @Test func loggedDayWithWorkoutsOpensDetailSheet() {
+        #expect(
+            JournalView.shouldPresentCreateSheet(
+                hasLoggedWeight: true,
+                hasWorkouts: true
+            ) == false
+        )
+    }
+}
+
+// MARK: - Journal Retap Isolation Tests
+
+struct JournalRetapIsolationTests {
+
+    @Test func journalRetapSignalExistsOnlyThroughTabBarObserverPath() {
+        #expect(RootView.shouldUpdateSelectedTab(from: 1, to: 1) == false)
+        #expect(RootView.actionForTabTap(currentTab: 1, tappedTab: 1) == .scrollJournalToBottom)
+        #expect(RootView.shouldScrollJournalToBottom(tappedIndex: 1, wasReselected: true) == true)
+    }
+
+    @Test func journalFallbackScrollPathTargetsTodayBottom() {
+        let calendar = Calendar(identifier: .gregorian)
+        let now = Date(timeIntervalSince1970: 1_710_000_000)
+
+        #expect(JournalView.targetDay(for: nil, now: now, calendar: calendar) == calendar.startOfDay(for: now))
+        #expect(JournalView.targetAnchor(hasFocusedEntry: false) == .bottom)
+    }
+
+    @Test func currentLogicKeepsRetapAndFallbackScrollPathsAligned() {
+        let shouldScrollToBottom = RootView.shouldScrollJournalToBottom(
+            tappedIndex: 1,
+            wasReselected: true
+        )
+        let fallbackAnchor = JournalView.targetAnchor(hasFocusedEntry: false)
+
+        #expect(shouldScrollToBottom == true)
+        #expect(fallbackAnchor == .bottom)
+    }
+}
+
+// MARK: - Calendar Month Loader Tests
+
+struct CalendarMonthLoaderTests {
+
+    private let calendar = Calendar.current
+
+    private func monthStart(for date: Date) -> Date {
+        let comps = calendar.dateComponents([.year, .month], from: date)
+        return calendar.date(from: comps)!
+    }
+
+    // MARK: - Initial Loading
+
+    @Test func initialStateIsEmpty() {
+        let loader = CalendarMonthLoader(batchSize: 6)
+        #expect(loader.monthStarts.isEmpty)
+        #expect(loader.sortedDescending.isEmpty)
+        #expect(loader.earliest == nil)
+        #expect(loader.latest == nil)
+    }
+
+    @Test func loadInitialMonthsPopulatesBatchSizeMonths() {
+        var loader = CalendarMonthLoader(batchSize: 6)
+        loader.loadInitialMonths()
+        #expect(loader.monthStarts.count == 6)
+    }
+
+    @Test func loadInitialMonthsIsIdempotent() {
+        var loader = CalendarMonthLoader(batchSize: 6)
+        loader.loadInitialMonths()
+        let first = loader.monthStarts
+        loader.loadInitialMonths()
+        #expect(loader.monthStarts == first)
+    }
+
+    @Test func latestMonthIsCurrentMonth() {
+        var loader = CalendarMonthLoader(batchSize: 6)
+        loader.loadInitialMonths()
+        let currentMonth = monthStart(for: .now)
+        #expect(loader.latest == currentMonth)
+    }
+
+    @Test func earliestMonthIsBatchSizeMinusOneMonthsBack() {
+        var loader = CalendarMonthLoader(batchSize: 6)
+        loader.loadInitialMonths()
+        let currentMonth = monthStart(for: .now)
+        let expected = calendar.date(byAdding: .month, value: -5, to: currentMonth)!
+        #expect(loader.earliest == expected)
+    }
+
+    @Test func sortedDescendingHasCurrentMonthFirst() {
+        var loader = CalendarMonthLoader(batchSize: 6)
+        loader.loadInitialMonths()
+        let currentMonth = monthStart(for: .now)
+        #expect(loader.sortedDescending.first == currentMonth)
+    }
+
+    @Test func sortedDescendingHasOldestMonthLast() {
+        var loader = CalendarMonthLoader(batchSize: 6)
+        loader.loadInitialMonths()
+        let currentMonth = monthStart(for: .now)
+        let expected = calendar.date(byAdding: .month, value: -5, to: currentMonth)!
+        #expect(loader.sortedDescending.last == expected)
+    }
+
+    @Test func sortedDescendingIsStrictlyDecreasing() {
+        var loader = CalendarMonthLoader(batchSize: 12)
+        loader.loadInitialMonths()
+        let months = loader.sortedDescending
+        for i in 0..<(months.count - 1) {
+            #expect(months[i] > months[i + 1])
+        }
+    }
+
+    @Test func noFutureMonthsLoaded() {
+        var loader = CalendarMonthLoader(batchSize: 12)
+        loader.loadInitialMonths()
+        let currentMonth = monthStart(for: .now)
+        for month in loader.monthStarts {
+            #expect(month <= currentMonth)
+        }
+    }
+
+    // MARK: - Expansion
+
+    @Test func expandDoesNothingForNonEarliestMonth() {
+        var loader = CalendarMonthLoader(batchSize: 4)
+        loader.loadInitialMonths()
+        let countBefore = loader.monthStarts.count
+        let someMiddleMonth = loader.sortedDescending[1]
+        let expanded = loader.expandIfNeeded(for: someMiddleMonth)
+        #expect(!expanded)
+        #expect(loader.monthStarts.count == countBefore)
+    }
+
+    @Test func expandDoesNothingForLatestMonth() {
+        var loader = CalendarMonthLoader(batchSize: 4)
+        loader.loadInitialMonths()
+        let countBefore = loader.monthStarts.count
+        let expanded = loader.expandIfNeeded(for: loader.latest!)
+        #expect(!expanded)
+        #expect(loader.monthStarts.count == countBefore)
+    }
+
+    @Test func expandAddsMonthsWhenTriggeredByEarliestMonth() {
+        var loader = CalendarMonthLoader(batchSize: 4)
+        loader.loadInitialMonths()
+        #expect(loader.monthStarts.count == 4)
+
+        let expanded = loader.expandIfNeeded(for: loader.earliest!)
+        #expect(expanded)
+        #expect(loader.monthStarts.count == 8)
+    }
+
+    @Test func expandPreservesExistingMonths() {
+        var loader = CalendarMonthLoader(batchSize: 4)
+        loader.loadInitialMonths()
+        let originalMonths = Set(loader.monthStarts)
+
+        loader.expandIfNeeded(for: loader.earliest!)
+
+        for month in originalMonths {
+            #expect(loader.monthStarts.contains(month))
+        }
+    }
+
+    @Test func expandedMonthsAreAllInThePast() {
+        var loader = CalendarMonthLoader(batchSize: 4)
+        loader.loadInitialMonths()
+        let currentMonth = monthStart(for: .now)
+
+        loader.expandIfNeeded(for: loader.earliest!)
+
+        for month in loader.monthStarts {
+            #expect(month <= currentMonth)
+        }
+    }
+
+    @Test func expandPushesEarliestFurtherBack() {
+        var loader = CalendarMonthLoader(batchSize: 4)
+        loader.loadInitialMonths()
+        let earliestBefore = loader.earliest!
+
+        loader.expandIfNeeded(for: earliestBefore)
+
+        #expect(loader.earliest! < earliestBefore)
+    }
+
+    @Test func expandDoesNotChangeLatest() {
+        var loader = CalendarMonthLoader(batchSize: 4)
+        loader.loadInitialMonths()
+        let latestBefore = loader.latest!
+
+        loader.expandIfNeeded(for: loader.earliest!)
+
+        #expect(loader.latest == latestBefore)
+    }
+
+    @Test func multipleExpansionsKeepGrowing() {
+        var loader = CalendarMonthLoader(batchSize: 3)
+        loader.loadInitialMonths()
+        #expect(loader.monthStarts.count == 3)
+
+        loader.expandIfNeeded(for: loader.earliest!)
+        #expect(loader.monthStarts.count == 6)
+
+        loader.expandIfNeeded(for: loader.earliest!)
+        #expect(loader.monthStarts.count == 9)
+
+        loader.expandIfNeeded(for: loader.earliest!)
+        #expect(loader.monthStarts.count == 12)
+    }
+
+    @Test func expandedMonthsAreContinuousWithNoDuplicates() {
+        var loader = CalendarMonthLoader(batchSize: 4)
+        loader.loadInitialMonths()
+        loader.expandIfNeeded(for: loader.earliest!)
+        loader.expandIfNeeded(for: loader.earliest!)
+
+        let sorted = loader.monthStarts.sorted()
+        // No duplicates
+        #expect(Set(sorted).count == sorted.count)
+
+        // Each month is exactly 1 month apart
+        for i in 0..<(sorted.count - 1) {
+            let diff = calendar.dateComponents([.month], from: sorted[i], to: sorted[i + 1])
+            #expect(diff.month == 1)
+        }
+    }
+
+    @Test func expandOnEmptyLoaderDoesNothing() {
+        var loader = CalendarMonthLoader(batchSize: 4)
+        let expanded = loader.expandIfNeeded(for: .now)
+        #expect(!expanded)
+        #expect(loader.monthStarts.isEmpty)
+    }
+
+    // MARK: - Custom now date
+
+    @Test func loadInitialMonthsRespectsCustomNow() {
+        var loader = CalendarMonthLoader(batchSize: 3)
+        // Use January 2025 as "now"
+        var comps = DateComponents()
+        comps.year = 2025
+        comps.month = 1
+        comps.day = 15
+        let fakeNow = calendar.date(from: comps)!
+        loader.loadInitialMonths(now: fakeNow)
+
+        let expectedLatest = monthStart(for: fakeNow) // Jan 2025
+        #expect(loader.latest == expectedLatest)
+
+        let expectedEarliest = calendar.date(byAdding: .month, value: -2, to: expectedLatest)!
+        #expect(loader.earliest == expectedEarliest) // Nov 2024
+    }
+
+    // MARK: - currentMonthStart helper
+
+    @Test func currentMonthStartReturnsFirstOfMonth() {
+        let result = CalendarMonthLoader.currentMonthStart()
+        let comps = calendar.dateComponents([.day, .hour, .minute, .second], from: result)
+        #expect(comps.day == 1)
+        #expect(comps.hour == 0)
+        #expect(comps.minute == 0)
+        #expect(comps.second == 0)
+    }
+
+    @Test func currentMonthStartMatchesForMidMonthDate() {
+        var comps = DateComponents()
+        comps.year = 2025
+        comps.month = 7
+        comps.day = 15
+        let midMonth = calendar.date(from: comps)!
+        let result = CalendarMonthLoader.currentMonthStart(now: midMonth)
+
+        var expected = DateComponents()
+        expected.year = 2025
+        expected.month = 7
+        let expectedDate = calendar.date(from: expected)!
+        #expect(result == expectedDate)
+    }
+
+    // MARK: - Batch size of 1
+
+    @Test func batchSizeOneLoadsOneMonth() {
+        var loader = CalendarMonthLoader(batchSize: 1)
+        loader.loadInitialMonths()
+        #expect(loader.monthStarts.count == 1)
+        #expect(loader.latest == loader.earliest)
+    }
+
+    @Test func batchSizeOneExpandsOneAtATime() {
+        var loader = CalendarMonthLoader(batchSize: 1)
+        loader.loadInitialMonths()
+        let first = loader.earliest!
+
+        loader.expandIfNeeded(for: first)
+        #expect(loader.monthStarts.count == 2)
+
+        let expectedNew = calendar.date(byAdding: .month, value: -1, to: first)!
+        #expect(loader.earliest == expectedNew)
+    }
+}
+
+// MARK: - Widget Snapshot Data Tests
+//
+// These tests verify the WeightWidgetSnapshot data layer that powers both
+// home screen and lockscreen (accessory) widget views.
+
+@MainActor
+struct WidgetSnapshotDataTests {
+
+    // MARK: - Snapshot make() produces correct data for lockscreen widgets
+
+    @Test func snapshotPopulatesAllFieldsForLockscreen() {
+        let now = Date()
+        let entries = [
+            WeightEntry(weight: 182.4, timestamp: now),
+            WeightEntry(weight: 184.0, timestamp: now.addingTimeInterval(-86400)),
+            WeightEntry(weight: 185.1, timestamp: now.addingTimeInterval(-86400 * 5))
+        ]
+
+        let snapshot = WeightWidgetSnapshot.make(
+            from: entries,
+            tintRawValue: AppTint.green.rawValue,
+            now: now
+        )
+
+        // Lockscreen rectangular widget displays streak and trend — both must be populated
+        #expect(snapshot.streakCount == 2)
+        #expect(snapshot.monthPercentChange != nil)
+        #expect(snapshot.latestWeight == 182.4)
+        #expect(snapshot.latestTimestamp == now)
+    }
+
+    @Test func snapshotStreakCountMatchesConsecutiveDays() {
+        let calendar = Calendar.current
+        let now = Date()
+        let entries = (0..<5).map { daysAgo in
+            WeightEntry(weight: 180.0, timestamp: calendar.date(byAdding: .day, value: -daysAgo, to: now)!)
+        }
+
+        let snapshot = WeightWidgetSnapshot.make(
+            from: entries,
+            tintRawValue: "blue",
+            now: now
+        )
+
+        // 5 consecutive days including today
+        #expect(snapshot.streakCount == 5)
+    }
+
+    @Test func snapshotWithNoEntriesHasZeroStreakAndNilFields() {
+        let snapshot = WeightWidgetSnapshot.make(
+            from: [],
+            tintRawValue: "blue",
+            now: .now
+        )
+
+        // Lockscreen widgets fall back to empty state — circular shows "--", inline shows prompt
+        #expect(snapshot.latestWeight == nil)
+        #expect(snapshot.latestTimestamp == nil)
+        #expect(snapshot.streakCount == 0)
+        #expect(snapshot.monthAverage == nil)
+        #expect(snapshot.monthPercentChange == nil)
+    }
+
+    @Test func snapshotWithSingleEntryHasNilPercentChange() {
+        let now = Date()
+        let snapshot = WeightWidgetSnapshot.make(
+            from: [WeightEntry(weight: 175.0, timestamp: now)],
+            tintRawValue: "orange",
+            now: now
+        )
+
+        // Rectangular lockscreen widget hides trend pill when percentChange is nil
+        #expect(snapshot.latestWeight == 175.0)
+        #expect(snapshot.streakCount == 1)
+        #expect(snapshot.monthAverage == 175.0)
+        #expect(snapshot.monthPercentChange == nil)
+    }
+
+    @Test func snapshotSortsEntriesAndUsesLatest() {
+        let now = Date()
+        let older = WeightEntry(weight: 190.0, timestamp: now.addingTimeInterval(-86400))
+        let newer = WeightEntry(weight: 188.2, timestamp: now)
+
+        // Pass entries out of order — snapshot should still use the most recent
+        let snapshot = WeightWidgetSnapshot.make(
+            from: [older, newer],
+            tintRawValue: "red",
+            now: now
+        )
+
+        #expect(snapshot.latestWeight == 188.2)
+        #expect(snapshot.latestTimestamp == now)
+    }
+
+    @Test func snapshotTintRawValueIsPreserved() {
+        for tint in AppTint.allCases {
+            let snapshot = WeightWidgetSnapshot.make(
+                from: [WeightEntry(weight: 180.0, timestamp: .now)],
+                tintRawValue: tint.rawValue,
+                now: .now
+            )
+            #expect(snapshot.appTintRawValue == tint.rawValue)
+        }
+    }
+
+    // MARK: - JSON round-trip (widget extension reads what the app writes)
+
+    @Test func snapshotEncodesAndDecodesWithISO8601() throws {
+        let now = Date(timeIntervalSince1970: 1_710_000_000) // stable reference date
+        let original = WeightWidgetSnapshot.make(
+            from: [
+                WeightEntry(weight: 182.4, timestamp: now),
+                WeightEntry(weight: 184.0, timestamp: now.addingTimeInterval(-86400))
+            ],
+            tintRawValue: "green",
+            now: now
+        )
+
+        let encoder = JSONEncoder()
+        encoder.dateEncodingStrategy = .iso8601
+        let data = try encoder.encode(original)
+
+        let decoder = JSONDecoder()
+        decoder.dateDecodingStrategy = .iso8601
+        let decoded = try decoder.decode(WeightWidgetSnapshot.self, from: data)
+
+        #expect(decoded == original)
+        #expect(decoded.latestWeight == 182.4)
+        #expect(decoded.streakCount == original.streakCount)
+        #expect(decoded.monthPercentChange == original.monthPercentChange)
+        #expect(decoded.appTintRawValue == "green")
+    }
+
+    @Test func snapshotDecodesEmptyOptionalFieldsCorrectly() throws {
+        let now = Date(timeIntervalSince1970: 1_710_000_000)
+        let original = WeightWidgetSnapshot.make(
+            from: [],
+            tintRawValue: "blue",
+            now: now
+        )
+
+        let encoder = JSONEncoder()
+        encoder.dateEncodingStrategy = .iso8601
+        let data = try encoder.encode(original)
+
+        let decoder = JSONDecoder()
+        decoder.dateDecodingStrategy = .iso8601
+        let decoded = try decoder.decode(WeightWidgetSnapshot.self, from: data)
+
+        #expect(decoded == original)
+        #expect(decoded.latestWeight == nil)
+        #expect(decoded.monthPercentChange == nil)
+        #expect(decoded.monthAverage == nil)
+    }
+
+    // MARK: - Month average correctness (used by home + medium widgets)
+
+    @Test func snapshotMonthAverageIsCorrectForRecentEntries() {
+        let now = Date()
+        let entries = [
+            WeightEntry(weight: 180.0, timestamp: now),
+            WeightEntry(weight: 182.0, timestamp: now.addingTimeInterval(-86400 * 2)),
+            WeightEntry(weight: 184.0, timestamp: now.addingTimeInterval(-86400 * 5))
+        ]
+
+        let snapshot = WeightWidgetSnapshot.make(from: entries, tintRawValue: "blue", now: now)
+
+        // All entries within the last month, average = (180+182+184)/3 = 182.0
+        #expect(snapshot.monthAverage != nil)
+        #expect(abs(snapshot.monthAverage! - 182.0) < 0.01)
+    }
+
+    @Test func snapshotMonthAverageExcludesOldEntries() {
+        let now = Date()
+        let entries = [
+            WeightEntry(weight: 180.0, timestamp: now),
+            WeightEntry(weight: 200.0, timestamp: now.addingTimeInterval(-86400 * 60)) // ~2 months ago
+        ]
+
+        let snapshot = WeightWidgetSnapshot.make(from: entries, tintRawValue: "blue", now: now)
+
+        // Only the recent entry should count toward the month average
+        #expect(snapshot.monthAverage != nil)
+        #expect(abs(snapshot.monthAverage! - 180.0) < 0.01)
+    }
+
+    // MARK: - Percent change sign (rectangular lockscreen shows colored trend)
+
+    @Test func snapshotPercentChangeIsNegativeForWeightLoss() {
+        let now = Date()
+        let entries = [
+            WeightEntry(weight: 176.0, timestamp: now),
+            WeightEntry(weight: 180.0, timestamp: now.addingTimeInterval(-86400 * 5))
+        ]
+
+        let snapshot = WeightWidgetSnapshot.make(from: entries, tintRawValue: "blue", now: now)
+
+        #expect(snapshot.monthPercentChange != nil)
+        #expect(snapshot.monthPercentChange! < 0)
+    }
+
+    @Test func snapshotPercentChangeIsPositiveForWeightGain() {
+        let now = Date()
+        let entries = [
+            WeightEntry(weight: 185.0, timestamp: now),
+            WeightEntry(weight: 180.0, timestamp: now.addingTimeInterval(-86400 * 5))
+        ]
+
+        let snapshot = WeightWidgetSnapshot.make(from: entries, tintRawValue: "blue", now: now)
+
+        #expect(snapshot.monthPercentChange != nil)
+        #expect(snapshot.monthPercentChange! > 0)
+    }
+}
+
+// MARK: - WeightEntry Photo Metadata Tests
+
+struct WeightEntryPhotoMetadataTests {
+
+    @Test func emptyEntryHasNoPhotosAndZeroFingerprint() {
+        let entry = WeightEntry(weight: 180.0)
+
+        #expect(entry.hasPhotos == false)
+        #expect(entry.photosFingerprint == 0)
+    }
+
+    @Test func multiPhotoAssignmentRoundTripsAndExposesPrimaryPhoto() {
+        let firstPhoto = Data([0x01, 0x02, 0x03])
+        let secondPhoto = Data([0xAA, 0xBB, 0xCC])
+        let entry = WeightEntry(weight: 180.0)
+
+        entry.photosData = [firstPhoto, secondPhoto]
+
+        #expect(entry.photosData == [firstPhoto, secondPhoto])
+        #expect(entry.photoData == firstPhoto)
+        #expect(entry.hasPhotos == true)
+    }
+
+    @Test func clearingPhotosResetsPrimaryPhotoAndHasPhotosFlag() {
+        let entry = WeightEntry(weight: 180.0, photoData: Data([0x10, 0x20]))
+        let originalFingerprint = entry.photosFingerprint
+
+        entry.photosData = []
+
+        #expect(entry.photosData.isEmpty)
+        #expect(entry.photoData == nil)
+        #expect(entry.hasPhotos == false)
+        #expect(entry.photosFingerprint != originalFingerprint)
+    }
+
+    @Test func photosFingerprintChangesWhenStoredPhotoPayloadChanges() {
+        let entry = WeightEntry(weight: 180.0)
+
+        entry.photosData = [Data([0x01])]
+        let firstFingerprint = entry.photosFingerprint
+        entry.photosData = [Data([0x02])]
+        let secondFingerprint = entry.photosFingerprint
+
+        #expect(firstFingerprint != secondFingerprint)
+    }
+
+    @Test func multiPhotoPayloadPersistsThroughSwiftDataRoundTrip() throws {
+        let config = ModelConfiguration(isStoredInMemoryOnly: true)
+        let container = try ModelContainer(for: WeightEntry.self, configurations: config)
+        let context = ModelContext(container)
+        let firstPhoto = Data([0x01, 0x02, 0x03])
+        let secondPhoto = Data([0x04, 0x05, 0x06])
+        let entry = WeightEntry(weight: 180.0)
+        entry.photosData = [firstPhoto, secondPhoto]
+
+        context.insert(entry)
+        try context.save()
+
+        let storedEntries = try context.fetch(FetchDescriptor<WeightEntry>())
+
+        #expect(storedEntries.count == 1)
+        #expect(storedEntries[0].photosData == [firstPhoto, secondPhoto])
+        #expect(storedEntries[0].photoData == firstPhoto)
+        #expect(storedEntries[0].hasPhotos == true)
+    }
+}
+
+// MARK: - WorkoutEntry Model Tests
+
+struct WorkoutEntryModelTests {
+
+    @Test func workoutEntryInitializesWithAllFields() {
+        let timestamp = Date(timeIntervalSince1970: 1_700_000_000)
+        let uuid = UUID()
+        let workout = WorkoutEntry(
+            timestamp: timestamp,
+            activityTypeRawValue: 37,
+            duration: 1_800,
+            energyBurnedKilocalories: 450,
+            distanceMiles: 3.25,
+            source: .appleHealth,
+            healthKitUUID: uuid
+        )
+
+        #expect(workout.timestamp == timestamp)
+        #expect(workout.activityTypeRawValue == 37)
+        #expect(workout.duration == 1_800)
+        #expect(workout.energyBurnedKilocalories == 450)
+        #expect(workout.distanceMiles == 3.25)
+        #expect(workout.source == .appleHealth)
+        #expect(workout.healthKitUUID == uuid)
+    }
+
+    @Test func workoutSourceCodableRoundTripPreservesRawValue() throws {
+        let encoded = try JSONEncoder().encode(WorkoutSource.appleHealth)
+        let decoded = try JSONDecoder().decode(WorkoutSource.self, from: encoded)
+
+        #expect(decoded == .appleHealth)
+        #expect(WorkoutSource.appleHealth.rawValue == "appleHealth")
+    }
+}
+
+// MARK: - Daily Activity Summary Model Tests
+
+struct DailyActivitySummaryModelTests {
+
+    @Test func dailyActivitySummaryInitializesWithDefaults() {
+        let date = Calendar.current.startOfDay(for: .now)
+        let summary = DailyActivitySummary(date: date)
+
+        #expect(summary.date == date)
+        #expect(summary.stepCount == 0)
+        #expect(summary.activeEnergyBurnedKilocalories == 0)
+        #expect(summary.source == .appleHealth)
+    }
+
+    @Test func dailyActivitySummaryStoresCustomValues() {
+        let date = Date(timeIntervalSince1970: 1_700_000_000)
+        let summary = DailyActivitySummary(
+            date: date,
+            stepCount: 12_345,
+            activeEnergyBurnedKilocalories: 678.9,
+            source: .appleHealth
+        )
+
+        #expect(summary.date == date)
+        #expect(summary.stepCount == 12_345)
+        #expect(summary.activeEnergyBurnedKilocalories == 678.9)
+        #expect(summary.source == .appleHealth)
+    }
+
+    @Test func dailyActivitySourceCodableRoundTripPreservesRawValue() throws {
+        let encoded = try JSONEncoder().encode(DailyActivitySource.appleHealth)
+        let decoded = try JSONDecoder().decode(DailyActivitySource.self, from: encoded)
+
+        #expect(decoded == .appleHealth)
+        #expect(DailyActivitySource.appleHealth.rawValue == "appleHealth")
+    }
+}
+
+// MARK: - RootView Custom Tab Logic Tests
+
+struct RootViewCustomTabLogicTests {
+
+    @Test func journalReselectUsesCustomJournalTabIndex() {
+        #expect(
+            RootView.shouldScrollJournalToBottom(
+                tappedIndex: 4,
+                wasReselected: true,
+                journalTabIndex: 4
+            ) == true
+        )
+        #expect(
+            RootView.shouldScrollJournalToBottom(
+                tappedIndex: 1,
+                wasReselected: true,
+                journalTabIndex: 4
+            ) == false
+        )
+    }
+
+    @Test func pillVisibilityUsesCustomSettingsIndex() {
+        #expect(RootView.isPillVisible(selectedTab: 5, settingsTab: 5) == false)
+        #expect(RootView.isPillVisible(selectedTab: 2, settingsTab: 5) == true)
     }
 }

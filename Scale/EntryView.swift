@@ -8,6 +8,7 @@
 import SwiftUI
 import SwiftData
 import UIKit
+import PhotosUI
 
 struct EntryView: View {
     @Environment(\.modelContext) private var modelContext
@@ -22,17 +23,29 @@ struct EntryView: View {
     @State private var currentWeight: Double = 142.5
     @State private var isEditingWeight = false
     @State private var weightText = ""
-    @State private var showCamera = false
     @State private var saved = false
     @State private var pendingEntry: WeightEntry?
-    @State private var weightChangeFeedbackToken = 0
+    @State private var selectedPhotoItems: [PhotosPickerItem] = []
+    @State private var photoData: [Data] = []
     @FocusState private var weightFieldFocused: Bool
 
     private let step = 0.1
-    private let bottomBarWidth: CGFloat = 360
     private let weightDisplaySpacing: CGFloat = 16
+    private let timeFormatter: DateFormatter = {
+        let formatter = DateFormatter()
+        formatter.timeStyle = .short
+        return formatter
+    }()
 
     private var latestEntry: WeightEntry? { entries.first }
+
+    private var weightStatusText: String {
+        guard let latestEntry, Calendar.current.isDateInToday(latestEntry.timestamp) else {
+            return "Log your weight today"
+        }
+
+        return "Last logged at \(timeFormatter.string(from: latestEntry.timestamp))"
+    }
 
     private var tintColor: Color {
         (AppTint(rawValue: appTint) ?? .defaultValue).color
@@ -48,10 +61,6 @@ struct EntryView: View {
                     Spacer()
 
                     VStack(spacing: 16) {
-                        VStack(spacing: 8) {
-                            lastLoggedLabel
-                        }
-
                         weightDisplay
                     }
                     .padding(.horizontal, 32)
@@ -61,70 +70,31 @@ struct EntryView: View {
                 }
             }
             .toolbar(.hidden, for: .navigationBar)
-            .safeAreaInset(edge: .bottom) {
-                if !isEditingWeight {
-                    VStack(spacing: 12) {
-                        bottomActionRow
-                    }
-                    .padding(.horizontal, 24)
-                    .padding(.top, 12)
-                    .padding(.bottom, 12)
-                    .transition(.move(edge: .bottom).combined(with: .opacity))
-                }
-            }
             .onAppear {
                 if let latest = latestEntry {
                     currentWeight = latest.weight
                 }
             }
-            .fullScreenCover(isPresented: $showCamera) {
-                ScaleScannerView { weight in
-                    withAnimation(.snappy) {
-                        currentWeight = weight
-                        saved = false
-                        weightChangeFeedbackToken += 1
-                    }
-                }
-            }
-            .toolbar {
+            .safeAreaInset(edge: .bottom) {
                 if isEditingWeight {
-                    ToolbarItem(placement: .keyboard) {
-                        HStack {
-                            Button("Cancel") {
-                                cancelWeightEdit()
-                            }
-                            .foregroundStyle(.red)
-
-                            Spacer()
-
-                            Button("Done") {
-                                commitWeightEdit()
-                            }
-                            .fontWeight(.semibold)
-                        }
+                    weightEditControls
+                        .padding(.horizontal, 20)
+                        .padding(.bottom, 8)
+                        .transition(.move(edge: .bottom).combined(with: .opacity))
+                }
+            }
+            .onChange(of: selectedPhotoItems) { _, newItems in
+                guard !newItems.isEmpty else { return }
+                Task {
+                    let newPhotoData = await loadPhotoData(from: newItems)
+                    await MainActor.run {
+                        photoData.append(contentsOf: newPhotoData)
+                        saved = false
+                        selectedPhotoItems = []
                     }
                 }
             }
-            .sensoryFeedback(.success, trigger: saved) { _, new in new }
-            .sensoryFeedback(.selection, trigger: weightChangeFeedbackToken)
             .sensoryFeedback(.selection, trigger: isEditingWeight) { _, new in new }
-            .sensoryFeedback(.impact(weight: .light), trigger: showCamera) { _, new in new }
-        }
-    }
-
-    // MARK: - Last Logged Label
-
-    private var lastLoggedLabel: some View {
-        Group {
-            if let latest = latestEntry {
-                Text("Last logged \(latest.timestamp, format: .relative(presentation: .named))")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-            } else {
-                Text("Log your first weight")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-            }
         }
     }
 
@@ -132,19 +102,25 @@ struct EntryView: View {
 
     private var weightDisplay: some View {
         VStack(spacing: weightDisplaySpacing) {
-            HStack(alignment: .firstTextBaseline, spacing: 8) {
-                weightValue
+            Text(weightStatusText)
+                .font(.caption2.weight(.medium))
+                .foregroundStyle(.secondary)
+                .multilineTextAlignment(.center)
 
-                scanCameraButton
-            }
+            weightValue
 
             quickAdjustRow
-        }
-        .onChange(of: weightFieldFocused) { _, focused in
-            if !focused && isEditingWeight {
-                commitWeightEdit()
+
+            if !isEditingWeight {
+                saveButton
+
+                if !photos.isEmpty {
+                    entryPhotoSection
+                        .transition(.move(edge: .bottom).combined(with: .opacity))
+                }
             }
         }
+        .frame(maxHeight: .infinity)
     }
 
     private var weightValue: some View {
@@ -168,6 +144,11 @@ struct EntryView: View {
                 .fontWeight(.medium)
                 .foregroundStyle(.secondary)
                 .padding(.bottom, 4)
+
+            if !isEditingWeight {
+                addPhotosButton
+                    .padding(.leading, 8)
+            }
         }
         .contentShape(Rectangle())
         .onTapGesture {
@@ -177,42 +158,100 @@ struct EntryView: View {
         }
     }
 
-    private var bottomActionRow: some View {
-        GlassEffectContainer(spacing: 18) {
-            HStack {
-                Button {
-                    if saved {
-                        navigateToHistory()
-                    } else {
-                        saveEntry()
-                    }
-                } label: {
-                    HStack(spacing: 8) {
-                        Image(systemName: saved ? "checkmark.circle.fill" : "square.and.arrow.down.fill")
-                            .contentTransition(.symbolEffect(.replace))
-                        Text(saved ? "Done" : "Save")
-                    }
-                    .font(.headline.weight(.semibold))
-                    .frame(maxWidth: .infinity)
-                    .frame(height: 42)
-                }
-                .buttonStyle(.glassProminent)
+    private var weightEditControls: some View {
+        HStack(spacing: 12) {
+            Button("Cancel") {
+                Haptics.selection()
+                cancelWeightEdit()
             }
+            .foregroundStyle(.red)
             .frame(maxWidth: .infinity)
-            .padding(.horizontal, 6)
-            .padding(.vertical, 6)
+            .frame(height: 44)
+            .buttonStyle(.glass)
+
+            Button("Done") {
+                Haptics.selection()
+                commitWeightEdit(triggerHaptic: false)
+            }
+            .fontWeight(.semibold)
+            .frame(maxWidth: .infinity)
+            .frame(height: 44)
+            .buttonStyle(.glassProminent)
         }
-        .frame(width: bottomBarWidth)
     }
 
-    private var scanCameraButton: some View {
+    private var saveButton: some View {
         Button {
-            showCamera = true
+            if !saved {
+                saveEntry()
+            }
         } label: {
-            Image(systemName: "camera.viewfinder")
-                .font(.subheadline.weight(.semibold))
+            HStack(spacing: 8) {
+                Image(systemName: saved ? "checkmark.circle.fill" : "square.and.arrow.down.fill")
+                    .contentTransition(.symbolEffect(.replace))
+                Text(saved ? "Done" : "Save")
+            }
+            .font(.headline.weight(.semibold))
+            .padding(.horizontal, 18)
+            .frame(maxWidth: .infinity)
+            .frame(height: 44)
+        }
+        .buttonStyle(.glassProminent)
+        .disabled(saved)
+    }
+
+    @ViewBuilder
+    private var entryPhotoSection: some View {
+        ScrollView(.horizontal, showsIndicators: false) {
+            HStack(spacing: 12) {
+                ForEach(Array(photos.enumerated()), id: \.offset) { index, photo in
+                    ZStack(alignment: .topTrailing) {
+                        Image(uiImage: photo)
+                            .resizable()
+                            .scaledToFill()
+                            .frame(width: 92, height: 118)
+                            .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
+
+                        Button {
+                            photoData.remove(at: index)
+                            saved = false
+                        } label: {
+                            Image(systemName: "xmark.circle.fill")
+                                .font(.title3)
+                                .symbolRenderingMode(.palette)
+                                .foregroundStyle(.white, .black.opacity(0.7))
+                        }
+                        .padding(8)
+                    }
+                }
+            }
+            .padding(.top, 4)
+            .padding(.bottom, 8)
+        }
+    }
+
+    private var photos: [UIImage] {
+        photoData.compactMap(UIImage.init(data:))
+    }
+
+    private var addPhotosButton: some View {
+        PhotosPicker(
+            selection: $selectedPhotoItems,
+            maxSelectionCount: nil,
+            matching: .images
+        ) {
+            Image(systemName: "photo.badge.plus")
+                .font(.caption.weight(.semibold))
                 .foregroundStyle(tintColor)
-                .frame(width: 34, height: 34)
+                .frame(width: 28, height: 28)
+                .background(
+                    Circle()
+                        .fill(tintColor.opacity(0.10))
+                )
+                .overlay {
+                    Circle()
+                        .strokeBorder(tintColor.opacity(0.24), lineWidth: 1)
+                }
         }
         .buttonStyle(.plain)
     }
@@ -230,7 +269,10 @@ struct EntryView: View {
     }
 
     private func quickAdjustButton(systemImage: String, action: @escaping () -> Void) -> some View {
-        Button(action: action) {
+        Button {
+            Haptics.selection()
+            action()
+        } label: {
             Image(systemName: systemImage)
                 .font(.title3.weight(.semibold))
                 .foregroundStyle(tintColor)
@@ -246,12 +288,14 @@ struct EntryView: View {
         weightFieldFocused = false
     }
 
-    private func commitWeightEdit() {
+    private func commitWeightEdit(triggerHaptic: Bool = true) {
         if let value = WeightCalculations.parseWeight(from: weightText) {
             withAnimation(.snappy) {
                 currentWeight = value
                 saved = false
-                weightChangeFeedbackToken += 1
+            }
+            if triggerHaptic {
+                Haptics.selection()
             }
         }
         isEditingWeight = false
@@ -265,7 +309,6 @@ struct EntryView: View {
         withAnimation(.snappy) {
             currentWeight = roundedWeight
             saved = false
-            weightChangeFeedbackToken += 1
         }
     }
 
@@ -276,6 +319,7 @@ struct EntryView: View {
             weight: currentWeight,
             streakCount: streak
         )
+        entry.photosData = photoData
         modelContext.insert(entry)
         WeightWidgetSnapshotStore.refresh(using: [entry] + entries)
 
@@ -287,16 +331,27 @@ struct EntryView: View {
             entry.healthKitUUID = uuid
         }
 
+        resetDraftAfterSave()
         saved = true
         pendingEntry = entry
+        Haptics.success()
     }
 
-    private func navigateToHistory() {
-        historySelectedEntry = pendingEntry
-        historyScrollRequest += 1
-        pendingEntry = nil
-        saved = false
-        selectedTab = 1
+    private func resetDraftAfterSave() {
+        selectedPhotoItems = []
+        photoData = []
+    }
+
+    private func loadPhotoData(from items: [PhotosPickerItem]) async -> [Data] {
+        var loadedData: [Data] = []
+
+        for item in items {
+            if let data = try? await item.loadTransferable(type: Data.self) {
+                loadedData.append(data)
+            }
+        }
+
+        return loadedData
     }
 }
 

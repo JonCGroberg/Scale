@@ -63,10 +63,19 @@ struct ScaleWidgetView: View {
                 }
         case .accessoryRectangular:
             ScaleRectangularWidgetView(snapshot: entry.snapshot)
+                .containerBackground(for: .widget) {
+                    Color.clear
+                }
         case .accessoryCircular:
             ScaleCircularWidgetView(snapshot: entry.snapshot)
+                .containerBackground(for: .widget) {
+                    Color.clear
+                }
         case .accessoryInline:
             ScaleInlineWidgetView(snapshot: entry.snapshot)
+                .containerBackground(for: .widget) {
+                    Color.clear
+                }
         default:
             ScaleHomeWidgetView(snapshot: entry.snapshot)
                 .containerBackground(for: .widget) {
@@ -262,12 +271,13 @@ struct ScaleRectangularWidgetView: View {
 
             HStack(alignment: .center, spacing: 12) {
                 VStack(alignment: .leading, spacing: 2) {
-                    Text("Latest")
+                    Text("Streak")
                         .font(.caption2)
                         .foregroundStyle(.secondary)
 
-                    Text(snapshot.latestWeightText)
+                    Text("\(snapshot.streakCount)d")
                         .font(.headline.weight(.semibold))
+                        .foregroundStyle(tintColor)
                         .lineLimit(1)
 
                     Text(snapshot.relativeDateText)
@@ -278,17 +288,13 @@ struct ScaleRectangularWidgetView: View {
 
                 Spacer(minLength: 0)
 
-                VStack(alignment: .trailing, spacing: 2) {
-                    Text("\(snapshot.streakCount)d")
-                        .font(.title3.weight(.bold))
-                        .foregroundStyle(tintColor)
-                    Text("streak")
-                        .font(.caption2)
-                        .foregroundStyle(.secondary)
-
-                    if let trendText = snapshot.monthTrendText {
+                if let trendText = snapshot.monthTrendText {
+                    VStack(alignment: .trailing, spacing: 2) {
+                        Text("30D")
+                            .font(.caption2)
+                            .foregroundStyle(.secondary)
                         Text(trendText)
-                            .font(.caption.weight(.semibold))
+                            .font(.headline.weight(.semibold))
                             .foregroundStyle(snapshot.monthPercentChangeColor)
                     }
                 }
@@ -310,13 +316,15 @@ struct ScaleCircularWidgetView: View {
             AccessoryWidgetBackground()
 
             VStack(spacing: 2) {
-                Image(systemName: "scalemass.fill")
-                    .font(.caption2)
-                    .foregroundStyle(tintColor)
-                Text(snapshot.circularValueText)
-                    .font(.system(size: 16, weight: .bold, design: .rounded))
-                    .minimumScaleFactor(0.6)
-                Text(snapshot.circularCaptionText)
+                HStack(spacing: 4) {
+                    Image(systemName: "flame.fill")
+                        .font(.caption2)
+                        .foregroundStyle(tintColor)
+                    Text("\(snapshot.streakCount)")
+                        .font(.system(size: 16, weight: .bold, design: .rounded))
+                        .minimumScaleFactor(0.6)
+                }
+                Text(snapshot.streakCount == 1 ? "DAY" : "DAYS")
                     .font(.system(size: 8, weight: .medium, design: .rounded))
                     .foregroundStyle(.secondary)
             }
@@ -328,7 +336,7 @@ struct ScaleInlineWidgetView: View {
     let snapshot: WeightWidgetSnapshot
 
     var body: some View {
-        Text(snapshot.inlineText)
+        Text(snapshot.inlineStreakText)
     }
 }
 
@@ -388,26 +396,23 @@ struct AddWeightWidget: Widget {
     }
 }
 
-#Preview(as: .systemSmall) {
-    ScaleWidget()
-} timeline: {
-    ScaleWidgetEntry(date: .now, snapshot: .preview)
-}
+struct ScaleWidget_Previews: PreviewProvider {
+    static let previewEntry = ScaleWidgetEntry(date: .now, snapshot: .preview)
 
-#Preview(as: .accessoryRectangular) {
-    ScaleWidget()
-} timeline: {
-    ScaleWidgetEntry(date: .now, snapshot: .preview)
-}
+    static var previews: some View {
+        Group {
+            ScaleWidgetView(entry: previewEntry)
+                .previewContext(WidgetPreviewContext(family: .systemSmall))
 
-#Preview(as: .systemMedium) {
-    ScaleWidget()
-} timeline: {
-    ScaleWidgetEntry(date: .now, snapshot: .preview)
-}
+            ScaleWidgetView(entry: previewEntry)
+                .previewContext(WidgetPreviewContext(family: .accessoryRectangular))
 
-#Preview("Add Weight", as: .systemSmall) {
-    AddWeightWidget()
-} timeline: {
-    ScaleWidgetEntry(date: .now, snapshot: .preview)
+            ScaleWidgetView(entry: previewEntry)
+                .previewContext(WidgetPreviewContext(family: .systemMedium))
+
+            AddWeightSmallWidgetView(snapshot: previewEntry.snapshot)
+                .previewContext(WidgetPreviewContext(family: .systemSmall))
+                .previewDisplayName("Add Weight")
+        }
+    }
 }

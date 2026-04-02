@@ -7,6 +7,7 @@
 
 import SwiftUI
 import SwiftData
+import UIKit
 
 struct SettingsView: View {
     @Environment(\.modelContext) private var modelContext
@@ -55,7 +56,7 @@ struct SettingsView: View {
                 } header: {
                     Text("Display")
                 } footer: {
-                    Text("The last change badge shows your most recent weight difference on the Log screen.")
+                    Text("The last change badge shows your streak and recent weight change on every screen except Settings.")
                 }
 
                 Section {
@@ -63,10 +64,12 @@ struct SettingsView: View {
                         Toggle("Import Apple Health updates automatically", isOn: $autoSyncHealthKit)
                     }
                     healthImportRow
+                    workoutImportRow
+                    dailyActivityImportRow
                 } header: {
                     Text("Apple Health")
                 } footer: {
-                    Text("Bring in weight entries from Apple Health automatically when the app opens, or run an import whenever you want.")
+                    Text("Bring in weight entries, workouts, and daily activity summaries from Apple Health automatically when the app opens, or run an import whenever you want.")
                 }
 
                 Section {
@@ -112,6 +115,7 @@ struct SettingsView: View {
                                 reminders.append(Reminder(hour: min(lastHour + 2, 22)))
                             }
                             notificationManager.saveReminders(reminders)
+                            Haptics.selection()
                         } label: {
                             Label("Add Reminder", systemImage: "plus.circle.fill")
                         }
@@ -155,6 +159,7 @@ struct SettingsView: View {
             }
         } else {
             Button {
+                Haptics.selection()
                 Task {
                     await healthManager.importWeightData(modelContext: modelContext)
                 }
@@ -186,6 +191,84 @@ struct SettingsView: View {
                 }
             }
             .disabled(healthManager.isImporting)
+        }
+    }
+
+    @ViewBuilder
+    private var workoutImportRow: some View {
+        if healthManager.isAvailable {
+            Button {
+                Haptics.selection()
+                Task {
+                    await healthManager.importWorkoutData(modelContext: modelContext)
+                }
+            } label: {
+                Label {
+                    VStack(alignment: .leading, spacing: 4) {
+                        Text("Import workouts")
+                            .font(.body)
+
+                        if healthManager.isImportingWorkouts {
+                            Text("Reading your workouts from Apple Health")
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                        } else if let result = healthManager.workoutImportResult {
+                            resultText(result)
+                        } else {
+                            Text("Add Apple Health workout summaries to your journal")
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                        }
+                    }
+                } icon: {
+                    if healthManager.isImportingWorkouts {
+                        ProgressView()
+                    } else {
+                        Image(systemName: "figure.run")
+                            .foregroundStyle(tintColor)
+                    }
+                }
+            }
+            .disabled(healthManager.isImportingWorkouts)
+        }
+    }
+
+    @ViewBuilder
+    private var dailyActivityImportRow: some View {
+        if healthManager.isAvailable {
+            Button {
+                Haptics.selection()
+                Task {
+                    await healthManager.importDailyActivityData(modelContext: modelContext)
+                }
+            } label: {
+                Label {
+                    VStack(alignment: .leading, spacing: 4) {
+                        Text("Import daily activity")
+                            .font(.body)
+
+                        if healthManager.isImportingDailyActivity {
+                            Text("Reading steps and active energy from Apple Health")
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                        } else if let result = healthManager.dailyActivityImportResult {
+                            resultText(result)
+                        } else {
+                            Text("Add daily step counts and active calories to your journal")
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                        }
+                    }
+                } icon: {
+                    if healthManager.isImportingDailyActivity {
+                        ProgressView()
+                    } else {
+                        Image(systemName: "figure.walk")
+                            .foregroundStyle(tintColor)
+                    }
+                }
+            }
+            .disabled(healthManager.isImportingDailyActivity)
         }
     }
 
@@ -260,7 +343,7 @@ private struct ReminderRow: View {
 
 #Preview {
     SettingsView()
-        .modelContainer(for: WeightEntry.self, inMemory: true)
+        .modelContainer(for: [WeightEntry.self, WorkoutEntry.self, DailyActivitySummary.self], inMemory: true)
         .environment(HealthKitManager())
         .environment(NotificationManager())
 }

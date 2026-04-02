@@ -25,8 +25,12 @@ struct ChangeBadge: View {
         (AppTint(rawValue: appTint) ?? .defaultValue).color
     }
 
+    private var hasEntries: Bool {
+        !entries.isEmpty
+    }
+
     var body: some View {
-        HStack(spacing: 6) {
+        HStack(spacing: 4) {
             HStack(spacing: 2) {
                 Image(systemName: "flame.fill")
                     .font(.caption2)
@@ -34,41 +38,37 @@ struct ChangeBadge: View {
 
                 Text("\(summary.streak)")
                     .font(.caption)
-                    .fontWeight(.bold)
+                    .fontWeight(.medium)
                     .contentTransition(.numericText())
             }
 
             Circle()
-                .fill(tintColor.opacity(0.4))
+                .fill(.secondary.opacity(0.4))
                 .frame(width: 4, height: 4)
 
-            if let lbs = summary.weightChange {
-                Text(String(format: "%+.1f lbs", lbs))
+            if !hasEntries {
+                Text("No entries yet")
                     .font(.caption)
-                    .fontWeight(.bold)
-                    .foregroundStyle(tintColor)
+                    .fontWeight(.semibold)
+                    .foregroundStyle(.secondary)
+                    .contentTransition(.interpolate)
+            } else if let lbs = summary.weightChange {
+                Text("\(Text(String(format: "%+.1f lbs", lbs)).foregroundStyle(tintColor))  in \(period.label.lowercased())")
+                    .font(.caption)
+                    .fontWeight(.semibold)
+                    .foregroundStyle(.secondary)
                     .contentTransition(.numericText())
             } else {
-                Text("-- lbs")
+                Text("-- lbs in \(period.label.lowercased())")
                     .font(.caption)
-                    .fontWeight(.bold)
+                    .fontWeight(.semibold)
                     .foregroundStyle(.secondary)
+                    .contentTransition(.interpolate)
             }
-
-            Circle()
-                .fill(tintColor.opacity(0.4))
-                .frame(width: 4, height: 4)
-
-            Text(period.label.uppercased())
-                .font(.caption2)
-                .fontWeight(.semibold)
-                .tracking(0.3)
-                .foregroundStyle(.secondary)
-                .contentTransition(.interpolate)
         }
-        .padding(.horizontal, 14)
-        .padding(.vertical, 10)
-        .glassEffect()
+        .padding(.horizontal,8 )
+        .padding(.vertical,4)
+   
         .animation(.snappy, value: currentIndex)
         .gesture(
             DragGesture(minimumDistance: 20)

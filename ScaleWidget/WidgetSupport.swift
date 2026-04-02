@@ -115,6 +115,13 @@ extension WeightWidgetSnapshot {
         return "Scale \(latestWeight.formattedWeight) lb • \(streakCount)d streak"
     }
 
+    var inlineStreakText: String {
+        if streakCount > 0 {
+            return "Scale \(streakCount)d streak"
+        }
+        return "Scale: log your first weight"
+    }
+
     var circularValueText: String {
         if let latestWeight {
             return latestWeight.formattedWeight
