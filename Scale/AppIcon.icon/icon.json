@@ -17,6 +17,68 @@
     {
       "layers" : [
         {
+          "blend-mode" : "normal",
+          "fill-specializations" : [
+            {
+              "value" : {
+                "solid" : "display-p3:0.07840,0.07840,0.07840,1.00000"
+              }
+            },
+            {
+              "appearance" : "dark",
+              "value" : {
+                "solid" : "display-p3:0.77686,0.77686,0.77686,1.00000"
+              }
+            },
+            {
+              "appearance" : "tinted",
+              "value" : {
+                "solid" : "display-p3:0.32240,0.32240,0.32240,1.00000"
+              }
+            }
+          ],
+          "glass-specializations" : [
+            {
+              "value" : true
+            },
+            {
+              "appearance" : "light",
+              "value" : false
+            },
+            {
+              "appearance" : "dark",
+              "value" : false
+            },
+            {
+              "appearance" : "tinted",
+              "value" : false
+            }
+          ],
+          "hidden" : false,
+          "image-name" : "1 – Layer 3.svg",
+          "name" : "1 – Layer 3",
+          "opacity-specializations" : [
+            {
+              "value" : 1
+            },
+            {
+              "appearance" : "dark",
+              "value" : 1
+            },
+            {
+              "appearance" : "tinted",
+              "value" : 1
+            }
+          ],
+          "position" : {
+            "scale" : 0.15,
+            "translation-in-points" : [
+              -170.75278897849455,
+              -229.52620967741927
+            ]
+          }
+        },
+        {
           "blend-mode-specializations" : [
             {
               "value" : "normal"
@@ -73,8 +135,8 @@
           "position" : {
             "scale" : 1.28,
             "translation-in-points" : [
-              0.005000000000109139,
-              93.59879032258067
+              -35.541995967741855,
+              93.59879032258078
             ]
           }
         },
@@ -124,8 +186,8 @@
           "position" : {
             "scale" : 1.28,
             "translation-in-points" : [
-              0.005000000000109139,
-              93.59879032258067
+              -1.3949999999998681,
+              90.39879032258074
             ]
           }
         },

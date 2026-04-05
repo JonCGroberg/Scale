@@ -84,6 +84,8 @@ struct JournalView: View {
         let weightText: String?
         let workoutCount: Int
         let primaryPhoto: UIImage?
+        /// Position within a consecutive logging streak (0 = isolated day, 1+ = day N of a run).
+        let streakDay: Int
 
         var isLogged: Bool {
             weightText != nil
@@ -353,6 +355,7 @@ struct JournalView: View {
         let isLogged = dayData?.isLogged ?? false
         let hasWorkouts = workoutCount > 0
         let hasPhoto = dayData?.primaryPhoto != nil
+        let streakDay = dayData?.streakDay ?? 0
 
         if !isCurrentMonth {
             Color.clear
@@ -377,7 +380,7 @@ struct JournalView: View {
                     )
 
                     VStack(alignment: .leading, spacing: 2) {
-                        HStack(alignment: .top) {
+                        HStack(alignment: .top, spacing: 2) {
                             Text(dayLabel(for: date))
                                 .font(.system(size: 11, weight: .medium))
                                 .foregroundStyle(
@@ -387,6 +390,12 @@ struct JournalView: View {
                                 )
 
                             Spacer(minLength: 0)
+
+                            if streakDay >= 2 {
+                                Image(systemName: "flame.fill")
+                                    .font(.system(size: 8))
+                                    .foregroundStyle(.orange)
+                            }
                         }
 
                         Spacer(minLength: 0)
@@ -622,7 +631,8 @@ struct JournalView: View {
         for monthStart: Date,
         entriesByDay: [Date: [WeightEntry]],
         workoutsByDay: [Date: [WorkoutEntry]],
-        dailyActivityByDay: [Date: DailyActivitySummary]
+        dailyActivityByDay: [Date: DailyActivitySummary],
+        streaksByDay: [Date: Int]
     ) -> [Date: DayData] {
         guard let monthInterval = calendar.dateInterval(of: .month, for: monthStart) else {
             return [:]
@@ -637,7 +647,8 @@ struct JournalView: View {
             result[day] = DayData(
                 weightText: dayEntries.first.map { String(format: "%.1f", $0.weight) },
                 workoutCount: workoutsByDay[day]?.count ?? 0,
-                primaryPhoto: primaryPhoto(for: dayEntries)
+                primaryPhoto: primaryPhoto(for: dayEntries),
+                streakDay: streaksByDay[day] ?? 0
             )
         }
     }
@@ -654,6 +665,7 @@ struct JournalView: View {
                 (calendar.startOfDay(for: summary.date), summary)
             }
         )
+        let streaks = WeightCalculations.streaksByDay(from: entries)
 
         entryIDsByDay = groupedEntries.mapValues { dayEntries in
             dayEntries
@@ -674,7 +686,8 @@ struct JournalView: View {
                         for: monthStart,
                         entriesByDay: groupedEntries,
                         workoutsByDay: groupedWorkouts,
-                        dailyActivityByDay: groupedDailyActivity
+                        dailyActivityByDay: groupedDailyActivity,
+                        streaksByDay: streaks
                     )
                 )
             )
