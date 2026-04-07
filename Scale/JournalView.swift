@@ -86,6 +86,8 @@ struct JournalView: View {
         let primaryPhoto: UIImage?
         /// Position within a consecutive logging streak (0 = isolated day, 1+ = day N of a run).
         let streakDay: Int
+        /// True when this is today and logging would continue a streak (not yet logged).
+        let isStreakPotential: Bool
 
         var isLogged: Bool {
             weightText != nil
@@ -356,6 +358,7 @@ struct JournalView: View {
         let hasWorkouts = workoutCount > 0
         let hasPhoto = dayData?.primaryPhoto != nil
         let streakDay = dayData?.streakDay ?? 0
+        let isStreakPotential = dayData?.isStreakPotential ?? false
 
         if !isCurrentMonth {
             Color.clear
@@ -391,10 +394,14 @@ struct JournalView: View {
 
                             Spacer(minLength: 0)
 
-                            if streakDay >= 2 {
-                                Image(systemName: "flame.fill")
-                                    .font(.system(size: 8))
-                                    .foregroundStyle(.orange)
+                            if streakDay >= 1 {
+                                HStack(spacing: 1) {
+                                    Image(systemName: "flame.fill")
+                                        .font(.system(size: 7))
+                                    Text("\(streakDay)")
+                                        .font(.system(size: 8, weight: .bold, design: .rounded))
+                                }
+                                .foregroundStyle(isStreakPotential ? .orange.opacity(0.45) : .orange)
                             }
                         }
 
@@ -632,23 +639,40 @@ struct JournalView: View {
         entriesByDay: [Date: [WeightEntry]],
         workoutsByDay: [Date: [WorkoutEntry]],
         dailyActivityByDay: [Date: DailyActivitySummary],
-        streaksByDay: [Date: Int]
+        streaksByDay: [Date: Int],
+        todayPotentialStreak: Int
     ) -> [Date: DayData] {
         guard let monthInterval = calendar.dateInterval(of: .month, for: monthStart) else {
             return [:]
         }
 
-        let allDays = Set(entriesByDay.keys.filter { monthInterval.contains($0) })
+        let today = calendar.startOfDay(for: Date())
+        let todayHasEntry = entriesByDay[today] != nil
+
+        // Include today if it has a potential streak so the cell gets rendered
+        var allDays = Set(entriesByDay.keys.filter { monthInterval.contains($0) })
             .union(workoutsByDay.keys.filter { monthInterval.contains($0) })
             .union(dailyActivityByDay.keys.filter { monthInterval.contains($0) })
+        if todayPotentialStreak > 0 && monthInterval.contains(today) {
+            allDays.insert(today)
+        }
 
         return allDays.reduce(into: [:]) { result, day in
             let dayEntries = entriesByDay[day] ?? []
+            let isToday = day == today
+            let isPotential = isToday && !todayHasEntry && todayPotentialStreak > 0
+            let streakValue: Int
+            if isPotential {
+                streakValue = todayPotentialStreak
+            } else {
+                streakValue = streaksByDay[day] ?? 0
+            }
             result[day] = DayData(
                 weightText: dayEntries.first.map { String(format: "%.1f", $0.weight) },
                 workoutCount: workoutsByDay[day]?.count ?? 0,
                 primaryPhoto: primaryPhoto(for: dayEntries),
-                streakDay: streaksByDay[day] ?? 0
+                streakDay: streakValue,
+                isStreakPotential: isPotential
             )
         }
     }
@@ -666,6 +690,18 @@ struct JournalView: View {
             }
         )
         let streaks = WeightCalculations.streaksByDay(from: entries)
+
+        // If today is not yet logged but yesterday was, compute the potential streak number.
+        let today = calendar.startOfDay(for: Date())
+        let todayHasEntry = groupedEntries[today] != nil
+        let todayPotentialStreak: Int
+        if !todayHasEntry, let yesterday = calendar.date(byAdding: .day, value: -1, to: today),
+           let yesterdayStreak = streaks[yesterday] {
+            // yesterdayStreak == 0 means yesterday was isolated; logging today makes a 2-day run
+            todayPotentialStreak = yesterdayStreak == 0 ? 2 : yesterdayStreak + 1
+        } else {
+            todayPotentialStreak = 0
+        }
 
         entryIDsByDay = groupedEntries.mapValues { dayEntries in
             dayEntries
@@ -687,7 +723,8 @@ struct JournalView: View {
                         entriesByDay: groupedEntries,
                         workoutsByDay: groupedWorkouts,
                         dailyActivityByDay: groupedDailyActivity,
-                        streaksByDay: streaks
+                        streaksByDay: streaks,
+                        todayPotentialStreak: todayPotentialStreak
                     )
                 )
             )

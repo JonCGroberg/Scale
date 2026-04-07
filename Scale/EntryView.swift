@@ -27,6 +27,7 @@ struct EntryView: View {
     @State private var pendingEntry: WeightEntry?
     @State private var selectedPhotoItems: [PhotosPickerItem] = []
     @State private var photoData: [Data] = []
+    @State private var showScaleScanner = false
     @FocusState private var weightFieldFocused: Bool
 
     private let step = 0.1
@@ -146,8 +147,9 @@ struct EntryView: View {
                 .padding(.bottom, 4)
 
             if !isEditingWeight {
-                addPhotosButton
+                scanScaleButton
                     .padding(.leading, 8)
+                addPhotosButton
             }
         }
         .contentShape(Rectangle())
@@ -232,6 +234,34 @@ struct EntryView: View {
 
     private var photos: [UIImage] {
         photoData.compactMap(UIImage.init(data:))
+    }
+
+    private var scanScaleButton: some View {
+        Button {
+            showScaleScanner = true
+        } label: {
+            Image(systemName: "viewfinder")
+                .font(.caption.weight(.semibold))
+                .foregroundStyle(tintColor)
+                .frame(width: 28, height: 28)
+                .background(
+                    Circle()
+                        .fill(tintColor.opacity(0.10))
+                )
+                .overlay {
+                    Circle()
+                        .strokeBorder(tintColor.opacity(0.24), lineWidth: 1)
+                }
+        }
+        .buttonStyle(.plain)
+        .sheet(isPresented: $showScaleScanner) {
+            ScaleScannerView { weight in
+                withAnimation(.snappy) {
+                    currentWeight = weight
+                    saved = false
+                }
+            }
+        }
     }
 
     private var addPhotosButton: some View {

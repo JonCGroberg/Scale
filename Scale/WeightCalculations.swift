@@ -253,6 +253,19 @@ enum WeightCalculations {
         return weight
     }
 
+    /// Apply common seven-segment OCR corrections and parse the result as a weight.
+    /// Handles misreads like O→0, o→0, l→1, I→1, |→1 that are typical when
+    /// Vision reads a digital scale display.
+    static func parseScaleReading(_ raw: String) -> Double? {
+        let corrected = raw
+            .replacingOccurrences(of: "O", with: "0")
+            .replacingOccurrences(of: "o", with: "0")
+            .replacingOccurrences(of: "l", with: "1")
+            .replacingOccurrences(of: "I", with: "1")
+            .replacingOccurrences(of: "|", with: "1")
+        return parseScannedWeight(corrected)
+    }
+
     /// Percentage weight change over a given time period.
     /// Compares the most recent entry to the earliest entry within the period.
     /// - Returns: The percentage change, or nil if fewer than 2 entries in the period.
