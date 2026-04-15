@@ -77,6 +77,7 @@ final class NotificationManager {
     // MARK: - Scheduling
 
     /// Reschedule all reminders based on the user's saved preferences.
+    /// Skips scheduling if today already has a weight entry.
     func rescheduleReminders() {
         let enabled = UserDefaults.standard.bool(forKey: "remindersEnabled")
         let reminders = loadReminders()
@@ -85,6 +86,9 @@ final class NotificationManager {
         center.removeAllPendingNotificationRequests()
 
         guard enabled, !reminders.isEmpty else { return }
+
+        // Don't schedule notifications if the user already logged today
+        if todayHasWeightEntry() { return }
 
         for reminder in reminders {
             let request = Self.makeNotificationRequest(
@@ -95,6 +99,22 @@ final class NotificationManager {
 
             center.add(request)
         }
+    }
+
+    /// Returns `true` if there is at least one `WeightEntry` whose timestamp falls on today.
+    func todayHasWeightEntry() -> Bool {
+        guard let context = modelContext else { return false }
+        let calendar = Calendar.current
+        let startOfDay = calendar.startOfDay(for: Date())
+        let endOfDay = calendar.date(byAdding: .day, value: 1, to: startOfDay)!
+
+        let predicate = #Predicate<WeightEntry> {
+            $0.timestamp >= startOfDay && $0.timestamp < endOfDay
+        }
+        var descriptor = FetchDescriptor<WeightEntry>(predicate: predicate)
+        descriptor.fetchLimit = 1
+        let count = (try? context.fetchCount(descriptor)) ?? 0
+        return count > 0
     }
 
     // MARK: - Notification Body

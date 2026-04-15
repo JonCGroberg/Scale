@@ -42,6 +42,7 @@ struct ScaleApp: App {
     private static let notificationDelegate = NotificationDelegate()
 
     init() {
+        Self.notificationDelegate.notificationManager = notificationManager
         UNUserNotificationCenter.current().delegate = Self.notificationDelegate
     }
 
@@ -112,6 +113,9 @@ struct ScaleApp: App {
 
 /// Handles notification taps while the app is in the foreground or background.
 final class NotificationDelegate: NSObject, UNUserNotificationCenterDelegate {
+    /// Set by the app so the delegate can check if today already has a log.
+    var notificationManager: NotificationManager?
+
     func userNotificationCenter(
         _ center: UNUserNotificationCenter,
         didReceive response: UNNotificationResponse
@@ -119,12 +123,16 @@ final class NotificationDelegate: NSObject, UNUserNotificationCenterDelegate {
         NotificationCenter.default.post(name: .didTapWeightReminder, object: nil)
     }
 
-    // Show banner even when the app is in the foreground
+    // Show banner even when the app is in the foreground,
+    // but suppress it if the user already logged today.
     func userNotificationCenter(
         _ center: UNUserNotificationCenter,
         willPresent notification: UNNotification
     ) async -> UNNotificationPresentationOptions {
-        [.banner, .sound]
+        if notificationManager?.todayHasWeightEntry() == true {
+            return []
+        }
+        return [.banner, .sound]
     }
 }
 

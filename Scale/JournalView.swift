@@ -385,23 +385,22 @@ struct JournalView: View {
                     VStack(alignment: .leading, spacing: 2) {
                         HStack(alignment: .top, spacing: 2) {
                             Text(dayLabel(for: date))
-                                .font(.system(size: 11, weight: .medium))
+                                .font(.system(size: 10, weight: .medium))
                                 .foregroundStyle(
                                     hasPhoto
                                         ? Color.white.opacity(isCurrentMonth ? 0.98 : 0.72)
                                         : dayNumberColor(isCurrentMonth: isCurrentMonth)
                                 )
+                                .lineLimit(1)
 
                             Spacer(minLength: 0)
 
                             if streakDay >= 1 {
-                                HStack(spacing: 1) {
-                                    Image(systemName: "flame.fill")
-                                        .font(.system(size: 7))
-                                    Text("\(streakDay)")
-                                        .font(.system(size: 8, weight: .bold, design: .rounded))
-                                }
-                                .foregroundStyle(isStreakPotential ? .orange.opacity(0.45) : .orange)
+                                Text("\(Image(systemName: "flame.fill"))\(streakDay)")
+                                    .font(.system(size: 8, weight: .bold, design: .rounded))
+                                    .lineLimit(1)
+                                    .fixedSize()
+                                    .foregroundStyle(isStreakPotential ? .orange.opacity(0.45) : .orange)
                             }
                         }
 
