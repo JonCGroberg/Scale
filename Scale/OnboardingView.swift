@@ -9,11 +9,15 @@ import SwiftUI
 
 struct OnboardingView: View {
     @AppStorage("hasCompletedOnboarding") private var hasCompletedOnboarding = false
+    @AppStorage("remindersEnabled") private var remindersEnabled = false
+    @Environment(NotificationManager.self) private var notificationManager
     @State private var currentPage = 0
+    @State private var reminders: [Reminder] = []
 
     private let pages: [OnboardingPage] = [
         OnboardingPage(
-            icon: "scalemass.fill",
+            icon: "scalemass",
+            usesAppIcon: false,
             title: "Track Your Weight",
             subtitle: "Log daily weigh-ins with a single tap. Scan your scale or type it in."
         ),
@@ -30,10 +34,10 @@ struct OnboardingView: View {
     ]
 
     var body: some View {
-        VStack(spacing: 0) {
+        ZStack(alignment: .bottom) {
             TabView(selection: $currentPage) {
                 ForEach(Array(pages.enumerated()), id: \.offset) { index, page in
-                    pageView(page)
+                    pageView(page, index: index)
                         .tag(index)
                 }
             }
@@ -42,42 +46,128 @@ struct OnboardingView: View {
 
             bottomControls
                 .padding(.horizontal, 32)
-                .padding(.bottom, 48)
+                .padding(.bottom, 24)
         }
         .background(Color(.systemGroupedBackground).ignoresSafeArea())
+        .onAppear {
+            reminders = notificationManager.loadReminders()
+        }
     }
 
     // MARK: - Page Content
 
-    private func pageView(_ page: OnboardingPage) -> some View {
-        VStack(spacing: 20) {
-            Spacer()
+    private func pageView(_ page: OnboardingPage, index: Int) -> some View {
+        ScrollView(showsIndicators: false) {
+            VStack(spacing: 20) {
+                Spacer(minLength: 24)
 
-            Image(systemName: page.icon)
-                .font(.system(size: 64))
-                .foregroundStyle(.tint)
-                .padding(.bottom, 8)
+                if let icon = page.icon {
+                    Image(systemName: icon)
+                        .font(.system(size: 64))
+                        .foregroundStyle(.tint)
+                        .padding(.bottom, 8)
+                }
 
-            Text(page.title)
-                .font(.title.bold())
-                .multilineTextAlignment(.center)
+                Text(page.title)
+                    .font(.title.bold())
+                    .multilineTextAlignment(.center)
 
-            Text(page.subtitle)
-                .font(.body)
-                .foregroundStyle(.secondary)
-                .multilineTextAlignment(.center)
-                .padding(.horizontal, 40)
+                Text(page.subtitle)
+                    .font(.body)
+                    .foregroundStyle(.secondary)
+                    .multilineTextAlignment(.center)
+                    .padding(.horizontal, 40)
 
-            Spacer()
-            Spacer()
+                if index < 2 {
+                    onboardingIllustration(for: index)
+                        .padding(.top, 8)
+                        .padding(.horizontal, 28)
+                } else if index == pages.count - 1 {
+                    remindersSetupCard
+                        .padding(.top, 12)
+                        .padding(.horizontal, 24)
+                }
+
+                Spacer(minLength: 40)
+            }
+            .padding(.bottom, 180)
+            .frame(maxWidth: .infinity, minHeight: 0)
         }
+    }
+
+    @ViewBuilder
+    private func onboardingIllustration(for index: Int) -> some View {
+        ZStack {
+            if index == 0 {
+                PlaceholderPhotoCard(
+                    title: "Morning weigh-in",
+                    subtitle: "Camera capture",
+                    background: LinearGradient(
+                        colors: [Color(red: 0.98, green: 0.90, blue: 0.76), Color(red: 0.89, green: 0.69, blue: 0.53)],
+                        startPoint: .topLeading,
+                        endPoint: .bottomTrailing
+                    ),
+                    accent: Color.white.opacity(0.9),
+                    systemImage: "figure.stand"
+                )
+                .rotationEffect(.degrees(-8))
+                .offset(x: -54, y: 20)
+
+                PlaceholderPhotoCard(
+                    title: "Quick scan",
+                    subtitle: "Typed or scanned",
+                    background: LinearGradient(
+                        colors: [Color(red: 0.81, green: 0.90, blue: 0.99), Color(red: 0.53, green: 0.73, blue: 0.95)],
+                        startPoint: .topLeading,
+                        endPoint: .bottomTrailing
+                    ),
+                    accent: Color.white.opacity(0.92),
+                    systemImage: "person.fill"
+                )
+                .rotationEffect(.degrees(7))
+                .offset(x: 46, y: -18)
+            } else {
+                PlaceholderGraphCard()
+                    .rotationEffect(.degrees(-7))
+                    .offset(x: -52, y: 26)
+
+                PlaceholderCalendarCard()
+                    .rotationEffect(.degrees(6))
+                    .offset(x: 50, y: -12)
+
+                PlaceholderMiniGraphCard()
+                    .rotationEffect(.degrees(-2))
+                    .offset(x: 6, y: 74)
+            }
+        }
+        .frame(height: 270)
+    }
+
+    private var remindersSetupCard: some View {
+        ReminderSettingsContent(
+            remindersEnabled: $remindersEnabled,
+            reminders: $reminders,
+            tintColor: .accentColor,
+            notificationManager: notificationManager
+        )
+        .padding(20)
+        .background(.background, in: RoundedRectangle(cornerRadius: 24, style: .continuous))
+    }
+
+    private func completeOnboarding() {
+        if remindersEnabled && reminders.isEmpty {
+            reminders = [Reminder()]
+            notificationManager.saveReminders(reminders)
+        } else if remindersEnabled {
+            notificationManager.rescheduleReminders()
+        }
+        hasCompletedOnboarding = true
     }
 
     // MARK: - Bottom Controls
 
     private var bottomControls: some View {
         VStack(spacing: 20) {
-            // Page indicators
             HStack(spacing: 8) {
                 ForEach(0..<pages.count, id: \.self) { index in
                     Circle()
@@ -86,13 +176,16 @@ struct OnboardingView: View {
                         .animation(.easeInOut, value: currentPage)
                 }
             }
+            .padding(.horizontal, 16)
+            .padding(.vertical, 12)
+            .background(.ultraThinMaterial, in: Capsule())
+            .shadow(color: .black.opacity(0.08), radius: 16, y: 6)
 
-            // Action button
             Button {
                 if currentPage < pages.count - 1 {
                     withAnimation { currentPage += 1 }
                 } else {
-                    hasCompletedOnboarding = true
+                    completeOnboarding()
                 }
             } label: {
                 Text(currentPage < pages.count - 1 ? "Next" : "Get Started")
@@ -109,11 +202,250 @@ struct OnboardingView: View {
 // MARK: - Model
 
 private struct OnboardingPage {
-    let icon: String
+    let icon: String?
+    var usesAppIcon: Bool = false
     let title: String
     let subtitle: String
 }
 
-#Preview {
+private struct PlaceholderPhotoCard: View {
+    let title: String
+    let subtitle: String
+    let background: LinearGradient
+    let accent: Color
+    let systemImage: String
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            ZStack(alignment: .bottom) {
+                background
+
+                VStack(spacing: 12) {
+                    Spacer()
+
+                    Circle()
+                        .fill(accent.opacity(0.28))
+                        .frame(width: 74, height: 74)
+                        .overlay {
+                            Image(systemName: systemImage)
+                                .font(.system(size: 34, weight: .medium))
+                                .foregroundStyle(accent)
+                        }
+
+                    RoundedRectangle(cornerRadius: 18, style: .continuous)
+                        .fill(accent.opacity(0.24))
+                        .frame(width: 108, height: 112)
+                }
+                .padding(.bottom, 12)
+            }
+            .frame(height: 192)
+
+            VStack(alignment: .leading, spacing: 4) {
+                Text(title)
+                    .font(.headline)
+                    .foregroundStyle(.primary)
+
+                Text(subtitle)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+            .padding(16)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .background(Color(.systemBackground))
+        }
+        .frame(width: 170)
+        .clipShape(RoundedRectangle(cornerRadius: 28, style: .continuous))
+        .overlay {
+            RoundedRectangle(cornerRadius: 28, style: .continuous)
+                .stroke(Color.white.opacity(0.85), lineWidth: 4)
+        }
+        .shadow(color: .black.opacity(0.12), radius: 24, y: 12)
+    }
+}
+
+private struct PlaceholderCalendarCard: View {
+    var body: some View {
+        VStack(alignment: .leading, spacing: 14) {
+            HStack {
+                Text("Calendar")
+                    .font(.headline)
+                Spacer()
+                Image(systemName: "calendar")
+                    .foregroundStyle(.tint)
+            }
+
+            HStack(spacing: 8) {
+                ForEach(["M", "T", "W", "T", "F", "S", "S"], id: \.self) { day in
+                    Text(day)
+                        .font(.caption2.weight(.semibold))
+                        .foregroundStyle(.secondary)
+                        .frame(maxWidth: .infinity)
+                }
+            }
+
+            VStack(spacing: 8) {
+                ForEach(0..<4, id: \.self) { row in
+                    HStack(spacing: 8) {
+                        ForEach(0..<7, id: \.self) { column in
+                            RoundedRectangle(cornerRadius: 10, style: .continuous)
+                                .fill(calendarCellColor(row: row, column: column))
+                                .frame(height: 26)
+                                .overlay {
+                                    if row == 1 && column == 3 {
+                                        Image(systemName: "scalemass")
+                                            .font(.caption2.weight(.bold))
+                                            .foregroundStyle(.white)
+                                    }
+                                }
+                        }
+                    }
+                }
+            }
+        }
+        .padding(18)
+        .frame(width: 190)
+        .background(Color(.systemBackground), in: RoundedRectangle(cornerRadius: 26, style: .continuous))
+        .overlay {
+            RoundedRectangle(cornerRadius: 26, style: .continuous)
+                .stroke(Color.white.opacity(0.9), lineWidth: 4)
+        }
+        .shadow(color: .black.opacity(0.12), radius: 24, y: 12)
+    }
+
+    private func calendarCellColor(row: Int, column: Int) -> Color {
+        if row == 1 && column == 3 {
+            return .accentColor
+        }
+        if (row + column).isMultiple(of: 3) {
+            return Color.accentColor.opacity(0.16)
+        }
+        return Color(.secondarySystemGroupedBackground)
+    }
+}
+
+private struct PlaceholderGraphCard: View {
+    var body: some View {
+        VStack(alignment: .leading, spacing: 16) {
+            HStack {
+                Text("Progress")
+                    .font(.headline)
+                Spacer()
+                Text("-6.2 lb")
+                    .font(.subheadline.weight(.semibold))
+                    .foregroundStyle(.green)
+            }
+
+            HStack(alignment: .bottom, spacing: 10) {
+                ForEach([0.32, 0.55, 0.48, 0.72, 0.62, 0.82], id: \.self) { value in
+                    RoundedRectangle(cornerRadius: 8, style: .continuous)
+                        .fill(
+                            LinearGradient(
+                                colors: [.accentColor.opacity(0.35), .accentColor],
+                                startPoint: .bottom,
+                                endPoint: .top
+                            )
+                        )
+                        .frame(width: 18, height: 120 * value)
+                }
+            }
+            .frame(maxWidth: .infinity, minHeight: 130, alignment: .bottomLeading)
+
+            RoundedRectangle(cornerRadius: 12, style: .continuous)
+                .fill(Color(.secondarySystemGroupedBackground))
+                .frame(height: 34)
+                .overlay(alignment: .leading) {
+                    RoundedRectangle(cornerRadius: 12, style: .continuous)
+                        .fill(Color.green.opacity(0.18))
+                        .frame(width: 116, height: 34)
+                }
+        }
+        .padding(18)
+        .frame(width: 184)
+        .background(Color(.systemBackground), in: RoundedRectangle(cornerRadius: 26, style: .continuous))
+        .overlay {
+            RoundedRectangle(cornerRadius: 26, style: .continuous)
+                .stroke(Color.white.opacity(0.9), lineWidth: 4)
+        }
+        .shadow(color: .black.opacity(0.12), radius: 24, y: 12)
+    }
+}
+
+private struct PlaceholderMiniGraphCard: View {
+    var body: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            Text("Trend")
+                .font(.subheadline.weight(.semibold))
+
+            ZStack(alignment: .bottomLeading) {
+                RoundedRectangle(cornerRadius: 14, style: .continuous)
+                    .fill(Color(.secondarySystemGroupedBackground))
+
+                Path { path in
+                    path.move(to: CGPoint(x: 12, y: 66))
+                    path.addCurve(
+                        to: CGPoint(x: 132, y: 18),
+                        control1: CGPoint(x: 42, y: 24),
+                        control2: CGPoint(x: 94, y: 52)
+                    )
+                }
+                .stroke(Color.accentColor, style: StrokeStyle(lineWidth: 4, lineCap: .round, lineJoin: .round))
+                .padding(10)
+            }
+            .frame(height: 88)
+        }
+        .padding(16)
+        .frame(width: 158)
+        .background(Color(.systemBackground), in: RoundedRectangle(cornerRadius: 24, style: .continuous))
+        .overlay {
+            RoundedRectangle(cornerRadius: 24, style: .continuous)
+                .stroke(Color.white.opacity(0.88), lineWidth: 4)
+        }
+        .shadow(color: .black.opacity(0.1), radius: 20, y: 10)
+    }
+}
+
+#Preview("Onboarding — Page 1") {
     OnboardingView()
+        .environment(NotificationManager())
+}
+
+#Preview("Onboarding — All Pages") {
+    OnboardingPreviewPages()
+        .environment(NotificationManager())
+}
+
+private struct OnboardingPreviewPages: View {
+    @State private var page = 0
+    var body: some View {
+        VStack(spacing: 16) {
+            OnboardingViewWrapper(currentPage: $page)
+                .frame(maxHeight: .infinity)
+            HStack(spacing: 12) {
+                Button("Prev") { if page > 0 { page -= 1 } }
+                Button("Next") { if page < 2 { page += 1 } }
+                Button("Reset") { page = 0 }
+            }
+            .buttonStyle(.bordered)
+            .padding(.bottom)
+        }
+        .padding()
+    }
+}
+
+private struct OnboardingViewWrapper: View {
+    @Binding var currentPage: Int
+    @Environment(NotificationManager.self) private var notificationManager
+    var body: some View {
+        OnboardingView()
+            .environment(notificationManager)
+            .onAppear { /* no-op, exists to ensure environment is passed */ }
+            .onChange(of: currentPage) { _, _ in }
+            .overlay(alignment: .topTrailing) {
+                Text("Page: \(currentPage + 1)")
+                    .font(.caption)
+                    .padding(8)
+                    .background(.thinMaterial, in: RoundedRectangle(cornerRadius: 8, style: .continuous))
+                    .padding(8)
+            }
+    }
 }

@@ -38,6 +38,7 @@ struct ScaleApp: App {
     @State private var selectedTab = 0
 
     @AppStorage("autoSyncHealthKit") private var autoSyncHealthKit = false
+    @AppStorage("hasCompletedOnboarding") private var hasCompletedOnboarding = false
 
     private static let notificationDelegate = NotificationDelegate()
 
@@ -48,23 +49,28 @@ struct ScaleApp: App {
 
     var body: some Scene {
         WindowGroup {
-            RootView(selectedTab: $selectedTab)
-                .environment(healthKitManager)
-                .environment(notificationManager)
-                .onAppear {
-                    // Provide the data store so NotificationManager can look up the
-                    // current streak when scheduling reminders.
-                    notificationManager.modelContext = sharedModelContainer.mainContext
-                    notificationManager.rescheduleReminders()
-                }
-                .task(id: autoSyncHealthKit) {
-                    guard autoSyncHealthKit else { return }
-                    let context = sharedModelContainer.mainContext
-                    await healthKitManager.importAllData(modelContext: context)
-                }
-                .onReceive(NotificationCenter.default.publisher(for: .didTapWeightReminder)) { _ in
-                    selectedTab = 0
-                }
+            if hasCompletedOnboarding {
+                RootView(selectedTab: $selectedTab)
+                    .environment(healthKitManager)
+                    .environment(notificationManager)
+                    .onAppear {
+                        // Provide the data store so NotificationManager can look up the
+                        // current streak when scheduling reminders.
+                        notificationManager.modelContext = sharedModelContainer.mainContext
+                        notificationManager.rescheduleReminders()
+                    }
+                    .task(id: autoSyncHealthKit) {
+                        guard autoSyncHealthKit else { return }
+                        let context = sharedModelContainer.mainContext
+                        await healthKitManager.importAllData(modelContext: context)
+                    }
+                    .onReceive(NotificationCenter.default.publisher(for: .didTapWeightReminder)) { _ in
+                        selectedTab = 0
+                    }
+            } else {
+                OnboardingView()
+                    .environment(notificationManager)
+            }
         }
         .modelContainer(sharedModelContainer)
     }

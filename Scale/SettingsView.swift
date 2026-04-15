@@ -119,7 +119,6 @@ struct SettingsView: View {
                         } label: {
                             Label("Add Reminder", systemImage: "plus.circle.fill")
                         }
-
                     }
                 } header: {
                     Text("Reminders")
@@ -301,44 +300,6 @@ struct SettingsView: View {
         }
     }
 
-}
-
-// MARK: - ReminderRow
-
-private struct ReminderRow: View {
-    @Binding var reminder: Reminder
-    let tintColor: Color
-    let onChanged: () -> Void
-
-    @State private var time: Date
-
-    init(reminder: Binding<Reminder>, tintColor: Color, onChanged: @escaping () -> Void) {
-        self._reminder = reminder
-        self.tintColor = tintColor
-        self.onChanged = onChanged
-
-        var components = DateComponents()
-        components.hour = reminder.wrappedValue.hour
-        components.minute = reminder.wrappedValue.minute
-        let date = Calendar.current.date(from: components) ?? .now
-        _time = State(initialValue: date)
-    }
-
-    var body: some View {
-        DatePicker(selection: $time, displayedComponents: .hourAndMinute) {
-            TextField("Name", text: $reminder.name)
-                .onChange(of: reminder.name) {
-                    onChanged()
-                }
-        }
-        .tint(tintColor)
-        .onChange(of: time) {
-            let comps = Calendar.current.dateComponents([.hour, .minute], from: time)
-            reminder.hour = comps.hour ?? 8
-            reminder.minute = comps.minute ?? 0
-            onChanged()
-        }
-    }
 }
 
 #Preview {

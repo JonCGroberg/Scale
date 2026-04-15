@@ -9,6 +9,7 @@
 import Testing
 import Foundation
 import SwiftData
+import UserNotifications
 @testable import Scale
 
 struct NotificationManagerSchedulingTests {
@@ -30,7 +31,7 @@ struct NotificationManagerSchedulingTests {
                 defaults.removeObject(forKey: remindersEnabledKey)
             }
             if let existingReminders {
-                defaults.set(existingReminders, forKey: remindersEnabledKey)
+                defaults.set(existingReminders, forKey: savedRemindersKey)
             } else {
                 defaults.removeObject(forKey: savedRemindersKey)
             }
@@ -65,6 +66,17 @@ struct NotificationManagerSchedulingTests {
         withClearedDefaults {
             let manager = NotificationManager()
             let loaded = manager.loadReminders()
+            #expect(loaded.isEmpty)
+        }
+    }
+
+    @Test func loadRemindersReturnsEmptyForCorruptedSavedData() {
+        withClearedDefaults {
+            UserDefaults.standard.set(Data("not-json".utf8), forKey: savedRemindersKey)
+
+            let manager = NotificationManager()
+            let loaded = manager.loadReminders()
+
             #expect(loaded.isEmpty)
         }
     }
@@ -158,5 +170,34 @@ struct NotificationManagerSchedulingTests {
         )
 
         #expect(request.content.title == "Custom Name")
+    }
+
+    @Test func reminderDateComponentsMatchReminderTime() {
+        let reminder = Reminder(name: "Lunch", hour: 13, minute: 45)
+        let components = NotificationManager.reminderDateComponents(for: reminder)
+
+        #expect(components.hour == 13)
+        #expect(components.minute == 45)
+    }
+
+    @Test func requestIdentifierIsStableAndIncludesReminderID() {
+        let id = UUID(uuidString: "12345678-1234-1234-1234-123456789ABC")!
+        let reminder = Reminder(id: id, name: "Morning", hour: 8, minute: 0)
+
+        let identifier = NotificationManager.requestIdentifier(for: reminder)
+
+        #expect(identifier == "weightReminder_12345678-1234-1234-1234-123456789ABC")
+    }
+
+    @Test func notificationRequestIncludesBodyAndCategoryIdentifier() {
+        let reminder = Reminder(name: "Check In", hour: 18, minute: 15)
+        let request = NotificationManager.makeNotificationRequest(
+            reminder: reminder,
+            body: "Keep going",
+            categoryIdentifier: "WEIGHT_REMINDER"
+        )
+
+        #expect(request.content.body == "Keep going")
+        #expect(request.content.categoryIdentifier == "WEIGHT_REMINDER")
     }
 }
