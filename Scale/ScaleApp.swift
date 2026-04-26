@@ -35,7 +35,8 @@ struct ScaleApp: App {
 
     private let healthKitManager = HealthKitManager()
     private let notificationManager = NotificationManager()
-    @State private var selectedTab = 0
+    @State private var selectedTab = 1
+    @State private var showLog = false
 
     @AppStorage("autoSyncHealthKit") private var autoSyncHealthKit = false
     @AppStorage("hasCompletedOnboarding") private var hasCompletedOnboarding = false
@@ -50,7 +51,7 @@ struct ScaleApp: App {
     var body: some Scene {
         WindowGroup {
             if hasCompletedOnboarding {
-                RootView(selectedTab: $selectedTab)
+                RootView(selectedTab: $selectedTab, showLog: $showLog)
                     .environment(healthKitManager)
                     .environment(notificationManager)
                     .onAppear {
@@ -58,6 +59,12 @@ struct ScaleApp: App {
                         // current streak when scheduling reminders.
                         notificationManager.modelContext = sharedModelContainer.mainContext
                         notificationManager.rescheduleReminders()
+
+                        // Automatically open the log sheet if the user hasn't
+                        // recorded a weight entry today yet.
+                        if !notificationManager.todayHasWeightEntry() {
+                            showLog = true
+                        }
                     }
                     .task(id: autoSyncHealthKit) {
                         guard autoSyncHealthKit else { return }
@@ -65,10 +72,11 @@ struct ScaleApp: App {
                         await healthKitManager.importAllData(modelContext: context)
                     }
                     .onReceive(NotificationCenter.default.publisher(for: .didTapWeightReminder)) { _ in
-                        selectedTab = 0
+                        showLog = true
                     }
             } else {
                 OnboardingView()
+                    .environment(healthKitManager)
                     .environment(notificationManager)
             }
         }

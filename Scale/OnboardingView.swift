@@ -10,9 +10,24 @@ import SwiftUI
 struct OnboardingView: View {
     @AppStorage("hasCompletedOnboarding") private var hasCompletedOnboarding = false
     @AppStorage("remindersEnabled") private var remindersEnabled = false
+    @AppStorage("autoSyncHealthKit") private var autoSyncHealthKit = false
+    @AppStorage("appTint") private var appTint = AppTint.defaultValue.rawValue
     @Environment(NotificationManager.self) private var notificationManager
+    @Environment(HealthKitManager.self) private var healthManager
     @State private var currentPage = 0
     @State private var reminders: [Reminder] = []
+    @State private var isRequestingHealthPermission = false
+
+    private var selectedTint: Binding<AppTint> {
+        Binding(
+            get: { AppTint(rawValue: appTint) ?? .defaultValue },
+            set: { appTint = $0.rawValue }
+        )
+    }
+
+    private var tintColor: Color {
+        (AppTint(rawValue: appTint) ?? .defaultValue).color
+    }
 
     private let pages: [OnboardingPage] = [
         OnboardingPage(
@@ -25,6 +40,16 @@ struct OnboardingView: View {
             icon: "chart.xyaxis.line",
             title: "See Your Progress",
             subtitle: "View trends over time in your journal with charts and streaks."
+        ),
+        OnboardingPage(
+            icon: "paintpalette.fill",
+            title: "Pick Your Theme",
+            subtitle: "Choose the accent color that feels right for your log."
+        ),
+        OnboardingPage(
+            icon: "heart.fill",
+            title: "Connect Apple Health",
+            subtitle: "Import weight entries, workouts, steps, and active calories automatically."
         ),
         OnboardingPage(
             icon: "bell.badge.fill",
@@ -49,6 +74,7 @@ struct OnboardingView: View {
                 .padding(.bottom, 24)
         }
         .background(Color(.systemGroupedBackground).ignoresSafeArea())
+        .tint(tintColor)
         .onAppear {
             reminders = notificationManager.loadReminders()
         }
@@ -82,6 +108,14 @@ struct OnboardingView: View {
                     onboardingIllustration(for: index)
                         .padding(.top, 8)
                         .padding(.horizontal, 28)
+                } else if index == 2 {
+                    themeSetupCard
+                        .padding(.top, 12)
+                        .padding(.horizontal, 24)
+                } else if index == 3 {
+                    healthSetupCard
+                        .padding(.top, 12)
+                        .padding(.horizontal, 24)
                 } else if index == pages.count - 1 {
                     remindersSetupCard
                         .padding(.top, 12)
@@ -127,15 +161,15 @@ struct OnboardingView: View {
                 .rotationEffect(.degrees(7))
                 .offset(x: 46, y: -18)
             } else {
-                PlaceholderGraphCard()
+                PlaceholderGraphCard(tintColor: tintColor)
                     .rotationEffect(.degrees(-7))
                     .offset(x: -52, y: 26)
 
-                PlaceholderCalendarCard()
+                PlaceholderCalendarCard(tintColor: tintColor)
                     .rotationEffect(.degrees(6))
                     .offset(x: 50, y: -12)
 
-                PlaceholderMiniGraphCard()
+                PlaceholderMiniGraphCard(tintColor: tintColor)
                     .rotationEffect(.degrees(-2))
                     .offset(x: 6, y: 74)
             }
@@ -144,17 +178,126 @@ struct OnboardingView: View {
     }
 
     private var remindersSetupCard: some View {
-        ReminderSettingsContent(
-            remindersEnabled: $remindersEnabled,
-            reminders: $reminders,
-            tintColor: .accentColor,
-            notificationManager: notificationManager
-        )
+        VStack(alignment: .leading, spacing: 12) {
+            Label("You can change this later in Settings.", systemImage: "gearshape")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+
+            ReminderSettingsContent(
+                remindersEnabled: $remindersEnabled,
+                reminders: $reminders,
+                tintColor: tintColor,
+                notificationManager: notificationManager
+            )
+        }
+            .padding(20)
+            .background(.background, in: RoundedRectangle(cornerRadius: 24, style: .continuous))
+    }
+
+    private var themeSetupCard: some View {
+        VStack(alignment: .leading, spacing: 16) {
+            ForEach(AppTint.allCases) { tint in
+                Button {
+                    selectedTint.wrappedValue = tint
+                    Haptics.selection()
+                } label: {
+                    HStack(spacing: 12) {
+                        Circle()
+                            .fill(tint.color)
+                            .frame(width: 20, height: 20)
+
+                        Text(tint.title)
+                            .font(.body.weight(.medium))
+                            .foregroundStyle(.primary)
+
+                        Spacer()
+
+                        if selectedTint.wrappedValue == tint {
+                            Image(systemName: "checkmark.circle.fill")
+                                .foregroundStyle(tint.color)
+                        }
+                    }
+                    .padding(.horizontal, 14)
+                    .frame(height: 48)
+                    .background(
+                        tint.color.opacity(selectedTint.wrappedValue == tint ? 0.14 : 0.06),
+                        in: RoundedRectangle(cornerRadius: 14, style: .continuous)
+                    )
+                    .overlay {
+                        RoundedRectangle(cornerRadius: 14, style: .continuous)
+                            .stroke(
+                                selectedTint.wrappedValue == tint ? tint.color.opacity(0.7) : Color.secondary.opacity(0.16),
+                                lineWidth: 1
+                            )
+                    }
+                }
+                .buttonStyle(.plain)
+            }
+        }
         .padding(20)
         .background(.background, in: RoundedRectangle(cornerRadius: 24, style: .continuous))
     }
 
+    private var healthSetupCard: some View {
+        VStack(alignment: .leading, spacing: 16) {
+            if healthManager.isAvailable {
+                Label("You can change this later in Settings.", systemImage: "gearshape")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+
+            Toggle(isOn: healthSyncBinding) {
+                Label {
+                    VStack(alignment: .leading, spacing: 4) {
+                        Text("Apple Health Sync")
+                            .font(.body.weight(.semibold))
+                        Text(healthManager.isAvailable ? "Import your Health data when Scale opens." : "Apple Health is not available on this device.")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
+                } icon: {
+                    if isRequestingHealthPermission {
+                        ProgressView()
+                    } else {
+                        Image(systemName: "heart.fill")
+                            .foregroundStyle(tintColor)
+                    }
+                }
+            }
+            .disabled(!healthManager.isAvailable || isRequestingHealthPermission)
+            .onChange(of: autoSyncHealthKit) { _, enabled in
+                guard enabled, healthManager.isAvailable else { return }
+                isRequestingHealthPermission = true
+                Task {
+                    let granted = await healthManager.requestImportPermission()
+                    await MainActor.run {
+                        autoSyncHealthKit = granted
+                        isRequestingHealthPermission = false
+                    }
+                }
+            }
+
+            if healthManager.isAvailable && autoSyncHealthKit {
+                Divider()
+
+                HealthImportRows(tintColor: tintColor)
+            }
+        }
+        .padding(20)
+        .background(.background, in: RoundedRectangle(cornerRadius: 24, style: .continuous))
+    }
+
+    private var healthSyncBinding: Binding<Bool> {
+        Binding(
+            get: { healthManager.isAvailable && autoSyncHealthKit },
+            set: { autoSyncHealthKit = healthManager.isAvailable && $0 }
+        )
+    }
+
     private func completeOnboarding() {
+        if !healthManager.isAvailable {
+            autoSyncHealthKit = false
+        }
         if remindersEnabled && reminders.isEmpty {
             reminders = [Reminder()]
             notificationManager.saveReminders(reminders)
@@ -171,7 +314,7 @@ struct OnboardingView: View {
             HStack(spacing: 8) {
                 ForEach(0..<pages.count, id: \.self) { index in
                     Circle()
-                        .fill(index == currentPage ? Color.accentColor : Color.secondary.opacity(0.3))
+                        .fill(index == currentPage ? tintColor : Color.secondary.opacity(0.3))
                         .frame(width: 8, height: 8)
                         .animation(.easeInOut, value: currentPage)
                 }
@@ -208,7 +351,7 @@ private struct OnboardingPage {
     let subtitle: String
 }
 
-private struct PlaceholderPhotoCard: View {
+struct PlaceholderPhotoCard: View {
     let title: String
     let subtitle: String
     let background: LinearGradient
@@ -263,7 +406,9 @@ private struct PlaceholderPhotoCard: View {
     }
 }
 
-private struct PlaceholderCalendarCard: View {
+struct PlaceholderCalendarCard: View {
+    var tintColor: Color = .accentColor
+
     var body: some View {
         VStack(alignment: .leading, spacing: 14) {
             HStack {
@@ -314,16 +459,18 @@ private struct PlaceholderCalendarCard: View {
 
     private func calendarCellColor(row: Int, column: Int) -> Color {
         if row == 1 && column == 3 {
-            return .accentColor
+            return tintColor
         }
         if (row + column).isMultiple(of: 3) {
-            return Color.accentColor.opacity(0.16)
+            return tintColor.opacity(0.16)
         }
         return Color(.secondarySystemGroupedBackground)
     }
 }
 
-private struct PlaceholderGraphCard: View {
+struct PlaceholderGraphCard: View {
+    var tintColor: Color = .accentColor
+
     var body: some View {
         VStack(alignment: .leading, spacing: 16) {
             HStack {
@@ -340,7 +487,7 @@ private struct PlaceholderGraphCard: View {
                     RoundedRectangle(cornerRadius: 8, style: .continuous)
                         .fill(
                             LinearGradient(
-                                colors: [.accentColor.opacity(0.35), .accentColor],
+                                colors: [tintColor.opacity(0.35), tintColor],
                                 startPoint: .bottom,
                                 endPoint: .top
                             )
@@ -370,7 +517,9 @@ private struct PlaceholderGraphCard: View {
     }
 }
 
-private struct PlaceholderMiniGraphCard: View {
+struct PlaceholderMiniGraphCard: View {
+    var tintColor: Color = .accentColor
+
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
             Text("Trend")
@@ -388,7 +537,7 @@ private struct PlaceholderMiniGraphCard: View {
                         control2: CGPoint(x: 94, y: 52)
                     )
                 }
-                .stroke(Color.accentColor, style: StrokeStyle(lineWidth: 4, lineCap: .round, lineJoin: .round))
+                .stroke(tintColor, style: StrokeStyle(lineWidth: 4, lineCap: .round, lineJoin: .round))
                 .padding(10)
             }
             .frame(height: 88)
@@ -406,15 +555,17 @@ private struct PlaceholderMiniGraphCard: View {
 
 #Preview("Onboarding — Page 1") {
     OnboardingView()
+        .environment(HealthKitManager())
         .environment(NotificationManager())
 }
 
 #Preview("Onboarding — All Pages") {
     OnboardingPreviewPages()
+        .environment(HealthKitManager())
         .environment(NotificationManager())
 }
 
-private struct OnboardingPreviewPages: View {
+struct OnboardingPreviewPages: View {
     @State private var page = 0
     var body: some View {
         VStack(spacing: 16) {
@@ -422,7 +573,7 @@ private struct OnboardingPreviewPages: View {
                 .frame(maxHeight: .infinity)
             HStack(spacing: 12) {
                 Button("Prev") { if page > 0 { page -= 1 } }
-                Button("Next") { if page < 2 { page += 1 } }
+                Button("Next") { if page < 4 { page += 1 } }
                 Button("Reset") { page = 0 }
             }
             .buttonStyle(.bordered)
@@ -432,12 +583,14 @@ private struct OnboardingPreviewPages: View {
     }
 }
 
-private struct OnboardingViewWrapper: View {
+struct OnboardingViewWrapper: View {
     @Binding var currentPage: Int
     @Environment(NotificationManager.self) private var notificationManager
+    @Environment(HealthKitManager.self) private var healthManager
     var body: some View {
         OnboardingView()
             .environment(notificationManager)
+            .environment(healthManager)
             .onAppear { /* no-op, exists to ensure environment is passed */ }
             .onChange(of: currentPage) { _, _ in }
             .overlay(alignment: .topTrailing) {

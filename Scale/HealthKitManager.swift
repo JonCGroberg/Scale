@@ -379,6 +379,17 @@ final class HealthKitManager {
         await importDailyActivityData(modelContext: modelContext, authorizationRequested: true)
     }
 
+    func requestImportPermission() async -> Bool {
+        guard isAvailable else { return false }
+
+        do {
+            try await requestImportAuthorization()
+            return true
+        } catch {
+            return false
+        }
+    }
+
     static func makeImportPlan(
         samples: [ImportedSample],
         existingEntries: [WeightEntry],
@@ -569,7 +580,7 @@ final class HealthKitManager {
         return values
     }
 
-    private func mergeDailyActivitySummaries(
+    func mergeDailyActivitySummaries(
         stepStats: [Date: Double],
         activeEnergyStats: [Date: Double]
     ) -> [ImportedDailyActivitySummary] {

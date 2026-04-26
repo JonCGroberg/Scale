@@ -26,12 +26,12 @@ struct ChangePillVisibilityTests {
     }
 
     @Test func pillHiddenOnSettingsTab() {
-        #expect(RootView.isPillVisible(selectedTab: 2) == false)
+        #expect(RootView.isPillVisible(selectedTab: 4) == false)
     }
 
     @Test func pillVisibleForUnknownTabIndex() {
         // Any future tab that isn't Settings should still show the pill
-        #expect(RootView.isPillVisible(selectedTab: 3) == true)
+        #expect(RootView.isPillVisible(selectedTab: 2) == true)
         #expect(RootView.isPillVisible(selectedTab: 99) == true)
     }
 

@@ -187,7 +187,7 @@ struct ScaleScannerView: View {
         recognizeText(in: dilated)
     }
 
-    private func recognizeText(in ciImage: CIImage) {
+    func recognizeText(in ciImage: CIImage) {
         Task { @MainActor in
             isProcessing = true
         }

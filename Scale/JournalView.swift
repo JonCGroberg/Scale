@@ -10,48 +10,44 @@ import SwiftData
 import UIKit
 import PhotosUI
 import HealthKit
+import ImageIO
 
 struct JournalView: View {
     private final class PhotoThumbnailCache {
-        static let shared = PhotoThumbnailCache()
+        nonisolated static let shared = PhotoThumbnailCache()
 
-        private let cache = NSCache<NSString, UIImage>()
-        private let imageRendererFormat: UIGraphicsImageRendererFormat
-
+        nonisolated(unsafe) private let cache = NSCache<NSString, UIImage>()
         private init() {
-            let format = UIGraphicsImageRendererFormat.default()
-            format.scale = 1
-            self.imageRendererFormat = format
             cache.countLimit = 256
         }
 
-        func image(forKey key: String) -> UIImage? {
+        nonisolated func image(forKey key: String) -> UIImage? {
             cache.object(forKey: key as NSString)
         }
 
-        func setImage(_ image: UIImage, forKey key: String) {
+        nonisolated func setImage(_ image: UIImage, forKey key: String) {
             cache.setObject(image, forKey: key as NSString)
         }
 
-        func thumbnail(from data: Data, key: String, maxPixelSize: CGFloat = 160) -> UIImage? {
+        nonisolated func thumbnail(from data: Data, key: String, maxPixelSize: CGFloat = 160) -> UIImage? {
             if let cached = image(forKey: key) {
                 return cached
             }
 
-            guard let image = UIImage(data: data) else {
+            guard let source = CGImageSourceCreateWithData(data as CFData, nil) else {
                 return nil
             }
 
-            let longestSide = max(image.size.width, image.size.height)
-            let scale = min(maxPixelSize / max(longestSide, 1), 1)
-            let size = CGSize(
-                width: max(image.size.width * scale, 1),
-                height: max(image.size.height * scale, 1)
-            )
-            let renderer = UIGraphicsImageRenderer(size: size, format: imageRendererFormat)
-            let thumbnail = renderer.image { _ in
-                image.draw(in: CGRect(origin: .zero, size: size))
+            let options: [CFString: Any] = [
+                kCGImageSourceCreateThumbnailFromImageAlways: true,
+                kCGImageSourceCreateThumbnailWithTransform: true,
+                kCGImageSourceThumbnailMaxPixelSize: Int(maxPixelSize)
+            ]
+            guard let cgImage = CGImageSourceCreateThumbnailAtIndex(source, 0, options as CFDictionary) else {
+                return nil
             }
+
+            let thumbnail = UIImage(cgImage: cgImage)
             setImage(thumbnail, forKey: key)
             return thumbnail
         }
@@ -83,7 +79,8 @@ struct JournalView: View {
     private struct DayData {
         let weightText: String?
         let workoutCount: Int
-        let primaryPhoto: UIImage?
+        /// Cache key for lazy thumbnail loading – nil when the day has no photo.
+        let photoCacheKey: String?
         /// Position within a consecutive logging streak (0 = isolated day, 1+ = day N of a run).
         let streakDay: Int
         /// True when this is today and logging would continue a streak (not yet logged).
@@ -91,6 +88,55 @@ struct JournalView: View {
 
         var isLogged: Bool {
             weightText != nil
+        }
+
+        var hasPhoto: Bool {
+            photoCacheKey != nil
+        }
+    }
+
+    /// Stores the raw photo data needed to generate a thumbnail on a background thread.
+    struct PendingThumbnail {
+        let photoData: Data
+        let cacheKey: String
+    }
+
+    @Observable
+    final class LazyThumbnailLoader {
+        var thumbnails: [String: UIImage] = [:]
+        private var loadedKeys: Set<String> = []
+        private var loadingKeys: Set<String> = []
+
+        @MainActor
+        func loadIfNeeded(key: String, pending: PendingThumbnail?) {
+            guard thumbnails[key] == nil, !loadedKeys.contains(key), !loadingKeys.contains(key), let pending else { return }
+            // Check cache first synchronously.
+            if let cached = PhotoThumbnailCache.shared.image(forKey: key) {
+                thumbnails[key] = cached
+                loadedKeys.insert(key)
+                return
+            }
+            loadingKeys.insert(key)
+            Task.detached(priority: .utility) {
+                let thumbnail = PhotoThumbnailCache.shared.thumbnail(
+                    from: pending.photoData,
+                    key: pending.cacheKey
+                )
+                await MainActor.run {
+                    if let thumbnail {
+                        self.thumbnails[key] = thumbnail
+                    }
+                    self.loadedKeys.insert(key)
+                    self.loadingKeys.remove(key)
+                }
+            }
+        }
+
+        @MainActor
+        func removeValue(forKey key: String) {
+            thumbnails.removeValue(forKey: key)
+            loadedKeys.remove(key)
+            loadingKeys.remove(key)
         }
     }
 
@@ -114,6 +160,8 @@ struct JournalView: View {
     let scrollToEntryTrigger: Int
     let focusedEntry: WeightEntry?
     let scrollToBottomTrigger: Int
+    @Binding var showLog: Bool
+    @Binding var logDate: Date?
 
     @State private var monthLoader = CalendarMonthLoader(batchSize: 3)
     @State private var monthRenderDataByMonth: [Date: MonthRenderData] = [:]
@@ -122,6 +170,9 @@ struct JournalView: View {
     @State private var presentedSheet: PresentedDaySheet?
     @State private var hasFinishedInitialMonthPositioning = false
     @State private var hasPerformedInitialScroll = false
+    @State private var isDataReady = false
+    @State private var thumbnailLoader = LazyThumbnailLoader()
+    @State private var pendingThumbnails: [String: PendingThumbnail] = [:]
 
     static func isNearTop(
         contentOffsetY: CGFloat,
@@ -192,25 +243,16 @@ struct JournalView: View {
         .secondary
     }
 
-    private var journalRenderSignature: [String] {
-        var signature = entries.map { entry in
-            [
-                String(entry.timestamp.timeIntervalSinceReferenceDate),
-                String(entry.weight),
-                String(entry.photosFingerprint)
-            ].joined(separator: "|")
-        }
-        signature.append(contentsOf: workouts.map { workout in
-            String(workout.timestamp.timeIntervalSinceReferenceDate)
-        })
-        signature.append(contentsOf: dailyActivitySummaries.map { summary in
-            [
-                String(summary.date.timeIntervalSinceReferenceDate),
-                String(summary.stepCount),
-                String(summary.activeEnergyBurnedKilocalories)
-            ].joined(separator: "|")
-        })
-        return signature
+    private var journalDataVersion: Int {
+        var hasher = Hasher()
+        hasher.combine(entries.count)
+        hasher.combine(entries.first?.timestamp.timeIntervalSinceReferenceDate ?? 0)
+        hasher.combine(entries.first?.weight ?? 0)
+        hasher.combine(entries.first?.photosFingerprint ?? 0)
+        hasher.combine(workouts.count)
+        hasher.combine(workouts.first?.timestamp.timeIntervalSinceReferenceDate ?? 0)
+        hasher.combine(dailyActivitySummaries.count)
+        return hasher.finalize()
     }
 
     private var monthSections: [MonthSection] {
@@ -259,8 +301,12 @@ struct JournalView: View {
                     }
                     .onAppear {
                         ensureInitialMonthsLoaded()
-                        rebuildMonthRenderData()
                         if !hasPerformedInitialScroll {
+                            // Synchronous rebuild only on very first appear so scroll target exists.
+                            if !isDataReady {
+                                rebuildMonthRenderData()
+                                isDataReady = true
+                            }
                             scrollToFocusedEntry(with: proxy, animated: false)
                             hasPerformedInitialScroll = true
                             Task { @MainActor in
@@ -274,34 +320,23 @@ struct JournalView: View {
                     .onChange(of: scrollToBottomTrigger) { _, _ in
                         scrollToBottom(with: proxy, animated: true)
                     }
-                    .onChange(of: journalRenderSignature) { _, _ in
+                    .onChange(of: journalDataVersion) { _, _ in
                         rebuildMonthRenderData()
                     }
                 }
             }
             .toolbar(.hidden, for: .navigationBar)
             .sheet(item: $presentedSheet) { presentedSheet in
-                switch presentedSheet.kind {
-                case .detail:
-                    LogDayDetailSheet(
-                        title: dayTitleFormatter.string(from: presentedSheet.date),
-                        entryIDs: entryIDs(for: presentedSheet.date),
-                        workoutIDs: workoutIDs(for: presentedSheet.date),
-                        dailyActivityDate: calendar.startOfDay(for: presentedSheet.date),
-                        tintColor: tintColor
-                    ) {
-                        self.presentedSheet = nil
-                    }
-                case .create:
-                    LogDayCreateSheet(
-                        date: presentedSheet.date,
-                        title: dayTitleFormatter.string(from: presentedSheet.date),
-                        suggestedWeight: entries.first?.weight,
-                        tintColor: tintColor
-                    ) {
-                        self.presentedSheet = nil
-                    }
+                LogDayDetailSheet(
+                    title: dayTitleFormatter.string(from: presentedSheet.date),
+                    entryIDs: entryIDs(for: presentedSheet.date),
+                    workoutIDs: workoutIDs(for: presentedSheet.date),
+                    dailyActivityDate: calendar.startOfDay(for: presentedSheet.date),
+                    tintColor: tintColor
+                ) {
+                    self.presentedSheet = nil
                 }
+                .liquidGlassSheetPresentation()
             }
         }
     }
@@ -356,7 +391,9 @@ struct JournalView: View {
         let isLoggableDay = Self.isLoggableDay(date, calendar: calendar)
         let isLogged = dayData?.isLogged ?? false
         let hasWorkouts = workoutCount > 0
-        let hasPhoto = dayData?.primaryPhoto != nil
+        let photoCacheKey = dayData?.photoCacheKey
+        let primaryPhoto = photoCacheKey.flatMap { thumbnailLoader.thumbnails[$0] }
+        let hasVisiblePhoto = primaryPhoto != nil
         let streakDay = dayData?.streakDay ?? 0
         let isStreakPotential = dayData?.isStreakPotential ?? false
 
@@ -369,15 +406,16 @@ struct JournalView: View {
             Button {
                 Haptics.selection()
                 let day = calendar.startOfDay(for: date)
-                let kind: PresentedDaySheet.Kind = Self.shouldPresentCreateSheet(
-                    hasLoggedWeight: isLogged,
-                    hasWorkouts: hasWorkouts
-                ) ? .create : .detail
-                presentedSheet = PresentedDaySheet(date: day, kind: kind)
+                if Self.shouldPresentCreateSheet(hasLoggedWeight: isLogged, hasWorkouts: hasWorkouts) {
+                    logDate = day
+                    showLog = true
+                } else {
+                    presentedSheet = PresentedDaySheet(date: day, kind: .detail)
+                }
             } label: {
                 ZStack(alignment: .topLeading) {
                     cellBackground(
-                        primaryPhoto: dayData?.primaryPhoto,
+                        primaryPhoto: primaryPhoto,
                         isLogged: isLogged,
                         isCurrentMonth: isCurrentMonth
                     )
@@ -387,7 +425,7 @@ struct JournalView: View {
                             Text(dayLabel(for: date))
                                 .font(.system(size: 10, weight: .medium))
                                 .foregroundStyle(
-                                    hasPhoto
+                                    hasVisiblePhoto
                                         ? Color.white.opacity(isCurrentMonth ? 0.98 : 0.72)
                                         : dayNumberColor(isCurrentMonth: isCurrentMonth)
                                 )
@@ -429,6 +467,13 @@ struct JournalView: View {
             }
             .buttonStyle(.plain)
             .allowsHitTesting(isLoggableDay)
+            .onAppear {
+                guard let photoCacheKey else { return }
+                thumbnailLoader.loadIfNeeded(
+                    key: photoCacheKey,
+                    pending: pendingThumbnails[photoCacheKey]
+                )
+            }
         }
     }
 
@@ -669,7 +714,7 @@ struct JournalView: View {
             result[day] = DayData(
                 weightText: dayEntries.first.map { String(format: "%.1f", $0.weight) },
                 workoutCount: workoutsByDay[day]?.count ?? 0,
-                primaryPhoto: primaryPhoto(for: dayEntries),
+                photoCacheKey: photoCacheKey(for: dayEntries),
                 streakDay: streakValue,
                 isStreakPotential: isPotential
             )
@@ -728,30 +773,56 @@ struct JournalView: View {
                 )
             )
         })
+
+        // Build pending thumbnails for lazy loading and remove stale cached thumbnails.
+        let newPending = buildPendingThumbnails(from: groupedEntries)
+        let staleKeys = Set(pendingThumbnails.keys).subtracting(newPending.keys)
+        for key in staleKeys {
+            thumbnailLoader.removeValue(forKey: key)
+        }
+        pendingThumbnails = newPending
     }
 
-    private func primaryPhoto(for entries: [WeightEntry]) -> UIImage? {
+    /// Returns the cache key for the first available photo across the day's entries, or nil if none.
+    private func photoCacheKey(for entries: [WeightEntry]) -> String? {
         for entry in entries {
             guard entry.hasPhotos else { continue }
+            let cacheKey = "\(entry.persistentModelID)-0-\(entry.photosFingerprint)"
+            return cacheKey
+        }
+        return nil
+    }
 
-            for (index, photoData) in entry.photosData.enumerated() {
-                let cacheKey = "\(entry.persistentModelID)-\(index)-\(entry.photosFingerprint)"
-                if let thumbnail = PhotoThumbnailCache.shared.thumbnail(from: photoData, key: cacheKey) {
-                    return thumbnail
-                }
-            }
+    /// Builds the pending thumbnail map for lazy loading. Only decodes photo data
+    /// for entries within the currently loaded months to avoid unnecessary work.
+    private func buildPendingThumbnails(from groupedEntries: [Date: [WeightEntry]]) -> [String: PendingThumbnail] {
+        let loadedMonthIntervals: [DateInterval] = monthLoader.monthStarts.compactMap { start in
+            calendar.dateInterval(of: .month, for: start)
         }
 
-        return nil
+        var result: [String: PendingThumbnail] = [:]
+        for (day, dayEntries) in groupedEntries {
+            // Skip entries outside loaded months — their thumbnails aren't needed yet.
+            guard loadedMonthIntervals.contains(where: { $0.contains(day) }) else { continue }
+            for entry in dayEntries {
+                guard entry.hasPhotos else { continue }
+                let photosData = entry.photosData
+                guard let firstPhoto = photosData.first else { continue }
+                let cacheKey = "\(entry.persistentModelID)-0-\(entry.photosFingerprint)"
+                result[cacheKey] = PendingThumbnail(photoData: firstPhoto, cacheKey: cacheKey)
+                break // Only need the first photo per day
+            }
+        }
+        return result
     }
 }
 
 #Preview {
-    JournalView(scrollToEntryTrigger: 0, focusedEntry: nil, scrollToBottomTrigger: 0)
+    JournalView(scrollToEntryTrigger: 0, focusedEntry: nil, scrollToBottomTrigger: 0, showLog: .constant(false), logDate: .constant(nil))
         .modelContainer(for: [WeightEntry.self, WorkoutEntry.self, DailyActivitySummary.self], inMemory: true)
 }
 
-private struct LogDayDetailSheet: View {
+struct LogDayDetailSheet: View {
     private struct PhotoItem {
         let image: UIImage
         let entryID: PersistentIdentifier
@@ -858,21 +929,27 @@ private struct LogDayDetailSheet: View {
             ScrollView(showsIndicators: false) {
                 VStack(alignment: .leading, spacing: 20) {
                     if isEditingEntry || !displayedPhotos.isEmpty {
-                        photoStripSection
+                        photoHeroSection
+                    }
+
+                    if !entries.isEmpty {
+                        logCarouselSection
                     }
 
                     if let dailyActivitySummary, dailyActivitySummary.stepCount > 0 || dailyActivitySummary.activeEnergyBurnedKilocalories > 0 {
-                        dailyActivityHighlights(summary: dailyActivitySummary)
+                        VStack(alignment: .leading, spacing: 12) {
+                            Text("Activity")
+                                .font(.headline.weight(.semibold))
+                                .padding(.horizontal, 4)
+
+                            dailyActivityHighlights(summary: dailyActivitySummary)
+                        }
                     }
 
                     if entries.isEmpty && workouts.isEmpty {
                         Text("No entry logged for this day.")
                             .foregroundStyle(.secondary)
                             .padding(.horizontal, 20)
-                    }
-
-                    if !entries.isEmpty {
-                        logCarouselSection
                     }
 
                     if !workouts.isEmpty {
@@ -883,7 +960,7 @@ private struct LogDayDetailSheet: View {
                 .padding(.top, 12)
                 .padding(.bottom, 32)
             }
-            .background(Color(.systemGroupedBackground))
+            .background(Color(.systemBackground))
             .navigationBarTitleDisplayMode(.inline)
             .presentationDetents([.medium, .large])
             .toolbar {
@@ -992,9 +1069,9 @@ private struct LogDayDetailSheet: View {
 
     private func logCard(for entry: WeightEntry, index: Int) -> some View {
         VStack(alignment: .leading, spacing: 14) {
-            logSectionHeader(for: entry, index: index)
-
             if isEditingEntry, entryDrafts[entry.persistentModelID] != nil {
+                logSectionHeader(for: entry, index: index)
+
                 TextField("Weight", text: draftWeightBinding(for: entry))
                     .keyboardType(.decimalPad)
 
@@ -1017,32 +1094,57 @@ private struct LogDayDetailSheet: View {
                     Text(entry.source == .appleHealth ? "Apple Health" : "Scale")
                 }
             } else {
-                HStack(alignment: .firstTextBaseline, spacing: 4) {
-                    Text(String(format: "%.1f", entry.weight))
-                        .font(.title2.weight(.semibold))
-                        .foregroundStyle(tintColor)
+                HStack(alignment: .top, spacing: 12) {
+                    VStack(alignment: .leading, spacing: 4) {
+                        HStack(alignment: .firstTextBaseline, spacing: 4) {
+                            Text(String(format: "%.1f", entry.weight))
+                                .font(.system(size: 44, weight: .semibold, design: .rounded))
+                                .foregroundStyle(tintColor)
+                                .lineLimit(1)
+                                .minimumScaleFactor(0.72)
+                                .contentTransition(.numericText())
 
-                    Text("lbs")
-                        .font(.subheadline.weight(.medium))
-                        .foregroundStyle(.secondary)
+                            Text("lbs")
+                                .font(.title3.weight(.semibold))
+                                .foregroundStyle(.secondary)
+                                .lineLimit(1)
+                        }
+                        .fixedSize(horizontal: true, vertical: false)
+
+                        Text(entry.timestamp, format: .dateTime.month(.abbreviated).day().year().hour().minute())
+                            .font(.caption.weight(.medium))
+                            .foregroundStyle(.secondary)
+                            .lineLimit(1)
+                            .minimumScaleFactor(0.8)
+                    }
+                    .layoutPriority(1)
+
+                    Spacer(minLength: 8)
+
+                    VStack(alignment: .trailing, spacing: 8) {
+                        Text(entry.source == .appleHealth ? "Apple Health" : "Scale")
+                            .font(.caption2.weight(.semibold))
+                            .foregroundStyle(.secondary)
+                            .lineLimit(1)
+
+                        if entries.count > 1 {
+                            editEntryButton(for: entry)
+                        }
+                    }
                 }
-
-                Text(entry.timestamp, format: .dateTime.month(.wide).day().year().hour().minute())
-                    .foregroundStyle(.secondary)
+                .frame(maxWidth: .infinity, alignment: .leading)
 
                 if let note = entry.note, !note.isEmpty {
                     Text(note)
-                }
-
-                LabeledContent("Source") {
-                    Text(entry.source == .appleHealth ? "Apple Health" : "Scale")
                 }
             }
         }
         .padding(18)
         .frame(width: logCardWidth, alignment: .leading)
-        .background(Color(.secondarySystemGroupedBackground))
-        .clipShape(RoundedRectangle(cornerRadius: 20, style: .continuous))
+        .glassEffect(
+            .regular.tint(tintColor.opacity(0.06)),
+            in: RoundedRectangle(cornerRadius: 20, style: .continuous)
+        )
     }
 
     private var workoutSection: some View {
@@ -1057,8 +1159,10 @@ private struct LogDayDetailSheet: View {
                         WorkoutSummaryRow(workout: workout)
                             .padding(16)
                             .frame(width: workoutCardWidth, alignment: .leading)
-                            .background(Color(.secondarySystemGroupedBackground))
-                            .clipShape(RoundedRectangle(cornerRadius: 18, style: .continuous))
+                            .glassEffect(
+                                .regular.tint(tintColor.opacity(0.06)),
+                                in: RoundedRectangle(cornerRadius: 18, style: .continuous)
+                            )
                     }
                 }
                 .padding(.horizontal, 4)
@@ -1198,23 +1302,45 @@ private struct LogDayDetailSheet: View {
     }
 
     @ViewBuilder
-    private var photoStripSection: some View {
-        ScrollView(.horizontal, showsIndicators: false) {
-            HStack(spacing: 12) {
-                if isEditingEntry {
-                    addPhotosButton
+    private var photoHeroSection: some View {
+        VStack(spacing: 12) {
+            if displayedPhotos.isEmpty {
+                heroAddPhotosButton
+            } else {
+                TabView(selection: $selectedPhotoIndex) {
+                    ForEach(Array(displayedPhotos.enumerated()), id: \.offset) { index, photo in
+                        photoHeroItem(photo, index: index)
+                            .tag(index)
+                    }
                 }
-
-                ForEach(Array(displayedPhotos.enumerated()), id: \.offset) { index, photo in
-                    photoStripItem(photo, index: index)
-                }
+                .frame(height: photoHeroHeight)
+                .tabViewStyle(.page(indexDisplayMode: displayedPhotos.count > 1 ? .always : .never))
+                .clipShape(RoundedRectangle(cornerRadius: 24, style: .continuous))
             }
-            .padding(.vertical, 8)
+
+            if isEditingEntry {
+                PhotosPicker(
+                    selection: $selectedPhotoItems,
+                    maxSelectionCount: nil,
+                    matching: .images
+                ) {
+                    Label("Add Photos", systemImage: "photo.badge.plus")
+                        .font(.subheadline.weight(.semibold))
+                        .foregroundStyle(tintColor)
+                        .frame(maxWidth: .infinity)
+                        .padding(.vertical, 12)
+                        .background(
+                            Capsule(style: .continuous)
+                                .fill(tintColor.opacity(0.10))
+                        )
+                }
+                .buttonStyle(.plain)
+            }
         }
     }
 
     @ViewBuilder
-    private func photoStripItem(_ photo: UIImage, index: Int) -> some View {
+    private func photoHeroItem(_ photo: UIImage, index: Int) -> some View {
         ZStack(alignment: .topTrailing) {
             Button {
                 selectedPhotoIndex = index
@@ -1223,27 +1349,27 @@ private struct LogDayDetailSheet: View {
                 Image(uiImage: photo)
                     .resizable()
                     .scaledToFill()
-                    .frame(width: photoThumbnailWidth, height: photoThumbnailHeight)
-                    .clipShape(RoundedRectangle(cornerRadius: photoThumbnailCornerRadius, style: .continuous))
+                    .frame(maxWidth: .infinity)
+                    .frame(height: photoHeroHeight)
+                    .clipped()
             }
             .buttonStyle(.plain)
 
             if isEditingEntry {
                 Button {
-                    guard let dayPhotoEntry else { return }
-                    entryDrafts[dayPhotoEntry.persistentModelID]?.photosData.remove(at: index)
+                    removeDraftPhoto(at: index)
                 } label: {
                     Image(systemName: "xmark.circle.fill")
-                        .font(.title3)
+                        .font(.title2)
                         .symbolRenderingMode(.palette)
                         .foregroundStyle(.white, .black.opacity(0.7))
                 }
-                .padding(8)
+                .padding(12)
             }
         }
     }
 
-    private var addPhotosButton: some View {
+    private var heroAddPhotosButton: some View {
         PhotosPicker(
             selection: $selectedPhotoItems,
             maxSelectionCount: nil,
@@ -1251,34 +1377,37 @@ private struct LogDayDetailSheet: View {
         ) {
             VStack(spacing: 10) {
                 Image(systemName: "photo.badge.plus")
-                    .font(.title2.weight(.semibold))
-                Text("Add")
-                    .font(.subheadline.weight(.semibold))
+                    .font(.largeTitle.weight(.semibold))
+                Text("Add Photos")
+                    .font(.headline.weight(.semibold))
             }
             .foregroundStyle(tintColor)
-            .frame(width: photoThumbnailWidth, height: photoThumbnailHeight)
+            .frame(maxWidth: .infinity)
+            .frame(height: photoHeroHeight)
             .background(
-                RoundedRectangle(cornerRadius: photoThumbnailCornerRadius, style: .continuous)
+                RoundedRectangle(cornerRadius: 24, style: .continuous)
                     .fill(tintColor.opacity(0.10))
             )
             .overlay {
-                RoundedRectangle(cornerRadius: photoThumbnailCornerRadius, style: .continuous)
+                RoundedRectangle(cornerRadius: 24, style: .continuous)
                     .strokeBorder(tintColor.opacity(0.24), lineWidth: 1)
             }
         }
         .buttonStyle(.plain)
     }
 
-    private var photoThumbnailWidth: CGFloat {
-        isEditingEntry ? 92 : 152
+    private var photoHeroHeight: CGFloat {
+        isEditingEntry ? 260 : 340
     }
 
-    private var photoThumbnailHeight: CGFloat {
-        isEditingEntry ? 118 : 188
-    }
+    private func removeDraftPhoto(at index: Int) {
+        guard let dayPhotoEntry else { return }
+        guard var draft = entryDrafts[dayPhotoEntry.persistentModelID] else { return }
+        guard draft.photosData.indices.contains(index) else { return }
 
-    private var photoThumbnailCornerRadius: CGFloat {
-        isEditingEntry ? 14 : 16
+        draft.photosData.remove(at: index)
+        entryDrafts[dayPhotoEntry.persistentModelID] = draft
+        selectedPhotoIndex = min(selectedPhotoIndex, max(draft.photosData.count - 1, 0))
     }
 
     private func loadPhotoData(from items: [PhotosPickerItem]) async -> [Data] {
@@ -1310,8 +1439,15 @@ private struct LogDayDetailSheet: View {
                 ) {
                     pendingDeletionEntryID = entry.persistentModelID
                 }
-            } else if entries.count > 1 {
-                editEntryButton(for: entry)
+            } else {
+                Text(entry.source == .appleHealth ? "Apple Health" : "Scale")
+                    .font(.caption2.weight(.semibold))
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
+
+                if entries.count > 1 {
+                    editEntryButton(for: entry)
+                }
             }
         }
         .padding(.top, 4)
@@ -1432,33 +1568,65 @@ private struct LogDayDetailSheet: View {
             activityHighlightCard(
                 systemImage: "shoeprints.fill",
                 title: "Steps",
-                value: summary.stepCount.formatted()
+                value: summary.stepCount.formatted(),
+                unit: nil,
+                source: activitySourceText(summary.source)
             )
 
             activityHighlightCard(
                 systemImage: "flame.fill",
                 title: "Active",
-                value: "\(Int(summary.activeEnergyBurnedKilocalories.rounded())) cal"
+                value: Int(summary.activeEnergyBurnedKilocalories.rounded()).formatted(),
+                unit: "cal",
+                source: activitySourceText(summary.source)
             )
         }
         .padding(.vertical, 4)
     }
 
-    private func activityHighlightCard(systemImage: String, title: String, value: String) -> some View {
-        VStack(alignment: .leading, spacing: 8) {
-            Label(title, systemImage: systemImage)
-                .font(.caption.weight(.semibold))
-                .foregroundStyle(.secondary)
+    private func activityHighlightCard(systemImage: String, title: String, value: String, unit: String?, source: String) -> some View {
+        VStack(alignment: .leading, spacing: 10) {
+            HStack(spacing: 10) {
+                Label(title, systemImage: systemImage)
+                    .font(.caption.weight(.semibold))
+                    .foregroundStyle(.secondary)
 
-            Text(value)
-                .font(.headline.weight(.semibold))
-                .foregroundStyle(.primary)
+                Spacer(minLength: 8)
+
+                Text(source)
+                    .font(.caption2.weight(.semibold))
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
+            }
+
+            HStack(alignment: .firstTextBaseline, spacing: 4) {
+                Text(value)
+                    .font(.system(size: 30, weight: .semibold, design: .rounded))
+                    .foregroundStyle(.primary)
+                    .lineLimit(1)
+                    .minimumScaleFactor(0.72)
+
+                if let unit {
+                    Text(unit)
+                        .font(.subheadline.weight(.semibold))
+                        .foregroundStyle(.secondary)
+                }
+            }
         }
         .frame(maxWidth: .infinity, alignment: .leading)
         .padding(.horizontal, 14)
         .padding(.vertical, 12)
-        .background(Color(.secondarySystemGroupedBackground))
-        .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
+        .glassEffect(
+            .regular.tint(tintColor.opacity(0.06)),
+            in: RoundedRectangle(cornerRadius: 14, style: .continuous)
+        )
+    }
+
+    private func activitySourceText(_ source: DailyActivitySource) -> String {
+        switch source {
+        case .appleHealth:
+            return "Apple Health"
+        }
     }
 
     @ViewBuilder
@@ -1491,7 +1659,7 @@ private struct LogDayDetailSheet: View {
     }
 }
 
-private struct LogPhotoCarouselView: View {
+struct LogPhotoCarouselView: View {
     let photos: [UIImage]
     let initialIndex: Int
     let canEditCurrentPhoto: Bool
@@ -1535,7 +1703,7 @@ private struct LogPhotoCarouselView: View {
     }
 }
 
-private struct WorkoutSummaryRow: View {
+struct WorkoutSummaryRow: View {
     let workout: WorkoutEntry
 
     private var activityType: HKWorkoutActivityType {
@@ -1543,26 +1711,61 @@ private struct WorkoutSummaryRow: View {
     }
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 6) {
-            HStack {
+        VStack(alignment: .leading, spacing: 10) {
+            HStack(spacing: 10) {
                 Label(activityType.displayName, systemImage: "figure.run")
-                    .font(.headline)
-
-                Spacer(minLength: 12)
-
-                Text(workout.timestamp, format: .dateTime.hour().minute())
+                    .font(.caption.weight(.semibold))
                     .foregroundStyle(.secondary)
+
+                Spacer(minLength: 8)
+
+                Text(sourceText)
+                    .font(.caption2.weight(.semibold))
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
             }
 
-            Text(durationText)
-                .foregroundStyle(.secondary)
+            HStack(alignment: .firstTextBaseline, spacing: 8) {
+                Text(durationText)
+                    .font(.system(size: 34, weight: .semibold, design: .rounded))
+                    .foregroundStyle(.primary)
+                    .lineLimit(1)
+                    .minimumScaleFactor(0.72)
 
-            if let metricText {
-                Text(metricText)
-                    .font(.subheadline)
+                if let metricText {
+                    Text(metricText)
+                        .font(.caption.weight(.semibold))
+                        .foregroundStyle(.secondary)
+                        .lineLimit(1)
+                        .minimumScaleFactor(0.75)
+                }
+
+                Spacer(minLength: 8)
+
+                Text(timeRangeText)
+                    .font(.caption.weight(.medium))
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
+                    .minimumScaleFactor(0.75)
             }
         }
         .padding(.vertical, 2)
+    }
+
+    private var sourceText: String {
+        switch workout.source {
+        case .appleHealth:
+            return "Apple Health"
+        }
+    }
+
+    private var timeRangeText: String {
+        let endDate = workout.timestamp.addingTimeInterval(workout.duration)
+        return "\(timeText(for: workout.timestamp))-\(timeText(for: endDate))"
+    }
+
+    private func timeText(for date: Date) -> String {
+        date.formatted(.dateTime.hour().minute())
     }
 
     private var durationText: String {
@@ -1621,7 +1824,7 @@ private extension HKWorkoutActivityType {
     }
 }
 
-private struct LogDayCreateSheet: View {
+struct LogDayCreateSheet: View {
     @Environment(\.dismiss) private var dismiss
     @Environment(\.modelContext) private var modelContext
     @Environment(HealthKitManager.self) private var healthManager
@@ -1687,6 +1890,7 @@ private struct LogDayCreateSheet: View {
             }
             .navigationBarTitleDisplayMode(.inline)
             .presentationDetents([.height(280), .medium])
+            .liquidGlassSheetPresentation()
             .onChange(of: selectedPhotoItems) { _, newItems in
                 guard !newItems.isEmpty else { return }
                 Task {

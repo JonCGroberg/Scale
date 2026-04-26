@@ -149,7 +149,7 @@ enum WeightCalculations {
         )
         let trendEntries = exponentiallySmoothedChartPoints(
             from: filteredEntries,
-            alpha: alpha / 4
+            alpha: trendAlpha(for: period)
         )
 
         return ChartSnapshot(
@@ -319,6 +319,32 @@ enum WeightCalculations {
         return streak
     }
 
+    /// Longest consecutive-day logging streak across all entries.
+    /// Multiple entries on the same day count as one logged day.
+    static func longestStreak(from entries: [WeightEntry]) -> Int {
+        let calendar = Calendar.current
+        let loggedDays = Set(entries.map { calendar.startOfDay(for: $0.timestamp) })
+        guard !loggedDays.isEmpty else { return 0 }
+
+        let sortedDays = loggedDays.sorted()
+        var longest = 1
+        var current = 1
+
+        for index in 1..<sortedDays.count {
+            let previous = sortedDays[index - 1]
+            let day = sortedDays[index]
+
+            if calendar.date(byAdding: .day, value: 1, to: previous) == day {
+                current += 1
+            } else {
+                longest = max(longest, current)
+                current = 1
+            }
+        }
+
+        return max(longest, current)
+    }
+
     /// Compute the streak value for every unique logged day.
     /// Every day that is part of a consecutive run of 2+ days gets a value > 0.
     /// Days that are isolated (no adjacent logged days) get 0.
@@ -396,15 +422,30 @@ enum WeightCalculations {
     private static func smoothingAlpha(for period: TimePeriod) -> Double {
         switch period {
         case .week:
-            0.80
+            0.98
         case .month:
-            0.70
+            0.95
         case .threeMonths:
-            0.60
+            0.92
         case .sixMonths:
-            0.50
+            0.90
         case .year:
-            0.42
+            0.85
+        }
+    }
+
+    private static func trendAlpha(for period: TimePeriod) -> Double {
+        switch period {
+        case .week:
+            0.65
+        case .month:
+            0.55
+        case .threeMonths:
+            0.50
+        case .sixMonths:
+            0.45
+        case .year:
+            0.40
         }
     }
 

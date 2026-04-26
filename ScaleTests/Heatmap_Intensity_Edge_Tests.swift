@@ -32,10 +32,11 @@ struct HeatmapIntensityEdgeTests {
         let snapshot = WeightCalculations.heatmapSnapshot(from: [futureEntry], weeks: 1)
 
         let allDays = snapshot.weeks.flatMap { $0 }
-        let tomorrowCell = allDays.first { calendar.isDate($0.date, inSameDayAs: tomorrow) }
-        // Future days should have count 0 regardless of entries
-        #expect(tomorrowCell?.entryCount == 0)
-        #expect(tomorrowCell?.intensity == 0)
+        let futureCells = allDays.filter { $0.date > calendar.startOfDay(for: Date()) }
+
+        // On the last day of the displayed week there are no future cells to assert.
+        #expect(futureCells.allSatisfy { $0.entryCount == 0 })
+        #expect(futureCells.allSatisfy { $0.intensity == 0 })
     }
 
     @Test func heatmapDaysWithNoEntriesHaveZeroIntensity() {

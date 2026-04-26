@@ -60,8 +60,8 @@ struct DerivedSnapshotTests {
 
         #expect(snapshot.smoothedEntries.count == 3)
         #expect(snapshot.smoothedEntries[0].weight == 180.0)
-        #expect(abs(snapshot.smoothedEntries[1].weight - 187.0) < 0.0001)
-        #expect(abs(snapshot.smoothedEntries[2].weight - 175.1) < 0.0001)
+        #expect(abs(snapshot.smoothedEntries[1].weight - 189.5) < 0.0001)
+        #expect(abs(snapshot.smoothedEntries[2].weight - 170.975) < 0.0001)
     }
 
     @Test func logSnapshotBuildsGroupedEntriesAndStreaks() {
@@ -212,4 +212,3 @@ final class WeightWidgetSnapshotXCTests: XCTestCase {
     }
 
 }
-

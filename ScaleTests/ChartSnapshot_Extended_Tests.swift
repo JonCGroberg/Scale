@@ -59,6 +59,7 @@ struct ChartSnapshotExtendedTests {
         let trendRange = snapshot.trendEntries.map(\.weight).max()! - snapshot.trendEntries.map(\.weight).min()!
 
         #expect(trendRange < smoothedRange)
+        #expect(trendRange > 5.0)
     }
 
     @Test func yDomainProvidesOnePoundPaddingAroundExtremes() {
@@ -72,4 +73,3 @@ struct ChartSnapshotExtendedTests {
         #expect(snapshot.yDomain.upperBound == 186.0)
     }
 }
-

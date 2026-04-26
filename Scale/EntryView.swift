@@ -12,12 +12,13 @@ import PhotosUI
 
 struct EntryView: View {
     @Environment(\.modelContext) private var modelContext
+    @Environment(\.dismiss) private var dismiss
     @Environment(HealthKitManager.self) private var healthManager
     @Environment(NotificationManager.self) private var notificationManager
-    @Query(sort: \WeightEntry.timestamp, order: .reverse) private var entries: [WeightEntry]
-    @Binding var selectedTab: Int
     @Binding var historyScrollRequest: Int
     @Binding var historySelectedEntry: WeightEntry?
+    var logDate: Date?
+    var latestWeight: Double?
 
     @AppStorage("appTint") private var appTint = AppTint.defaultValue.rawValue
     @State private var currentWeight: Double = 142.5
@@ -38,14 +39,17 @@ struct EntryView: View {
         return formatter
     }()
 
-    private var latestEntry: WeightEntry? { entries.first }
+    private let dayFormatter: DateFormatter = {
+        let formatter = DateFormatter()
+        formatter.dateFormat = "MMM d, yyyy"
+        return formatter
+    }()
 
     private var weightStatusText: String {
-        guard let latestEntry, Calendar.current.isDateInToday(latestEntry.timestamp) else {
-            return "Log your weight today"
+        if let logDate {
+            return dayFormatter.string(from: logDate)
         }
-
-        return "Last logged at \(timeFormatter.string(from: latestEntry.timestamp))"
+        return "Log your weight"
     }
 
     private var tintColor: Color {
@@ -55,7 +59,7 @@ struct EntryView: View {
     var body: some View {
         NavigationStack {
             ZStack {
-                Color(.systemGroupedBackground)
+                Color(.systemBackground)
                     .ignoresSafeArea()
 
                 VStack(spacing: 0) {
@@ -65,15 +69,27 @@ struct EntryView: View {
                         weightDisplay
                     }
                     .padding(.horizontal, 32)
+                    .padding(.vertical, 28)
                     .frame(maxWidth: .infinity)
 
                     Spacer()
                 }
             }
-            .toolbar(.hidden, for: .navigationBar)
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
+            .toolbar {
+                ToolbarItem(placement: .topBarLeading) {
+                    Button {
+                        Haptics.selection()
+                        dismiss()
+                    } label: {
+                        Image(systemName: "xmark")
+                            .fontWeight(.semibold)
+                    }
+                }
+            }
             .onAppear {
-                if let latest = latestEntry {
-                    currentWeight = latest.weight
+                if let latestWeight {
+                    currentWeight = latestWeight
                 }
             }
             .safeAreaInset(edge: .bottom) {
@@ -184,14 +200,11 @@ struct EntryView: View {
 
     private var saveButton: some View {
         Button {
-            if !saved {
-                saveEntry()
-            }
+            saveEntry()
         } label: {
             HStack(spacing: 8) {
-                Image(systemName: saved ? "checkmark.circle.fill" : "square.and.arrow.down.fill")
-                    .contentTransition(.symbolEffect(.replace))
-                Text(saved ? "Done" : "Save")
+                Image(systemName: "square.and.arrow.down.fill")
+                Text("Save")
             }
             .font(.headline.weight(.semibold))
             .padding(.horizontal, 18)
@@ -199,7 +212,7 @@ struct EntryView: View {
             .frame(height: 44)
         }
         .buttonStyle(.glassProminent)
-        .disabled(saved)
+        .tint(tintColor)
     }
 
     @ViewBuilder
@@ -261,6 +274,7 @@ struct EntryView: View {
                     saved = false
                 }
             }
+            .liquidGlassSheetPresentation()
         }
     }
 
@@ -343,15 +357,20 @@ struct EntryView: View {
     }
 
     private func saveEntry() {
-        // Compute the streak including today's new entry
-        let streak = WeightCalculations.currentStreak(from: entries, includingToday: true)
+        let timestamp = logDate ?? Date()
         let entry = WeightEntry(
             weight: currentWeight,
-            streakCount: streak
+            timestamp: timestamp
         )
         entry.photosData = photoData
         modelContext.insert(entry)
-        WeightWidgetSnapshotStore.refresh(using: [entry] + entries)
+
+        // Fetch existing entries for streak + widget refresh after insert.
+        let descriptor = FetchDescriptor<WeightEntry>(sortBy: [SortDescriptor(\.timestamp, order: .reverse)])
+        let allEntries = (try? modelContext.fetch(descriptor)) ?? []
+
+        entry.streakCount = WeightCalculations.currentStreak(from: allEntries, includingToday: true)
+        WeightWidgetSnapshotStore.refresh(using: allEntries)
 
         // Reschedule reminders so tomorrow's notification reflects the updated streak.
         notificationManager.rescheduleReminders()
@@ -365,6 +384,7 @@ struct EntryView: View {
         saved = true
         pendingEntry = entry
         Haptics.success()
+        dismiss()
     }
 
     private func resetDraftAfterSave() {
@@ -429,9 +449,9 @@ struct ProgressPhotoCameraView: UIViewControllerRepresentable {
 
 #Preview {
     EntryView(
-        selectedTab: .constant(0),
         historyScrollRequest: .constant(0),
-        historySelectedEntry: .constant(nil)
+        historySelectedEntry: .constant(nil),
+        latestWeight: 142.5
     )
         .modelContainer(for: WeightEntry.self, inMemory: true)
         .environment(HealthKitManager())

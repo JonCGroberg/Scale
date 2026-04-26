@@ -17,13 +17,14 @@ struct RootView: View {
     }
 
     @Binding var selectedTab: Int
+    @Binding var showLog: Bool
     @Query(sort: \WeightEntry.timestamp, order: .reverse) private var entries: [WeightEntry]
     @AppStorage("showChangePill") private var showChangePill = true
     @AppStorage("appTint") private var appTint = AppTint.defaultValue.rawValue
     @State private var historyScrollRequest = 0
     @State private var historySelectedEntry: WeightEntry?
     @State private var journalScrollToBottomRequest = 0
-
+    @State private var logDate: Date?
     private var selectedTint: AppTint {
         AppTint(rawValue: appTint) ?? .defaultValue
     }
@@ -46,8 +47,7 @@ struct RootView: View {
         )
     }
 
-    /// Whether the change pill should be visible for a given tab index.
-    static func isPillVisible(selectedTab: Int, settingsTab: Int = 2) -> Bool {
+    static func isPillVisible(selectedTab: Int, settingsTab: Int = 4) -> Bool {
         selectedTab != settingsTab
     }
 
@@ -77,33 +77,51 @@ struct RootView: View {
 
     var body: some View {
         TabView(selection: tabSelection) {
-            EntryView(
-                selectedTab: $selectedTab,
-                historyScrollRequest: $historyScrollRequest,
-                historySelectedEntry: $historySelectedEntry
-            )
-                .tabItem { Label("Log", systemImage: "square.and.pencil") }
-                .tag(0)
+            Tab(value: 1) {
+                JournalView(
+                    scrollToEntryTrigger: historyScrollRequest,
+                    focusedEntry: historySelectedEntry,
+                    scrollToBottomTrigger: journalScrollToBottomRequest,
+                    showLog: $showLog,
+                    logDate: $logDate
+                )
+            } label: {
+                Label("Journal", systemImage: "calendar")
+            }
 
-            JournalView(
-                scrollToEntryTrigger: historyScrollRequest,
-                focusedEntry: historySelectedEntry,
-                scrollToBottomTrigger: journalScrollToBottomRequest
-            )
-                .tabItem { Label("Journal", systemImage: "calendar") }
-                .tag(1)
+            Tab(value: 3) {
+                OverviewView()
+            } label: {
+                Label("Overview", systemImage: "chart.line.uptrend.xyaxis")
+            }
 
-            SettingsView()
-                .tabItem { Label("Settings", systemImage: "gearshape") }
-                .tag(2)
+            Tab(value: 4) {
+                SettingsView()
+            } label: {
+                Label("Settings", systemImage: "gearshape")
+            }
         }
         .tint(selectedTint.color)
         .id(appTint)
+        .overlay(alignment: .bottomTrailing) {
+            logButton
+                .padding(.trailing, 16)
+                .padding(.bottom, 52)
+        }
         .safeAreaInset(edge: .top, spacing: 0) {
             topAccessoryRow
                 .opacity(Self.isPillVisible(selectedTab: selectedTab) ? 1 : 0)
                 .frame(height: Self.isPillVisible(selectedTab: selectedTab) ? nil : 0)
                 .animation(.default, value: selectedTab)
+        }
+        .sheet(isPresented: $showLog, onDismiss: { logDate = nil }) {
+            EntryView(
+                historyScrollRequest: $historyScrollRequest,
+                historySelectedEntry: $historySelectedEntry,
+                logDate: logDate,
+                latestWeight: entries.first?.weight
+            )
+            .liquidGlassSheetPresentation()
         }
         .onAppear {
             WeightWidgetSnapshotStore.refresh(using: entries)
@@ -126,10 +144,12 @@ struct RootView: View {
         }
     }
 
-    private var widgetSnapshotSignature: [String] {
-        entries.map { entry in
-            "\(entry.timestamp.timeIntervalSinceReferenceDate)-\(entry.weight)"
-        }
+    private var widgetSnapshotSignature: Int {
+        var hasher = Hasher()
+        hasher.combine(entries.count)
+        hasher.combine(entries.first?.timestamp.timeIntervalSinceReferenceDate ?? 0)
+        hasher.combine(entries.first?.weight ?? 0)
+        return hasher.finalize()
     }
 
     private var topAccessoryRow: some View {
@@ -140,22 +160,36 @@ struct RootView: View {
 
             Spacer(minLength: 0)
         }
-        .padding(.top, 8)
-        .padding(.horizontal, 16)
+        .padding(.top, 4)
+        .padding(.horizontal, 12)
     }
 
     private var topAccessoryBadge: some View {
         Button {
-            if selectedTab == 0 {
-                Haptics.impact()
-                selectedTab = 1
-            }
+            Haptics.selection()
+            selectedTab = 3
         } label: {
             ChangeBadge(entries: entries)
         }
         .buttonStyle(.glass)
         .tint(.primary)
-        .allowsHitTesting(selectedTab == 0)
+    }
+
+    private var logButton: some View {
+        Button {
+            Haptics.impact()
+            logDate = nil
+            showLog = true
+        } label: {
+            Image(systemName: "square.and.pencil")
+                .font(.title3.weight(.semibold))
+                .frame(width: 42, height: 42)
+        }
+        .buttonStyle(.glassProminent)
+        .clipShape(Circle())
+        .tint(selectedTint.color)
+        .accessibilityLabel("Log")
+        .help("Log")
     }
 }
 
@@ -216,8 +250,14 @@ struct TabBarControllerObserver: UIViewControllerRepresentable {
 }
 
 #Preview {
-    RootView(selectedTab: .constant(0))
+    RootView(selectedTab: .constant(1), showLog: .constant(false))
         .modelContainer(for: [WeightEntry.self, WorkoutEntry.self, DailyActivitySummary.self], inMemory: true)
         .environment(HealthKitManager())
         .environment(NotificationManager())
+}
+
+extension View {
+    func liquidGlassSheetPresentation(cornerRadius: CGFloat = 36) -> some View {
+        self
+    }
 }

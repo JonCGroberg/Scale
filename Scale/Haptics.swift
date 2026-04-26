@@ -8,11 +8,17 @@
 import UIKit
 
 enum Haptics {
+    static var isEnabledOverride: Bool?
+
     private static var isEnabled: Bool {
+        if let isEnabledOverride {
+            return isEnabledOverride
+        }
+
         #if targetEnvironment(simulator)
-        false
+        return false
         #else
-        true
+        return true
         #endif
     }
 

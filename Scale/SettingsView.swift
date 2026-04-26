@@ -10,10 +10,8 @@ import SwiftData
 import UIKit
 
 struct SettingsView: View {
-    @Environment(\.modelContext) private var modelContext
     @Environment(HealthKitManager.self) private var healthManager
     @Environment(NotificationManager.self) private var notificationManager
-    @AppStorage("showChangePill") private var showChangePill = true
     @AppStorage("autoSyncHealthKit") private var autoSyncHealthKit = false
     @AppStorage("appTint") private var appTint = AppTint.defaultValue.rawValue
     @AppStorage("remindersEnabled") private var remindersEnabled = false
@@ -34,8 +32,6 @@ struct SettingsView: View {
         NavigationStack {
             List {
                 Section {
-                    Toggle("Last Change Badge", isOn: $showChangePill)
-
                     Picker(selection: selectedTint) {
                         ForEach(AppTint.allCases) { tint in
                             HStack(spacing: 10) {
@@ -55,17 +51,13 @@ struct SettingsView: View {
                     }
                 } header: {
                     Text("Display")
-                } footer: {
-                    Text("The last change badge shows your streak and recent weight change on every screen except Settings.")
                 }
 
                 Section {
                     if healthManager.isAvailable {
                         Toggle("Import Apple Health updates automatically", isOn: $autoSyncHealthKit)
                     }
-                    healthImportRow
-                    workoutImportRow
-                    dailyActivityImportRow
+                    HealthImportRows(tintColor: tintColor)
                 } header: {
                     Text("Apple Health")
                 } footer: {
@@ -137,6 +129,19 @@ struct SettingsView: View {
                 return false
             }
         }
+    }
+
+}
+
+struct HealthImportRows: View {
+    @Environment(\.modelContext) private var modelContext
+    @Environment(HealthKitManager.self) private var healthManager
+    let tintColor: Color
+
+    var body: some View {
+        healthImportRow
+        workoutImportRow
+        dailyActivityImportRow
     }
 
     // MARK: - Health Import Row
@@ -299,7 +304,6 @@ struct SettingsView: View {
                 .foregroundStyle(.red)
         }
     }
-
 }
 
 #Preview {

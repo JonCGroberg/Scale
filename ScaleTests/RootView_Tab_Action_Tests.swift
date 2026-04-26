@@ -117,7 +117,7 @@ struct RootViewTabActionTests {
     }
 
     @Test func pillHiddenOnSettingsTab() {
-        #expect(RootView.isPillVisible(selectedTab: 2) == false)
+        #expect(RootView.isPillVisible(selectedTab: 4) == false)
     }
 
     @Test func pillVisibleWithCustomSettingsIndex() {
