@@ -5,6 +5,7 @@
 //  Created by Jonathan Groberg on 4/14/26.
 //
 
+import ConfettiSwiftUI
 import SwiftUI
 
 struct OnboardingView: View {
@@ -12,16 +13,26 @@ struct OnboardingView: View {
     @AppStorage("remindersEnabled") private var remindersEnabled = false
     @AppStorage("autoSyncHealthKit") private var autoSyncHealthKit = false
     @AppStorage("appTint") private var appTint = AppTint.defaultValue.rawValue
+    @AppStorage("weightGoal") private var weightGoal = WeightGoal.defaultValue.rawValue
     @Environment(NotificationManager.self) private var notificationManager
     @Environment(HealthKitManager.self) private var healthManager
     @State private var currentPage = 0
     @State private var reminders: [Reminder] = []
     @State private var isRequestingHealthPermission = false
+    @State private var isCompletingOnboarding = false
+    @State private var onboardingConfettiTrigger = 0
 
     private var selectedTint: Binding<AppTint> {
         Binding(
             get: { AppTint(rawValue: appTint) ?? .defaultValue },
             set: { appTint = $0.rawValue }
+        )
+    }
+
+    private var selectedGoal: Binding<WeightGoal> {
+        Binding(
+            get: { WeightGoal(rawValue: weightGoal) ?? .defaultValue },
+            set: { weightGoal = $0.rawValue }
         )
     }
 
@@ -40,6 +51,11 @@ struct OnboardingView: View {
             icon: "chart.xyaxis.line",
             title: "See Your Progress",
             subtitle: "View trends over time in your journal with charts and streaks."
+        ),
+        OnboardingPage(
+            icon: "target",
+            title: "Choose Your Goal",
+            subtitle: "Set whether you want to cut, maintain, or bulk. You can change it anytime."
         ),
         OnboardingPage(
             icon: "paintpalette.fill",
@@ -75,6 +91,16 @@ struct OnboardingView: View {
         }
         .background(Color(.systemGroupedBackground).ignoresSafeArea())
         .tint(tintColor)
+        .confettiCannon(
+            trigger: $onboardingConfettiTrigger,
+            num: 85,
+            colors: [tintColor, .pink, .orange, .mint, .cyan, .yellow],
+            confettiSize: 11,
+            radius: 380,
+            repetitions: 2,
+            repetitionInterval: 0.22,
+            hapticFeedback: false
+        )
         .onAppear {
             reminders = notificationManager.loadReminders()
         }
@@ -109,10 +135,14 @@ struct OnboardingView: View {
                         .padding(.top, 8)
                         .padding(.horizontal, 28)
                 } else if index == 2 {
-                    themeSetupCard
+                    goalSetupCard
                         .padding(.top, 12)
                         .padding(.horizontal, 24)
                 } else if index == 3 {
+                    themeSetupCard
+                        .padding(.top, 12)
+                        .padding(.horizontal, 24)
+                } else if index == 4 {
                     healthSetupCard
                         .padding(.top, 12)
                         .padding(.horizontal, 24)
@@ -175,6 +205,18 @@ struct OnboardingView: View {
             }
         }
         .frame(height: 270)
+    }
+
+    private var goalSetupCard: some View {
+        VStack(alignment: .leading, spacing: 16) {
+            Label("You can change this later in Settings.", systemImage: "gearshape")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+
+            GoalPicker(selection: selectedGoal, tintColor: tintColor)
+        }
+        .padding(20)
+        .background(.background, in: RoundedRectangle(cornerRadius: 24, style: .continuous))
     }
 
     private var remindersSetupCard: some View {
@@ -294,6 +336,18 @@ struct OnboardingView: View {
         )
     }
 
+    private func finishOnboarding() {
+        guard !isCompletingOnboarding else { return }
+        isCompletingOnboarding = true
+        onboardingConfettiTrigger += 1
+        Haptics.success()
+
+        Task { @MainActor in
+            try? await Task.sleep(for: .milliseconds(900))
+            completeOnboarding()
+        }
+    }
+
     private func completeOnboarding() {
         if !healthManager.isAvailable {
             autoSyncHealthKit = false
@@ -328,16 +382,17 @@ struct OnboardingView: View {
                 if currentPage < pages.count - 1 {
                     withAnimation { currentPage += 1 }
                 } else {
-                    completeOnboarding()
+                    finishOnboarding()
                 }
             } label: {
-                Text(currentPage < pages.count - 1 ? "Next" : "Get Started")
+                Text(currentPage < pages.count - 1 ? "Next" : isCompletingOnboarding ? "You're In" : "Get Started")
                     .font(.headline)
                     .frame(maxWidth: .infinity)
                     .frame(height: 50)
             }
             .buttonStyle(.borderedProminent)
             .buttonBorderShape(.roundedRectangle(radius: 14))
+            .disabled(isCompletingOnboarding)
         }
     }
 }
@@ -573,7 +628,7 @@ struct OnboardingPreviewPages: View {
                 .frame(maxHeight: .infinity)
             HStack(spacing: 12) {
                 Button("Prev") { if page > 0 { page -= 1 } }
-                Button("Next") { if page < 4 { page += 1 } }
+                Button("Next") { if page < 5 { page += 1 } }
                 Button("Reset") { page = 0 }
             }
             .buttonStyle(.bordered)

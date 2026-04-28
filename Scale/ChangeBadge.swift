@@ -12,13 +12,35 @@ struct ChangeBadge: View {
 
     @AppStorage("appTint") private var appTint = AppTint.defaultValue.rawValue
     @AppStorage("badgePeriodIndex") private var currentIndex: Int = 1
+    @AppStorage("weightGoal") private var weightGoal = WeightGoal.defaultValue.rawValue
+    @AppStorage("cutTargetWeight") private var cutTargetWeight = 180.0
+    @AppStorage("bulkTargetWeight") private var bulkTargetWeight = 180.0
 
     private var period: TimePeriod {
         TimePeriod.allCases[currentIndex]
     }
 
+    private var selectedGoal: WeightGoal {
+        WeightGoal(rawValue: weightGoal) ?? .defaultValue
+    }
+
     private var summary: WeightCalculations.BadgeSummary {
         WeightCalculations.badgeSummary(from: entries, over: period)
+    }
+
+    private var goalProgress: WeightCalculations.GoalProgress? {
+        guard let target = GoalProgressFeedback.target(
+            for: selectedGoal,
+            cutTarget: cutTargetWeight,
+            bulkTarget: bulkTargetWeight
+        ) else { return nil }
+
+        return WeightCalculations.goalProgress(
+            from: entries,
+            goal: selectedGoal,
+            targetWeight: target,
+            over: period
+        )
     }
 
     private var tintColor: Color {
@@ -53,7 +75,21 @@ struct ChangeBadge: View {
                     .foregroundStyle(.secondary)
                     .contentTransition(.interpolate)
             } else if let lbs = summary.weightChange {
-                Text("\(Text(String(format: "%+.1f lbs", lbs)).foregroundStyle(tintColor))  in \(period.label.lowercased())")
+                if let goalProgress {
+                    Text("\(Text(GoalProgressFeedback.progressText(goalProgress)).foregroundStyle(tintColor))  in \(period.label.lowercased())")
+                        .font(.caption)
+                        .fontWeight(.semibold)
+                        .foregroundStyle(.secondary)
+                        .contentTransition(.numericText())
+                } else {
+                    Text("\(Text(String(format: "%+.1f lbs", lbs)).foregroundStyle(tintColor))  in \(period.label.lowercased())")
+                        .font(.caption)
+                        .fontWeight(.semibold)
+                        .foregroundStyle(.secondary)
+                        .contentTransition(.numericText())
+                }
+            } else if let goalProgress {
+                Text("\(Text(GoalProgressFeedback.progressText(goalProgress)).foregroundStyle(tintColor))  in \(period.label.lowercased())")
                     .font(.caption)
                     .fontWeight(.semibold)
                     .foregroundStyle(.secondary)

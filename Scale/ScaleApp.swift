@@ -152,4 +152,6 @@ final class NotificationDelegate: NSObject, UNUserNotificationCenterDelegate {
 
 extension Notification.Name {
     static let didTapWeightReminder = Notification.Name("didTapWeightReminder")
+    static let didMoveCloserToGoal = Notification.Name("didMoveCloserToGoal")
+    static let didReachWeightGoal = Notification.Name("didReachWeightGoal")
 }

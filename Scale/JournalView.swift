@@ -1830,6 +1830,9 @@ struct LogDayCreateSheet: View {
     @Environment(HealthKitManager.self) private var healthManager
     @Environment(NotificationManager.self) private var notificationManager
     @Query(sort: \WeightEntry.timestamp, order: .reverse) private var allEntries: [WeightEntry]
+    @AppStorage("weightGoal") private var weightGoal = WeightGoal.defaultValue.rawValue
+    @AppStorage("cutTargetWeight") private var cutTargetWeight = 180.0
+    @AppStorage("bulkTargetWeight") private var bulkTargetWeight = 180.0
 
     let date: Date
     let title: String
@@ -1941,6 +1944,20 @@ struct LogDayCreateSheet: View {
             return
         }
 
+        let goal = WeightGoal(rawValue: weightGoal) ?? .defaultValue
+        let reachedGoal = GoalProgressFeedback.didReachGoal(
+            goal: goal,
+            newWeight: weight,
+            cutTarget: cutTargetWeight,
+            bulkTarget: bulkTargetWeight
+        )
+        let movedCloserToGoal = GoalProgressFeedback.isCloserToGoal(
+            goal: goal,
+            previousWeight: allEntries.first?.weight,
+            newWeight: weight,
+            cutTarget: cutTargetWeight,
+            bulkTarget: bulkTargetWeight
+        )
         let trimmedNote = note.trimmingCharacters(in: .whitespacesAndNewlines)
         let streak = WeightCalculations.currentStreak(from: allEntries, includingToday: true)
         let entry = WeightEntry(
@@ -1970,6 +1987,14 @@ struct LogDayCreateSheet: View {
         }
 
         Haptics.success()
+        if reachedGoal {
+            NotificationCenter.default.post(
+                name: .didReachWeightGoal,
+                object: GoalReachedPayload(goal: goal, weight: weight)
+            )
+        } else if movedCloserToGoal {
+            NotificationCenter.default.post(name: .didMoveCloserToGoal, object: nil)
+        }
         dismissSheet()
     }
 

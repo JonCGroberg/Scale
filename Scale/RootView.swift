@@ -25,6 +25,11 @@ struct RootView: View {
     @State private var historySelectedEntry: WeightEntry?
     @State private var journalScrollToBottomRequest = 0
     @State private var logDate: Date?
+    @State private var showGoalCelebration = false
+    @State private var goalCelebrationID = 0
+    @State private var goalCelebrationMessage = "Closer to goal"
+    @State private var goalCelebrationImage = "target"
+    @State private var reachedGoalContext: ReachedGoalContext?
     private var selectedTint: AppTint {
         AppTint(rawValue: appTint) ?? .defaultValue
     }
@@ -108,6 +113,18 @@ struct RootView: View {
                 .padding(.trailing, 16)
                 .padding(.bottom, 52)
         }
+        .overlay {
+            if showGoalCelebration {
+                GoalCelebrationView(
+                    tintColor: selectedTint.color,
+                    message: goalCelebrationMessage,
+                    systemImage: goalCelebrationImage
+                )
+                    .id(goalCelebrationID)
+                    .transition(.opacity)
+                    .allowsHitTesting(false)
+            }
+        }
         .safeAreaInset(edge: .top, spacing: 0) {
             topAccessoryRow
                 .opacity(Self.isPillVisible(selectedTab: selectedTab) ? 1 : 0)
@@ -121,7 +138,15 @@ struct RootView: View {
                 logDate: logDate,
                 latestWeight: entries.first?.weight
             )
+            .presentationDetents([.height(430), .large])
             .liquidGlassSheetPresentation()
+        }
+        .sheet(item: $reachedGoalContext) { context in
+            GoalTargetUpdateSheet(
+                goal: context.goal,
+                reachedWeight: context.weight,
+                tintColor: selectedTint.color
+            )
         }
         .onAppear {
             WeightWidgetSnapshotStore.refresh(using: entries)
@@ -140,6 +165,43 @@ struct RootView: View {
                 ) else { return }
                 Haptics.selection()
                 journalScrollToBottomRequest += 1
+            }
+        }
+        .onReceive(NotificationCenter.default.publisher(for: .didMoveCloserToGoal)) { _ in
+            showCelebration(message: "Closer to goal", systemImage: "target")
+        }
+        .onReceive(NotificationCenter.default.publisher(for: .didReachWeightGoal)) { notification in
+            guard let payload = notification.object as? GoalReachedPayload else {
+                return
+            }
+
+            showCelebration(message: "Goal reached", systemImage: "party.popper.fill")
+
+            Task {
+                try? await Task.sleep(for: .milliseconds(650))
+                await MainActor.run {
+                    reachedGoalContext = ReachedGoalContext(goal: payload.goal, weight: payload.weight)
+                }
+            }
+        }
+        .sensoryFeedback(.success, trigger: goalCelebrationID)
+    }
+
+    private func showCelebration(message: String, systemImage: String) {
+        goalCelebrationMessage = message
+        goalCelebrationImage = systemImage
+        goalCelebrationID += 1
+
+        withAnimation(.easeOut(duration: 0.18)) {
+            showGoalCelebration = true
+        }
+
+        Task {
+            try? await Task.sleep(for: .seconds(1.45))
+            await MainActor.run {
+                withAnimation(.easeIn(duration: 0.22)) {
+                    showGoalCelebration = false
+                }
             }
         }
     }
@@ -191,6 +253,17 @@ struct RootView: View {
         .accessibilityLabel("Log")
         .help("Log")
     }
+}
+
+struct GoalReachedPayload {
+    let goal: WeightGoal
+    let weight: Double
+}
+
+struct ReachedGoalContext: Identifiable {
+    let id = UUID()
+    let goal: WeightGoal
+    let weight: Double
 }
 
 struct TabBarControllerObserver: UIViewControllerRepresentable {
@@ -259,5 +332,15 @@ struct TabBarControllerObserver: UIViewControllerRepresentable {
 extension View {
     func liquidGlassSheetPresentation(cornerRadius: CGFloat = 36) -> some View {
         self
+            .presentationBackground(.clear)
+            .presentationCornerRadius(cornerRadius)
+            .presentationDragIndicator(.visible)
+    }
+
+    func transparentLiquidGlassSheetPresentation(cornerRadius: CGFloat = 36) -> some View {
+        self
+            .presentationBackground(.clear)
+            .presentationCornerRadius(cornerRadius)
+            .presentationDragIndicator(.hidden)
     }
 }

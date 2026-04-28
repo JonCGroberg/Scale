@@ -72,6 +72,15 @@ enum WeightCalculations {
         let chart: ChartSnapshot
     }
 
+    struct GoalProgress: Equatable {
+        let targetWeight: Double
+        let completedDistance: Double
+        let totalDistance: Double
+        let completedChange: Double
+        let totalChange: Double
+        let daysRemaining: Double?
+    }
+
     struct HeatmapDay: Equatable {
         let date: Date
         let entryCount: Int
@@ -157,6 +166,53 @@ enum WeightCalculations {
             smoothedEntries: smoothedEntries,
             trendEntries: trendEntries,
             yDomain: minWeight...maxWeight
+        )
+    }
+
+    static func goalProgress(
+        from entries: [WeightEntry],
+        goal: WeightGoal,
+        targetWeight: Double,
+        over period: TimePeriod
+    ) -> GoalProgress? {
+        guard goal.showsTarget else { return nil }
+
+        let filteredEntries = entriesWithin(period, from: entries).sorted { $0.timestamp < $1.timestamp }
+        guard let startEntry = filteredEntries.first,
+              let currentEntry = filteredEntries.last else {
+            return nil
+        }
+
+        let totalDistance = abs(startEntry.weight - targetWeight)
+        let remainingDistance: Double
+        switch goal {
+        case .lose:
+            remainingDistance = max(currentEntry.weight - targetWeight, 0)
+        case .maintain:
+            return nil
+        case .gain:
+            remainingDistance = max(targetWeight - currentEntry.weight, 0)
+        }
+
+        let completedDistance = max(totalDistance - remainingDistance, 0)
+        let clampedCompletedDistance = min(completedDistance, totalDistance)
+        let totalChange = targetWeight - startEntry.weight
+        let completedChange = totalChange < 0 ? -clampedCompletedDistance : clampedCompletedDistance
+
+        let daysRemaining = projectedDaysRemaining(
+            goal: goal,
+            startEntry: startEntry,
+            currentEntry: currentEntry,
+            remainingDistance: remainingDistance
+        )
+
+        return GoalProgress(
+            targetWeight: targetWeight,
+            completedDistance: clampedCompletedDistance,
+            totalDistance: totalDistance,
+            completedChange: completedChange,
+            totalChange: totalChange,
+            daysRemaining: daysRemaining
         )
     }
 
@@ -446,6 +502,30 @@ enum WeightCalculations {
             0.45
         case .year:
             0.40
+        }
+    }
+
+    private static func projectedDaysRemaining(
+        goal: WeightGoal,
+        startEntry: WeightEntry,
+        currentEntry: WeightEntry,
+        remainingDistance: Double
+    ) -> Double? {
+        guard remainingDistance > 0 else { return 0 }
+
+        let elapsedDays = currentEntry.timestamp.timeIntervalSince(startEntry.timestamp) / 86_400
+        guard elapsedDays > 0 else { return nil }
+
+        let dailyRate = (currentEntry.weight - startEntry.weight) / elapsedDays
+        switch goal {
+        case .lose:
+            guard dailyRate < 0 else { return nil }
+            return remainingDistance / abs(dailyRate)
+        case .maintain:
+            return nil
+        case .gain:
+            guard dailyRate > 0 else { return nil }
+            return remainingDistance / dailyRate
         }
     }
 

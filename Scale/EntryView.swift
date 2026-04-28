@@ -19,8 +19,12 @@ struct EntryView: View {
     @Binding var historySelectedEntry: WeightEntry?
     var logDate: Date?
     var latestWeight: Double?
+    var onDismiss: (() -> Void)?
 
     @AppStorage("appTint") private var appTint = AppTint.defaultValue.rawValue
+    @AppStorage("weightGoal") private var weightGoal = WeightGoal.defaultValue.rawValue
+    @AppStorage("cutTargetWeight") private var cutTargetWeight = 180.0
+    @AppStorage("bulkTargetWeight") private var bulkTargetWeight = 180.0
     @State private var currentWeight: Double = 142.5
     @State private var isEditingWeight = false
     @State private var weightText = ""
@@ -28,7 +32,6 @@ struct EntryView: View {
     @State private var pendingEntry: WeightEntry?
     @State private var selectedPhotoItems: [PhotosPickerItem] = []
     @State private var photoData: [Data] = []
-    @State private var showScaleScanner = false
     @FocusState private var weightFieldFocused: Bool
 
     private let step = 0.1
@@ -59,7 +62,7 @@ struct EntryView: View {
     var body: some View {
         NavigationStack {
             ZStack {
-                Color(.systemBackground)
+                Color.clear
                     .ignoresSafeArea()
 
                 VStack(spacing: 0) {
@@ -71,20 +74,20 @@ struct EntryView: View {
                     .padding(.horizontal, 32)
                     .padding(.vertical, 28)
                     .frame(maxWidth: .infinity)
-
-                    Spacer()
+                    .padding(.horizontal, 14)
+                    .padding(.bottom, 28)
                 }
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity)
             .toolbar {
-                ToolbarItem(placement: .topBarLeading) {
+                ToolbarItem(placement: .cancellationAction) {
                     Button {
                         Haptics.selection()
-                        dismiss()
+                        close()
                     } label: {
                         Image(systemName: "xmark")
-                            .fontWeight(.semibold)
                     }
+                    .buttonStyle(.glass)
                 }
             }
             .onAppear {
@@ -163,9 +166,8 @@ struct EntryView: View {
                 .padding(.bottom, 4)
 
             if !isEditingWeight {
-                scanScaleButton
-                    .padding(.leading, 8)
                 addPhotosButton
+                    .padding(.leading, 8)
             }
         }
         .contentShape(Rectangle())
@@ -185,7 +187,7 @@ struct EntryView: View {
             .foregroundStyle(.red)
             .frame(maxWidth: .infinity)
             .frame(height: 44)
-            .buttonStyle(.glass)
+            .buttonStyle(VisibleGlassButtonStyle(tint: .red))
 
             Button("Done") {
                 Haptics.selection()
@@ -249,35 +251,6 @@ struct EntryView: View {
         photoData.compactMap(UIImage.init(data:))
     }
 
-    private var scanScaleButton: some View {
-        Button {
-            showScaleScanner = true
-        } label: {
-            Image(systemName: "viewfinder")
-                .font(.caption.weight(.semibold))
-                .foregroundStyle(tintColor)
-                .frame(width: 28, height: 28)
-                .background(
-                    Circle()
-                        .fill(tintColor.opacity(0.10))
-                )
-                .overlay {
-                    Circle()
-                        .strokeBorder(tintColor.opacity(0.24), lineWidth: 1)
-                }
-        }
-        .buttonStyle(.plain)
-        .sheet(isPresented: $showScaleScanner) {
-            ScaleScannerView { weight in
-                withAnimation(.snappy) {
-                    currentWeight = weight
-                    saved = false
-                }
-            }
-            .liquidGlassSheetPresentation()
-        }
-    }
-
     private var addPhotosButton: some View {
         PhotosPicker(
             selection: $selectedPhotoItems,
@@ -298,6 +271,7 @@ struct EntryView: View {
                 }
         }
         .buttonStyle(.plain)
+        .accessibilityLabel("Add photo")
     }
 
     private var quickAdjustRow: some View {
@@ -322,7 +296,7 @@ struct EntryView: View {
                 .foregroundStyle(tintColor)
                 .frame(width: 52, height: 44)
         }
-        .buttonStyle(.glass)
+        .buttonStyle(VisibleGlassButtonStyle(tint: tintColor))
     }
 
     // MARK: - Actions
@@ -357,6 +331,20 @@ struct EntryView: View {
     }
 
     private func saveEntry() {
+        let goal = WeightGoal(rawValue: weightGoal) ?? .defaultValue
+        let reachedGoal = GoalProgressFeedback.didReachGoal(
+            goal: goal,
+            newWeight: currentWeight,
+            cutTarget: cutTargetWeight,
+            bulkTarget: bulkTargetWeight
+        )
+        let movedCloserToGoal = GoalProgressFeedback.isCloserToGoal(
+            goal: goal,
+            previousWeight: latestWeight,
+            newWeight: currentWeight,
+            cutTarget: cutTargetWeight,
+            bulkTarget: bulkTargetWeight
+        )
         let timestamp = logDate ?? Date()
         let entry = WeightEntry(
             weight: currentWeight,
@@ -384,12 +372,28 @@ struct EntryView: View {
         saved = true
         pendingEntry = entry
         Haptics.success()
-        dismiss()
+        if reachedGoal {
+            NotificationCenter.default.post(
+                name: .didReachWeightGoal,
+                object: GoalReachedPayload(goal: goal, weight: currentWeight)
+            )
+        } else if movedCloserToGoal {
+            NotificationCenter.default.post(name: .didMoveCloserToGoal, object: nil)
+        }
+        close()
     }
 
     private func resetDraftAfterSave() {
         selectedPhotoItems = []
         photoData = []
+    }
+
+    private func close() {
+        if let onDismiss {
+            onDismiss()
+        } else {
+            dismiss()
+        }
     }
 
     private func loadPhotoData(from items: [PhotosPickerItem]) async -> [Data] {
@@ -402,6 +406,30 @@ struct EntryView: View {
         }
 
         return loadedData
+    }
+}
+
+private struct VisibleGlassButtonStyle: ButtonStyle {
+    let tint: Color
+    var height: CGFloat = 44
+
+    func makeBody(configuration: Configuration) -> some View {
+        configuration.label
+            .font(.headline.weight(.semibold))
+            .frame(minHeight: height)
+            .padding(.horizontal, 14)
+            .foregroundStyle(tint)
+            .background(.ultraThinMaterial, in: Capsule(style: .continuous))
+            .background(
+                tint.opacity(configuration.isPressed ? 0.24 : 0.14),
+                in: Capsule(style: .continuous)
+            )
+            .overlay {
+                Capsule(style: .continuous)
+                    .strokeBorder(tint.opacity(configuration.isPressed ? 0.62 : 0.38), lineWidth: 1)
+            }
+            .scaleEffect(configuration.isPressed ? 0.97 : 1)
+            .animation(.snappy(duration: 0.16), value: configuration.isPressed)
     }
 }
 
