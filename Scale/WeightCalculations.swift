@@ -138,7 +138,7 @@ enum WeightCalculations {
         }
 
         return BadgeSummary(
-            streak: currentStreak(from: entries),
+            streak: currentDisplayStreak(from: entries),
             average: average,
             weightChange: weightChange
         )
@@ -146,23 +146,32 @@ enum WeightCalculations {
 
     static func chartSnapshot(from entries: [WeightEntry], over period: TimePeriod) -> ChartSnapshot {
         let filteredEntries = entriesWithin(period, from: entries).sorted { $0.timestamp < $1.timestamp }
-        guard !filteredEntries.isEmpty else { return .empty }
+        return chartSnapshot(fromSortedEntries: filteredEntries, period: period)
+    }
 
-        let weights = filteredEntries.map(\.weight)
+    static func fullChartSnapshot(from entries: [WeightEntry], using period: TimePeriod) -> ChartSnapshot {
+        let sortedEntries = entries.sorted { $0.timestamp < $1.timestamp }
+        return chartSnapshot(fromSortedEntries: sortedEntries, period: period)
+    }
+
+    private static func chartSnapshot(fromSortedEntries sortedEntries: [WeightEntry], period: TimePeriod) -> ChartSnapshot {
+        guard !sortedEntries.isEmpty else { return .empty }
+
+        let weights = sortedEntries.map(\.weight)
         let minWeight = (weights.min() ?? 0) - 1
         let maxWeight = (weights.max() ?? 0) + 1
         let alpha = smoothingAlpha(for: period)
         let smoothedEntries = exponentiallySmoothedChartPoints(
-            from: filteredEntries,
+            from: sortedEntries,
             alpha: alpha
         )
         let trendEntries = exponentiallySmoothedChartPoints(
-            from: filteredEntries,
+            from: sortedEntries,
             alpha: trendAlpha(for: period)
         )
 
         return ChartSnapshot(
-            entries: filteredEntries,
+            entries: sortedEntries,
             smoothedEntries: smoothedEntries,
             trendEntries: trendEntries,
             yDomain: minWeight...maxWeight
@@ -366,6 +375,35 @@ enum WeightCalculations {
         // Walk backwards from today
         var streak = 0
         var day = today
+        while loggedDays.contains(day) {
+            streak += 1
+            guard let previous = calendar.date(byAdding: .day, value: -1, to: day) else { break }
+            day = previous
+        }
+
+        return streak
+    }
+
+    /// Current display streak for surfaces that should show the active streak
+    /// before today's log exists. Counts through today when logged, otherwise
+    /// through yesterday when yesterday was logged.
+    static func currentDisplayStreak(from entries: [WeightEntry]) -> Int {
+        let calendar = Calendar.current
+        let today = calendar.startOfDay(for: Date())
+        guard let yesterday = calendar.date(byAdding: .day, value: -1, to: today) else { return 0 }
+
+        let loggedDays = Set(entries.map { calendar.startOfDay(for: $0.timestamp) })
+        let anchorDay: Date
+        if loggedDays.contains(today) {
+            anchorDay = today
+        } else if loggedDays.contains(yesterday) {
+            anchorDay = yesterday
+        } else {
+            return 0
+        }
+
+        var streak = 0
+        var day = anchorDay
         while loggedDays.contains(day) {
             streak += 1
             guard let previous = calendar.date(byAdding: .day, value: -1, to: day) else { break }

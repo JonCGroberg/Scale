@@ -11,6 +11,7 @@ import UIKit
 import PhotosUI
 import HealthKit
 import ImageIO
+import QuickLook
 
 struct JournalView: View {
     private final class PhotoThumbnailCache {
@@ -53,7 +54,7 @@ struct JournalView: View {
         }
     }
 
-    private struct PresentedDaySheet: Identifiable {
+    fileprivate struct PresentedDaySheet: Identifiable {
         enum Kind {
             case detail
             case create
@@ -76,9 +77,24 @@ struct JournalView: View {
         }
     }
 
-    private struct DayData {
+    struct DayPreview: Identifiable {
+        let date: Date
+        let photos: [UIImage]
+        let weightText: String?
+        let entryCount: Int
+        let workoutCount: Int
+        let stepCount: Int
+        let activeEnergyBurnedKilocalories: Double
+        let sleepDuration: TimeInterval
+
+        var id: Date { date }
+    }
+
+    fileprivate struct DayData {
         let weightText: String?
         let workoutCount: Int
+        let sleepCount: Int
+        let stepText: String?
         /// Cache key for lazy thumbnail loading – nil when the day has no photo.
         let photoCacheKey: String?
         /// Position within a consecutive logging streak (0 = isolated day, 1+ = day N of a run).
@@ -109,13 +125,13 @@ struct JournalView: View {
 
         @MainActor
         func loadIfNeeded(key: String, pending: PendingThumbnail?) {
-            guard thumbnails[key] == nil, !loadedKeys.contains(key), !loadingKeys.contains(key), let pending else { return }
-            // Check cache first synchronously.
+            guard thumbnails[key] == nil, !loadedKeys.contains(key), !loadingKeys.contains(key) else { return }
             if let cached = PhotoThumbnailCache.shared.image(forKey: key) {
                 thumbnails[key] = cached
                 loadedKeys.insert(key)
                 return
             }
+            guard let pending else { return }
             loadingKeys.insert(key)
             Task.detached(priority: .utility) {
                 let thumbnail = PhotoThumbnailCache.shared.thumbnail(
@@ -140,7 +156,7 @@ struct JournalView: View {
         }
     }
 
-    private struct MonthRenderData {
+    fileprivate struct MonthRenderData {
         let weeks: [[Date]]
         let dayDataByDate: [Date: DayData]
     }
@@ -155,6 +171,7 @@ struct JournalView: View {
     @Query(sort: \WeightEntry.timestamp, order: .reverse) private var entries: [WeightEntry]
     @Query(sort: \WorkoutEntry.timestamp, order: .reverse) private var workouts: [WorkoutEntry]
     @Query(sort: \DailyActivitySummary.date, order: .reverse) private var dailyActivitySummaries: [DailyActivitySummary]
+    @Query(sort: \SleepEntry.endDate, order: .reverse) private var sleepEntries: [SleepEntry]
     @AppStorage("appTint") private var appTint = AppTint.defaultValue.rawValue
 
     let scrollToEntryTrigger: Int
@@ -163,16 +180,22 @@ struct JournalView: View {
     @Binding var showLog: Bool
     @Binding var logDate: Date?
 
-    @State private var monthLoader = CalendarMonthLoader(batchSize: 3)
+    @State private var monthLoader = CalendarMonthLoader(batchSize: 5)
     @State private var monthRenderDataByMonth: [Date: MonthRenderData] = [:]
     @State private var entryIDsByDay: [Date: [PersistentIdentifier]] = [:]
     @State private var workoutIDsByDay: [Date: [PersistentIdentifier]] = [:]
+    @State private var sleepIDsByDay: [Date: [PersistentIdentifier]] = [:]
     @State private var presentedSheet: PresentedDaySheet?
     @State private var hasFinishedInitialMonthPositioning = false
     @State private var hasPerformedInitialScroll = false
     @State private var isDataReady = false
     @State private var thumbnailLoader = LazyThumbnailLoader()
     @State private var pendingThumbnails: [String: PendingThumbnail] = [:]
+    @State private var dayPreview: DayPreview?
+    @State private var suppressNextDayTap = false
+    @State private var pressedPreviewDay: Date?
+    @State private var showPhotoViewer = false
+    @State private var selectedPhotoIndex = 0
 
     static func isNearTop(
         contentOffsetY: CGFloat,
@@ -220,6 +243,22 @@ struct JournalView: View {
         formatter.dateFormat = "MMM d, yyyy"
         return formatter
     }()
+    private let dayNameFormatter: DateFormatter = {
+        let formatter = DateFormatter()
+        formatter.dateFormat = "EEEE"
+        return formatter
+    }()
+    private func dayTitle(for date: Date) -> String {
+        let calendar = Calendar.current
+        if calendar.isDateInToday(date) {
+            return "Today"
+        }
+        if let daysAgo = calendar.dateComponents([.day], from: date, to: Date()).day,
+           daysAgo >= 1 && daysAgo < 7 {
+            return dayNameFormatter.string(from: date)
+        }
+        return dayTitleFormatter.string(from: date)
+    }
     private let dayRowSpacing: CGFloat = 3
     private let dayColumnSpacing: CGFloat = 5
     private let dayCardCornerRadius: CGFloat = 12
@@ -248,10 +287,14 @@ struct JournalView: View {
         hasher.combine(entries.count)
         hasher.combine(entries.first?.timestamp.timeIntervalSinceReferenceDate ?? 0)
         hasher.combine(entries.first?.weight ?? 0)
-        hasher.combine(entries.first?.photosFingerprint ?? 0)
+        for entry in entries {
+            hasher.combine(entry.photosFingerprint)
+        }
         hasher.combine(workouts.count)
         hasher.combine(workouts.first?.timestamp.timeIntervalSinceReferenceDate ?? 0)
         hasher.combine(dailyActivitySummaries.count)
+        hasher.combine(sleepEntries.count)
+        hasher.combine(sleepEntries.first?.endDate.timeIntervalSinceReferenceDate ?? 0)
         return hasher.finalize()
     }
 
@@ -276,8 +319,42 @@ struct JournalView: View {
                     ScrollView(showsIndicators: false) {
                         LazyVStack(alignment: .leading, spacing: 28) {
                             ForEach(monthSections) { section in
-                                monthSection(section)
+                                if let renderData = monthRenderDataByMonth[section.monthStart] {
+                                    MonthSectionView(
+                                        monthStart: section.monthStart,
+                                        title: section.title,
+                                        renderData: renderData,
+                                        tintColor: tintColor,
+                                        calendar: calendar,
+                                        dayRowSpacing: dayRowSpacing,
+                                        dayColumnSpacing: dayColumnSpacing,
+                                        dayCardCornerRadius: dayCardCornerRadius,
+                                        weekdaySymbols: weekdaySymbols,
+                                        secondaryTextColor: secondaryTextColor,
+                                        cardColor: cardColor,
+                                        suppressNextDayTap: $suppressNextDayTap,
+                                        pressedPreviewDay: $pressedPreviewDay,
+                                        logDate: $logDate,
+                                        showLog: $showLog,
+                                        presentedSheet: $presentedSheet,
+                                        thumbnailLoader: thumbnailLoader,
+                                        pendingThumbnails: pendingThumbnails,
+                                        presentDayPreview: { date in
+                                            self.presentDayPreview(for: date)
+                                        }
+                                    )
                                     .id(section.id)
+                                } else {
+                                    VStack(alignment: .leading, spacing: 12) {
+                                        Text(section.title)
+                                            .font(.title3.weight(.semibold))
+                                            .foregroundStyle(.primary)
+                                        
+                                        ProgressView()
+                                            .frame(maxWidth: .infinity)
+                                            .frame(height: 200)
+                                    }
+                                }
                             }
                         }
                         .padding(.horizontal, 16)
@@ -297,14 +374,14 @@ struct JournalView: View {
                         )
                     } action: { wasNearTop, isNearTop in
                         guard !wasNearTop, isNearTop else { return }
-                        loadEarlierMonthsIfNeeded()
+                        loadEarlierMonthsIfNeeded(proxy: proxy)
                     }
                     .onAppear {
                         ensureInitialMonthsLoaded()
                         if !hasPerformedInitialScroll {
                             // Synchronous rebuild only on very first appear so scroll target exists.
                             if !isDataReady {
-                                rebuildMonthRenderData()
+                                rebuildMonthRenderData(forceAll: true)
                                 isDataReady = true
                             }
                             scrollToFocusedEntry(with: proxy, animated: false)
@@ -321,245 +398,64 @@ struct JournalView: View {
                         scrollToBottom(with: proxy, animated: true)
                     }
                     .onChange(of: journalDataVersion) { _, _ in
-                        rebuildMonthRenderData()
+                        rebuildMonthRenderData(forceAll: true)
                     }
                 }
             }
             .toolbar(.hidden, for: .navigationBar)
             .sheet(item: $presentedSheet) { presentedSheet in
                 LogDayDetailSheet(
-                    title: dayTitleFormatter.string(from: presentedSheet.date),
-                    entryIDs: entryIDs(for: presentedSheet.date),
-                    workoutIDs: workoutIDs(for: presentedSheet.date),
-                    dailyActivityDate: calendar.startOfDay(for: presentedSheet.date),
+                    initialDate: calendar.startOfDay(for: presentedSheet.date),
                     tintColor: tintColor
                 ) {
                     self.presentedSheet = nil
                 }
                 .liquidGlassSheetPresentation()
             }
-        }
-    }
-
-    private func monthSection(_ section: MonthSection) -> some View {
-        let renderData = monthRenderDataByMonth[section.monthStart] ?? MonthRenderData(
-            weeks: makeWeeks(for: section.monthStart),
-            dayDataByDate: [:]
-        )
-
-        return VStack(alignment: .leading, spacing: 12) {
-            Text(section.title)
-                .font(.title3.weight(.semibold))
-                .foregroundStyle(.primary)
-
-            weekdayHeader
-
-            VStack(spacing: dayRowSpacing) {
-                ForEach(Array(renderData.weeks.enumerated()), id: \.offset) { _, week in
-                    HStack(spacing: dayColumnSpacing) {
-                        ForEach(week, id: \.self) { date in
-                            dayCell(
-                                for: date,
-                                in: section.monthStart,
-                                dayData: renderData.dayDataByDate[calendar.startOfDay(for: date)]
-                            )
-                            .id(dayScrollID(for: date))
-                        }
-                    }
-                }
-            }
-        }
-    }
-
-    private var weekdayHeader: some View {
-        HStack(spacing: 8) {
-            ForEach(weekdaySymbols, id: \.self) { symbol in
-                Text(symbol)
-                    .font(.caption.weight(.semibold))
-                    .foregroundStyle(secondaryTextColor)
-                    .frame(maxWidth: .infinity)
-            }
-        }
-        .padding(.bottom, 6)
-    }
-
-    @ViewBuilder
-    private func dayCell(for date: Date, in monthStart: Date, dayData: DayData?) -> some View {
-        let workoutCount = dayData?.workoutCount ?? 0
-        let isCurrentMonth = calendar.isDate(date, equalTo: monthStart, toGranularity: .month)
-        let isToday = calendar.isDateInToday(date)
-        let isLoggableDay = Self.isLoggableDay(date, calendar: calendar)
-        let isLogged = dayData?.isLogged ?? false
-        let hasWorkouts = workoutCount > 0
-        let photoCacheKey = dayData?.photoCacheKey
-        let primaryPhoto = photoCacheKey.flatMap { thumbnailLoader.thumbnails[$0] }
-        let hasVisiblePhoto = primaryPhoto != nil
-        let streakDay = dayData?.streakDay ?? 0
-        let isStreakPotential = dayData?.isStreakPotential ?? false
-
-        if !isCurrentMonth {
-            Color.clear
-                .frame(maxWidth: .infinity)
-                .frame(height: 64)
-                .allowsHitTesting(false)
-        } else {
-            Button {
-                Haptics.selection()
-                let day = calendar.startOfDay(for: date)
-                if Self.shouldPresentCreateSheet(hasLoggedWeight: isLogged, hasWorkouts: hasWorkouts) {
-                    logDate = day
-                    showLog = true
-                } else {
-                    presentedSheet = PresentedDaySheet(date: day, kind: .detail)
-                }
-            } label: {
-                ZStack(alignment: .topLeading) {
-                    cellBackground(
-                        primaryPhoto: primaryPhoto,
-                        isLogged: isLogged,
-                        isCurrentMonth: isCurrentMonth
-                    )
-
-                    VStack(alignment: .leading, spacing: 2) {
-                        HStack(alignment: .top, spacing: 2) {
-                            Text(dayLabel(for: date))
-                                .font(.system(size: 10, weight: .medium))
-                                .foregroundStyle(
-                                    hasVisiblePhoto
-                                        ? Color.white.opacity(isCurrentMonth ? 0.98 : 0.72)
-                                        : dayNumberColor(isCurrentMonth: isCurrentMonth)
-                                )
-                                .lineLimit(1)
-
-                            Spacer(minLength: 0)
-
-                            if streakDay >= 1 {
-                                Text("\(Image(systemName: "flame.fill"))\(streakDay)")
-                                    .font(.system(size: 8, weight: .bold, design: .rounded))
-                                    .lineLimit(1)
-                                    .fixedSize()
-                                    .foregroundStyle(isStreakPotential ? .orange.opacity(0.45) : .orange)
+            .overlay {
+                if let dayPreview {
+                    DayPreviewPopup(
+                        preview: dayPreview,
+                        tintColor: tintColor,
+                        title: dayTitle(for: dayPreview.date),
+                        onDismiss: {
+                            withAnimation(.snappy) {
+                                self.dayPreview = nil
                             }
+                        },
+                        onPreviousDay: {
+                            if let previousDay = calendar.date(byAdding: .day, value: -1, to: dayPreview.date) {
+                                presentDayPreview(for: previousDay)
+                            }
+                        },
+                        onNextDay: {
+                            if let nextDay = calendar.date(byAdding: .day, value: 1, to: dayPreview.date) {
+                                presentDayPreview(for: nextDay)
+                            }
+                        },
+                        onTapPhoto: { index in
+                            selectedPhotoIndex = index
+                            showPhotoViewer = true
                         }
-
-                        Spacer(minLength: 0)
-
-                        if let weightText = dayData?.weightText {
-                            Text(weightText)
-                                .font(.system(size: 12, weight: .semibold, design: .rounded))
-                                .foregroundStyle(isLogged ? tintColor.opacity(0.98) : .primary)
-                                .lineLimit(1)
-                                .minimumScaleFactor(0.8)
-                        }
-                    }
-                    .padding(6)
+                    )
+                    .id(dayPreview.date)
+                    .transition(.opacity.combined(with: .scale(scale: 0.96)))
+                    .zIndex(10)
                 }
-                .frame(maxWidth: .infinity)
-                .frame(height: 64)
-                .overlay {
-                    RoundedRectangle(cornerRadius: dayCardCornerRadius, style: .continuous)
-                        .strokeBorder(
-                            dayOutlineColor(isToday: isToday, isCurrentMonth: isCurrentMonth),
-                            lineWidth: dayOutlineWidth(isToday: isToday)
-                        )
-                }
-                .clipShape(RoundedRectangle(cornerRadius: dayCardCornerRadius, style: .continuous))
             }
-            .buttonStyle(.plain)
-            .allowsHitTesting(isLoggableDay)
-            .onAppear {
-                guard let photoCacheKey else { return }
-                thumbnailLoader.loadIfNeeded(
-                    key: photoCacheKey,
-                    pending: pendingThumbnails[photoCacheKey]
-                )
+            .fullScreenCover(isPresented: $showPhotoViewer) {
+                if let dayPreview {
+                    QuickLookPreview(
+                        isPresented: $showPhotoViewer,
+                        images: dayPreview.photos,
+                        initialIndex: selectedPhotoIndex
+                    )
+                }
             }
         }
     }
 
-    @ViewBuilder
-    private func cellBackground(
-        primaryPhoto: UIImage?,
-        isLogged: Bool,
-        isCurrentMonth: Bool
-    ) -> some View {
-        if let photo = primaryPhoto {
-            Image(uiImage: photo)
-                .resizable()
-                .scaledToFill()
-                .overlay {
-                    ZStack {
-                        RoundedRectangle(cornerRadius: dayCardCornerRadius, style: .continuous)
-                            .fill(
-                                LinearGradient(
-                                    colors: [
-                                        Color.black.opacity(0.54),
-                                        Color.black.opacity(0.12),
-                                        Color.black.opacity(0.74)
-                                    ],
-                                    startPoint: .top,
-                                    endPoint: .bottom
-                                )
-                            )
 
-                        RoundedRectangle(cornerRadius: dayCardCornerRadius, style: .continuous)
-                            .fill(
-                                RadialGradient(
-                                    colors: [
-                                        Color.clear,
-                                        Color.black.opacity(0.34)
-                                    ],
-                                    center: .center,
-                                    startRadius: 12,
-                                    endRadius: 68
-                                )
-                            )
-
-                        RoundedRectangle(cornerRadius: dayCardCornerRadius, style: .continuous)
-                            .fill(Color(.systemBackground).opacity(isCurrentMonth ? 0.10 : 0.16))
-
-                        if isLogged {
-                            RoundedRectangle(cornerRadius: dayCardCornerRadius, style: .continuous)
-                                .fill(tintColor.opacity(isCurrentMonth ? 0.10 : 0.06))
-                        }
-                    }
-                }
-        } else if isLogged {
-            RoundedRectangle(cornerRadius: dayCardCornerRadius, style: .continuous)
-                .fill(tintColor.opacity(isCurrentMonth ? 0.11 : 0.06))
-        } else {
-            RoundedRectangle(cornerRadius: dayCardCornerRadius, style: .continuous)
-                .fill(unloggedBackgroundColor(isCurrentMonth: isCurrentMonth))
-        }
-    }
-
-    private func unloggedBackgroundColor(isCurrentMonth: Bool) -> Color {
-        isCurrentMonth ? cardColor.opacity(0.52) : cardColor.opacity(0.20)
-    }
-
-    private func dayNumberColor(isCurrentMonth: Bool) -> Color {
-        return isCurrentMonth ? .primary : .secondary.opacity(0.45)
-    }
-
-    private func dayLabel(for date: Date) -> String {
-        String(calendar.component(.day, from: date))
-    }
-
-    private func dayOutlineColor(isToday: Bool, isCurrentMonth: Bool) -> Color {
-        if isToday {
-            return tintColor
-        }
-
-        return Color.secondary.opacity(isCurrentMonth ? 0.14 : 0.08)
-    }
-
-    private func dayOutlineWidth(isToday: Bool) -> CGFloat {
-        if isToday {
-            return 2
-        }
-
-        return 1
-    }
 
     private func scrollToFocusedEntry(with proxy: ScrollViewProxy, animated: Bool) {
         let targetDate = focusedEntry?.timestamp
@@ -613,6 +509,40 @@ struct JournalView: View {
         workoutIDsByDay[calendar.startOfDay(for: date)] ?? []
     }
 
+    private func sleepIDs(for date: Date) -> [PersistentIdentifier] {
+        sleepIDsByDay[calendar.startOfDay(for: date)] ?? []
+    }
+
+    private func presentDayPreview(for date: Date) {
+        let day = calendar.startOfDay(for: date)
+        let dayEntries = entries(for: day)
+        let photos = dayEntries
+            .flatMap(\.photosData)
+            .compactMap(UIImage.init(data:))
+        guard !photos.isEmpty else { return }
+
+        let dayWorkouts = workouts.filter { calendar.isDate($0.timestamp, inSameDayAs: day) }
+        let daySleep = sleepEntries.filter { calendar.isDate($0.endDate, inSameDayAs: day) }
+        let activitySummary = dailyActivitySummaries.first { calendar.isDate($0.date, inSameDayAs: day) }
+
+        suppressNextDayTap = true
+        pressedPreviewDay = nil
+        Haptics.selection()
+        presentedSheet = nil
+        withAnimation(.snappy) {
+            dayPreview = DayPreview(
+                date: day,
+                photos: photos,
+                weightText: dayEntries.first.map { String(format: "%.1f lbs", $0.weight) },
+                entryCount: dayEntries.count,
+                workoutCount: dayWorkouts.count,
+                stepCount: activitySummary?.stepCount ?? 0,
+                activeEnergyBurnedKilocalories: activitySummary?.activeEnergyBurnedKilocalories ?? 0,
+                sleepDuration: daySleep.reduce(0) { $0 + $1.duration }
+            )
+        }
+    }
+
     private func monthStart(for date: Date) -> Date {
         let components = calendar.dateComponents([.year, .month], from: date)
         return calendar.date(from: components) ?? calendar.startOfDay(for: date)
@@ -623,14 +553,14 @@ struct JournalView: View {
     }
 
     private func ensureInitialMonthsLoaded() {
-        monthLoader.loadInitialMonths()
+        monthLoader.loadInitialMonths(count: 5)
     }
 
     private func ensureMonthLoaded(_ month: Date) {
         let currentMonth = monthStart(for: .now)
         let clampedMonth = min(month, currentMonth)
 
-        monthLoader.loadInitialMonths()
+        monthLoader.loadInitialMonths(count: 5)
         var didChangeLoadedMonths = false
 
         while let earliest = monthLoader.earliest, clampedMonth < earliest {
@@ -638,15 +568,21 @@ struct JournalView: View {
         }
 
         if didChangeLoadedMonths {
-            rebuildMonthRenderData()
+            rebuildMonthRenderData(forceAll: false)
         }
     }
 
-    private func loadEarlierMonthsIfNeeded() {
+    private func loadEarlierMonthsIfNeeded(proxy: ScrollViewProxy) {
         guard hasFinishedInitialMonthPositioning else { return }
         guard let earliest = monthLoader.earliest else { return }
+        let anchorMonth = earliest
         if monthLoader.expandIfNeeded(for: earliest) {
-            rebuildMonthRenderData()
+            rebuildMonthRenderData(forceAll: false)
+            DispatchQueue.main.async {
+                withAnimation(.spring(response: 0.48, dampingFraction: 0.80)) {
+                    proxy.scrollTo(anchorMonth, anchor: .top)
+                }
+            }
         }
     }
 
@@ -682,6 +618,7 @@ struct JournalView: View {
         for monthStart: Date,
         entriesByDay: [Date: [WeightEntry]],
         workoutsByDay: [Date: [WorkoutEntry]],
+        sleepByDay: [Date: [SleepEntry]],
         dailyActivityByDay: [Date: DailyActivitySummary],
         streaksByDay: [Date: Int],
         todayPotentialStreak: Int
@@ -693,10 +630,20 @@ struct JournalView: View {
         let today = calendar.startOfDay(for: Date())
         let todayHasEntry = entriesByDay[today] != nil
 
-        // Include today if it has a potential streak so the cell gets rendered
-        var allDays = Set(entriesByDay.keys.filter { monthInterval.contains($0) })
-            .union(workoutsByDay.keys.filter { monthInterval.contains($0) })
-            .union(dailyActivityByDay.keys.filter { monthInterval.contains($0) })
+        // Efficiently iterate only through the 28-31 days of this specific month
+        // instead of filtering all historical database keys. This reduces the complexity
+        // from O(N + W + S) history scans down to O(31) = O(1) constant time lookup.
+        var allDays = Set<Date>()
+        var date = monthInterval.start
+        while date < monthInterval.end {
+            let day = calendar.startOfDay(for: date)
+            if entriesByDay[day] != nil || workoutsByDay[day] != nil || sleepByDay[day] != nil {
+                allDays.insert(day)
+            }
+            guard let nextDate = calendar.date(byAdding: .day, value: 1, to: date) else { break }
+            date = nextDate
+        }
+        
         if todayPotentialStreak > 0 && monthInterval.contains(today) {
             allDays.insert(today)
         }
@@ -714,6 +661,8 @@ struct JournalView: View {
             result[day] = DayData(
                 weightText: dayEntries.first.map { String(format: "%.1f", $0.weight) },
                 workoutCount: workoutsByDay[day]?.count ?? 0,
+                sleepCount: sleepByDay[day]?.count ?? 0,
+                stepText: stepText(for: dailyActivityByDay[day]?.stepCount ?? 0),
                 photoCacheKey: photoCacheKey(for: dayEntries),
                 streakDay: streakValue,
                 isStreakPotential: isPotential
@@ -721,7 +670,19 @@ struct JournalView: View {
         }
     }
 
-    private func rebuildMonthRenderData() {
+    private func stepText(for steps: Int) -> String? {
+        guard steps > 0 else { return nil }
+        if steps >= 10_000 {
+            return "\(steps / 1000)k"
+        }
+        if steps >= 1_000 {
+            let value = Double(steps) / 1000
+            return String(format: "%.1fk", value)
+        }
+        return steps.formatted()
+    }
+
+    private func rebuildMonthRenderData(forceAll: Bool = false) {
         let groupedEntries = Dictionary(grouping: entries) { entry in
             calendar.startOfDay(for: entry.timestamp)
         }
@@ -733,6 +694,9 @@ struct JournalView: View {
                 (calendar.startOfDay(for: summary.date), summary)
             }
         )
+        let groupedSleep = Dictionary(grouping: sleepEntries) { sleep in
+            calendar.startOfDay(for: sleep.endDate)
+        }
         let streaks = WeightCalculations.streaksByDay(from: entries)
 
         // If today is not yet logged but yesterday was, compute the potential streak number.
@@ -757,22 +721,33 @@ struct JournalView: View {
                 .sorted(by: { $0.timestamp > $1.timestamp })
                 .map(\.persistentModelID)
         }
-        monthRenderDataByMonth = Dictionary(uniqueKeysWithValues: monthLoader.monthStarts.map { monthStart in
-            (
-                monthStart,
-                MonthRenderData(
+        sleepIDsByDay = groupedSleep.mapValues { daySleep in
+            daySleep
+                .sorted(by: { $0.endDate > $1.endDate })
+                .map(\.persistentModelID)
+        }
+
+        var newRenderData = monthRenderDataByMonth
+        for monthStart in monthLoader.monthStarts {
+            if forceAll || newRenderData[monthStart] == nil {
+                newRenderData[monthStart] = MonthRenderData(
                     weeks: makeWeeks(for: monthStart),
                     dayDataByDate: makeDayDataByDate(
                         for: monthStart,
                         entriesByDay: groupedEntries,
                         workoutsByDay: groupedWorkouts,
+                        sleepByDay: groupedSleep,
                         dailyActivityByDay: groupedDailyActivity,
                         streaksByDay: streaks,
                         todayPotentialStreak: todayPotentialStreak
                     )
                 )
-            )
-        })
+            }
+        }
+
+        let activeMonths = Set(monthLoader.monthStarts)
+        newRenderData = newRenderData.filter { activeMonths.contains($0.key) }
+        monthRenderDataByMonth = newRenderData
 
         // Build pending thumbnails for lazy loading and remove stale cached thumbnails.
         let newPending = buildPendingThumbnails(from: groupedEntries)
@@ -781,6 +756,10 @@ struct JournalView: View {
             thumbnailLoader.removeValue(forKey: key)
         }
         pendingThumbnails = newPending
+
+        for (key, pending) in newPending {
+            thumbnailLoader.loadIfNeeded(key: key, pending: pending)
+        }
     }
 
     /// Returns the cache key for the first available photo across the day's entries, or nil if none.
@@ -806,9 +785,11 @@ struct JournalView: View {
             guard loadedMonthIntervals.contains(where: { $0.contains(day) }) else { continue }
             for entry in dayEntries {
                 guard entry.hasPhotos else { continue }
+                
+                let cacheKey = "\(entry.persistentModelID)-0-\(entry.photosFingerprint)"
+
                 let photosData = entry.photosData
                 guard let firstPhoto = photosData.first else { continue }
-                let cacheKey = "\(entry.persistentModelID)-0-\(entry.photosFingerprint)"
                 result[cacheKey] = PendingThumbnail(photoData: firstPhoto, cacheKey: cacheKey)
                 break // Only need the first photo per day
             }
@@ -817,15 +798,225 @@ struct JournalView: View {
     }
 }
 
+struct DayPreviewPopup: View {
+    let preview: JournalView.DayPreview
+    let tintColor: Color
+    let title: String
+    let onDismiss: () -> Void
+    let onPreviousDay: (() -> Void)?
+    let onNextDay: (() -> Void)?
+
+    @State private var dragOffset: CGSize = .zero
+    let onTapPhoto: ((Int) -> Void)?
+
+    var body: some View {
+        ZStack {
+            Color.black.opacity(0.18)
+                .ignoresSafeArea()
+                .onTapGesture(perform: onDismiss)
+
+            VStack(alignment: .leading, spacing: 12) {
+                HStack(alignment: .firstTextBaseline) {
+                    Text(title)
+                        .font(.headline.weight(.semibold))
+                        .lineLimit(1)
+
+                    Spacer(minLength: 12)
+
+                    if let weightText = preview.weightText {
+                        Text(weightText)
+                            .font(.subheadline.weight(.bold))
+                            .foregroundStyle(tintColor)
+                            .lineLimit(1)
+                    }
+                }
+
+                photoStrip
+
+                LazyVGrid(columns: Array(repeating: GridItem(.flexible(), spacing: 14), count: 2), spacing: 10) {
+                    statItem(value: "\(preview.photos.count)", label: preview.photos.count == 1 ? "Photo" : "Photos")
+                    statItem(value: "\(preview.entryCount)", label: preview.entryCount == 1 ? "Log" : "Logs")
+
+                    if preview.workoutCount > 0 {
+                        statItem(value: "\(preview.workoutCount)", label: preview.workoutCount == 1 ? "Workout" : "Workouts")
+                    }
+
+                    if preview.stepCount > 0 {
+                        statItem(value: preview.stepCount.formatted(), label: "Steps")
+                    }
+
+                    if preview.activeEnergyBurnedKilocalories > 0 {
+                        statItem(value: Int(preview.activeEnergyBurnedKilocalories.rounded()).formatted(), label: "Active cal")
+                    }
+
+                    if preview.sleepDuration > 0 {
+                        statItem(value: sleepText(preview.sleepDuration), label: "Sleep")
+                    }
+                }
+            }
+            .padding(16)
+            .frame(maxWidth: 340)
+            .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 22, style: .continuous))
+            .overlay {
+                RoundedRectangle(cornerRadius: 22, style: .continuous)
+                    .strokeBorder(.white.opacity(0.18), lineWidth: 1)
+            }
+            .shadow(color: .black.opacity(0.18), radius: 22, y: 12)
+            .padding(.horizontal, 22)
+            .offset(x: dragOffset.width)
+        }
+        .simultaneousGesture(
+            DragGesture(minimumDistance: 20)
+                .onChanged { value in
+                    withAnimation(.interactiveSpring) {
+                        dragOffset = value.translation
+                    }
+                }
+                .onEnded { value in
+                    let threshold: CGFloat = 60
+                    if value.translation.width > threshold {
+                        onPreviousDay?()
+                    } else if value.translation.width < -threshold {
+                        onNextDay?()
+                    }
+                    withAnimation(.snappy) {
+                        dragOffset = .zero
+                    }
+                }
+        )
+    }
+
+    private var photoStrip: some View {
+        ScrollView(.horizontal, showsIndicators: false) {
+            HStack(spacing: 8) {
+                ForEach(Array(preview.photos.prefix(8).enumerated()), id: \.offset) { index, photo in
+                    Image(uiImage: photo)
+                        .resizable()
+                        .scaledToFill()
+                        .frame(width: 72, height: 88)
+                        .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
+                        .onTapGesture {
+                            onTapPhoto?(index)
+                        }
+                }
+            }
+        }
+    }
+
+    private func statItem(value: String, label: String) -> some View {
+        VStack(alignment: .leading, spacing: 2) {
+            Text(value)
+                .font(.subheadline.weight(.bold))
+                .foregroundStyle(.primary)
+                .lineLimit(1)
+                .minimumScaleFactor(0.72)
+
+            Text(label)
+                .font(.caption2.weight(.semibold))
+                .foregroundStyle(.secondary)
+                .lineLimit(1)
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+    }
+
+    private func sleepText(_ duration: TimeInterval) -> String {
+        let totalMinutes = max(Int(duration / 60), 0)
+        let hours = totalMinutes / 60
+        let minutes = totalMinutes % 60
+
+        if hours > 0 && minutes > 0 {
+            return "\(hours)h \(minutes)m"
+        }
+
+        if hours > 0 {
+            return "\(hours)h"
+        }
+
+        return "\(minutes)m"
+    }
+}
+
+struct QuickLookPreview: UIViewControllerRepresentable {
+    @Binding var isPresented: Bool
+    let images: [UIImage]
+    let initialIndex: Int
+
+    func makeUIViewController(context: Context) -> UIViewController {
+        let controller = QLPreviewController()
+        controller.dataSource = context.coordinator
+        controller.currentPreviewItemIndex = initialIndex
+        controller.navigationItem.leftBarButtonItem = UIBarButtonItem(
+            image: UIImage(systemName: "xmark"),
+            style: .plain,
+            target: context.coordinator,
+            action: #selector(Coordinator.close)
+        )
+        return UINavigationController(rootViewController: controller)
+    }
+
+    func updateUIViewController(_: UIViewController, context _: Context) {}
+
+    func makeCoordinator() -> Coordinator {
+        Coordinator(images: images, isPresented: $isPresented)
+    }
+
+    class Coordinator: NSObject, QLPreviewControllerDataSource {
+        let images: [UIImage]
+        var tempURLs: [URL] = []
+        @Binding var isPresented: Bool
+
+        init(images: [UIImage], isPresented: Binding<Bool>) {
+            self.images = images
+            self._isPresented = isPresented
+            super.init()
+            writeToTemp()
+        }
+
+        private func writeToTemp() {
+            let dir = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+            try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+            for (i, image) in images.enumerated() {
+                let url = dir.appendingPathComponent("photo_\(i).jpg")
+                if let data = image.jpegData(compressionQuality: 1.0) {
+                    try? data.write(to: url)
+                    tempURLs.append(url)
+                }
+            }
+        }
+
+        @objc func close() {
+            isPresented = false
+        }
+
+        func numberOfPreviewItems(in _: QLPreviewController) -> Int {
+            tempURLs.count
+        }
+
+        func previewController(_: QLPreviewController, previewItemAt index: Int) -> QLPreviewItem {
+            tempURLs[index] as QLPreviewItem
+        }
+
+        deinit {
+            for url in tempURLs {
+                try? FileManager.default.removeItem(at: url)
+            }
+            if let dir = tempURLs.first?.deletingLastPathComponent() {
+                try? FileManager.default.removeItem(at: dir)
+            }
+        }
+    }
+}
+
 #Preview {
     JournalView(scrollToEntryTrigger: 0, focusedEntry: nil, scrollToBottomTrigger: 0, showLog: .constant(false), logDate: .constant(nil))
-        .modelContainer(for: [WeightEntry.self, WorkoutEntry.self, DailyActivitySummary.self], inMemory: true)
+        .modelContainer(for: [WeightEntry.self, WorkoutEntry.self, DailyActivitySummary.self, SleepEntry.self], inMemory: true)
 }
 
 struct LogDayDetailSheet: View {
     private struct PhotoItem {
         let image: UIImage
         let entryID: PersistentIdentifier
+        let photoIndex: Int
     }
 
     private struct EntryDraft {
@@ -841,14 +1032,14 @@ struct LogDayDetailSheet: View {
     @Query(sort: \WeightEntry.timestamp, order: .reverse) private var allEntries: [WeightEntry]
     @Query(sort: \WorkoutEntry.timestamp, order: .reverse) private var allWorkouts: [WorkoutEntry]
     @Query(sort: \DailyActivitySummary.date, order: .reverse) private var allDailyActivitySummaries: [DailyActivitySummary]
+    @Query(sort: \SleepEntry.endDate, order: .reverse) private var allSleepEntries: [SleepEntry]
 
-    let title: String
-    let entryIDs: [PersistentIdentifier]
-    let workoutIDs: [PersistentIdentifier]
-    let dailyActivityDate: Date
+    let initialDate: Date
     let tintColor: Color
     let onDismiss: () -> Void
+    let calendar: Calendar = .current
 
+    @State private var currentDate: Date
     @State private var editingEntryIDs: Set<PersistentIdentifier> = []
     @State private var entryDrafts: [PersistentIdentifier: EntryDraft] = [:]
     @State private var pendingDeletionEntryID: PersistentIdentifier?
@@ -856,27 +1047,73 @@ struct LogDayDetailSheet: View {
     @State private var isPhotoCarouselPresented = false
     @State private var selectedPhotoItems: [PhotosPickerItem] = []
     @State private var pendingDayPhotoEntryID: PersistentIdentifier?
+    @State private var dragStartIndex: Int? = nil
+
+    init(initialDate: Date, tintColor: Color, onDismiss: @escaping () -> Void) {
+        self.initialDate = initialDate
+        self.tintColor = tintColor
+        self.onDismiss = onDismiss
+        _currentDate = State(initialValue: initialDate)
+    }
+
+    private var dayTitle: String {
+        let calendar = Calendar.current
+        if calendar.isDateInToday(currentDate) {
+            return "Today"
+        }
+        let dayNameFormatter = DateFormatter()
+        dayNameFormatter.dateFormat = "EEEE"
+        if let daysAgo = calendar.dateComponents([.day], from: currentDate, to: Date()).day,
+           daysAgo >= 1 && daysAgo < 7 {
+            return dayNameFormatter.string(from: currentDate)
+        }
+        let formatter = DateFormatter()
+        formatter.dateFormat = "MMM d, yyyy"
+        return formatter.string(from: currentDate)
+    }
 
     private var entries: [WeightEntry] {
-        let entryIDSet = Set(entryIDs)
-        return allEntries.filter { entryIDSet.contains($0.persistentModelID) }
+        allEntries.filter { calendar.isDate($0.timestamp, inSameDayAs: currentDate) }
     }
 
     private var workouts: [WorkoutEntry] {
-        let workoutIDSet = Set(workoutIDs)
-        return allWorkouts.filter { workoutIDSet.contains($0.persistentModelID) }
+        allWorkouts.filter { calendar.isDate($0.timestamp, inSameDayAs: currentDate) }
+    }
+
+    private var sleepEntries: [SleepEntry] {
+        allSleepEntries
+            .filter { calendar.isDate($0.startDate, inSameDayAs: currentDate) }
+            .sorted(by: { $0.endDate > $1.endDate })
     }
 
     private var dailyActivitySummary: DailyActivitySummary? {
-        allDailyActivitySummaries.first { Calendar.current.isDate($0.date, inSameDayAs: dailyActivityDate) }
+        allDailyActivitySummaries.first { Calendar.current.isDate($0.date, inSameDayAs: currentDate) }
+    }
+
+    private var datesWithPhotos: [Date] {
+        let calendar = Calendar.current
+        let uniqueDays = Set(allEntries.filter { $0.hasPhotos }.map { calendar.startOfDay(for: $0.timestamp) })
+        return uniqueDays.sorted()
+    }
+
+    private var previousDateWithPhotos: Date? {
+        let calendar = Calendar.current
+        let currentDay = calendar.startOfDay(for: currentDate)
+        return datesWithPhotos.last(where: { $0 < currentDay })
+    }
+
+    private var nextDateWithPhotos: Date? {
+        let calendar = Calendar.current
+        let currentDay = calendar.startOfDay(for: currentDate)
+        return datesWithPhotos.first(where: { $0 > currentDay })
     }
 
     private var photoItems: [PhotoItem] {
         entries
             .flatMap { entry in
-                entry.photosData.compactMap { data in
+                entry.photosData.enumerated().compactMap { index, data in
                     UIImage(data: data).map { image in
-                        PhotoItem(image: image, entryID: entry.persistentModelID)
+                        PhotoItem(image: image, entryID: entry.persistentModelID, photoIndex: index)
                     }
                 }
             }
@@ -890,16 +1127,23 @@ struct LogDayDetailSheet: View {
         !editingEntryIDs.isEmpty
     }
 
-    private var displayedPhotos: [UIImage] {
+    private var displayedPhotoItems: [PhotoItem] {
         if isEditingEntry {
-            if let dayPhotoEntry, let draft = entryDrafts[dayPhotoEntry.persistentModelID] {
-                draft.photosData.compactMap(UIImage.init(data:))
-            } else {
-                []
+            return entries.flatMap { entry in
+                guard let draft = entryDrafts[entry.persistentModelID] else { return [PhotoItem]() }
+                return draft.photosData.enumerated().compactMap { index, data in
+                    UIImage(data: data).map { image in
+                        PhotoItem(image: image, entryID: entry.persistentModelID, photoIndex: index)
+                    }
+                }
             }
-        } else {
-            photos
         }
+
+        return photoItems
+    }
+
+    private var displayedPhotos: [UIImage] {
+        displayedPhotoItems.map(\.image)
     }
 
     private var dayPhotoEntry: WeightEntry? {
@@ -916,53 +1160,64 @@ struct LogDayDetailSheet: View {
         }
     }
 
-    private var logCardWidth: CGFloat {
-        280
+    private var logCardMinWidth: CGFloat {
+        isEditingEntry ? 280 : 190
     }
 
-    private var workoutCardWidth: CGFloat {
-        240
+    private var logCardMaxWidth: CGFloat {
+        isEditingEntry ? 280 : 230
     }
+
 
     var body: some View {
         NavigationStack {
             ScrollView(showsIndicators: false) {
                 VStack(alignment: .leading, spacing: 20) {
-                    if isEditingEntry || !displayedPhotos.isEmpty {
-                        photoHeroSection
+                    if !entries.isEmpty || dailyActivitySummary != nil || !workouts.isEmpty || !sleepEntries.isEmpty {
+                        compactStatsRow(
+                            weight: entries.sorted(by: { $0.timestamp > $1.timestamp }).first,
+                            summary: dailyActivitySummary,
+                            workouts: workouts,
+                            sleepEntries: sleepEntries
+                        )
                     }
 
-                    if !entries.isEmpty {
+                    if isEditingEntry {
                         logCarouselSection
                     }
 
-                    if let dailyActivitySummary, dailyActivitySummary.stepCount > 0 || dailyActivitySummary.activeEnergyBurnedKilocalories > 0 {
-                        VStack(alignment: .leading, spacing: 12) {
-                            Text("Activity")
-                                .font(.headline.weight(.semibold))
-                                .padding(.horizontal, 4)
-
-                            dailyActivityHighlights(summary: dailyActivitySummary)
-                        }
+                    if dayPhotoEntry != nil {
+                        photoHeroSection
                     }
 
-                    if entries.isEmpty && workouts.isEmpty {
+                    sleepSection
+
+                    if entries.isEmpty && workouts.isEmpty && sleepEntries.isEmpty {
                         Text("No entry logged for this day.")
                             .foregroundStyle(.secondary)
                             .padding(.horizontal, 20)
                     }
 
-                    if !workouts.isEmpty {
-                        workoutSection
-                    }
+                    workoutSection
                 }
                 .padding(.horizontal, 16)
                 .padding(.top, 12)
                 .padding(.bottom, 32)
             }
-            .background(Color(.systemBackground))
+            .background(.clear)
             .navigationBarTitleDisplayMode(.inline)
             .presentationDetents([.medium, .large])
+            .gesture(
+                DragGesture(minimumDistance: 20)
+                    .onEnded { value in
+                        let threshold: CGFloat = 60
+                        if value.translation.width > threshold {
+                            withAnimation(.snappy) { goToPreviousDay() }
+                        } else if value.translation.width < -threshold {
+                            withAnimation(.snappy) { goToNextDay() }
+                        }
+                    }
+            )
             .toolbar {
                 ToolbarItemGroup(placement: .topBarLeading) {
                     if isEditingEntry {
@@ -973,6 +1228,50 @@ struct LogDayDetailSheet: View {
                             cancelEditing()
                         }
 
+                        if dayPhotoEntry != nil {
+                            addPhotosToolbarButton
+                        }
+                    } else {
+                        if let dayEditEntry {
+                            editEntryButton(for: dayEditEntry)
+                        }
+
+                        if dayPhotoEntry != nil {
+                            addPhotosToolbarButton
+                        }
+                    }
+                }
+
+                ToolbarItem(placement: .principal) {
+                    HStack(spacing: 8) {
+                        Button {
+                            withAnimation(.snappy) { goToPreviousDay() }
+                        } label: {
+                            Image(systemName: "chevron.left")
+                                .font(.footnote.weight(.bold))
+                        }
+                        .buttonStyle(.plain)
+                        .foregroundStyle(previousDateWithPhotos == nil ? Color.secondary.opacity(0.15) : Color.secondary.opacity(0.5))
+                        .disabled(previousDateWithPhotos == nil || editingEntryIDs.isEmpty == false)
+
+                        Text(dayTitle)
+                            .font(.headline.weight(.semibold))
+                            .lineLimit(1)
+
+                        Button {
+                            withAnimation(.snappy) { goToNextDay() }
+                        } label: {
+                            Image(systemName: "chevron.right")
+                                .font(.footnote.weight(.bold))
+                        }
+                        .buttonStyle(.plain)
+                        .foregroundStyle(nextDateWithPhotos == nil ? Color.secondary.opacity(0.15) : Color.secondary.opacity(0.5))
+                        .disabled(nextDateWithPhotos == nil || editingEntryIDs.isEmpty == false)
+                    }
+                }
+
+                ToolbarItem(placement: .topBarTrailing) {
+                    if isEditingEntry {
                         headerIconButton(
                             systemImage: "checkmark",
                             tint: .primary,
@@ -981,24 +1280,6 @@ struct LogDayDetailSheet: View {
                             saveChanges()
                         }
                     } else {
-                        if let dayPhotoEntry {
-                            toolbarPhotoPicker(for: dayPhotoEntry)
-                        }
-
-                        if let dayEditEntry {
-                            editEntryButton(for: dayEditEntry)
-                        }
-                    }
-                }
-
-                ToolbarItem(placement: .principal) {
-                    Text(title)
-                        .font(.headline.weight(.semibold))
-                        .lineLimit(1)
-                }
-
-                ToolbarItem(placement: .topBarTrailing) {
-                    if !isEditingEntry {
                         Button("Done") {
                             onDismiss()
                         }
@@ -1027,10 +1308,16 @@ struct LogDayDetailSheet: View {
             }
             .fullScreenCover(isPresented: $isPhotoCarouselPresented) {
                 LogPhotoCarouselView(
-                    photos: photos,
+                    photos: displayedPhotos,
                     initialIndex: selectedPhotoIndex,
                     canEditCurrentPhoto: !photoItems.isEmpty,
-                    onEditCurrentPhoto: editPhotoSourceEntry
+                    onEditCurrentPhoto: editPhotoSourceEntry,
+                    canRemoveCurrentPhoto: isEditingEntry,
+                    onRemoveCurrentPhoto: removeDisplayedPhoto,
+                    weightEntry: entries.sorted(by: { $0.timestamp > $1.timestamp }).first,
+                    activitySummary: dailyActivitySummary,
+                    tintColor: tintColor,
+                    date: currentDate
                 )
             }
             .onChange(of: selectedPhotoItems) { _, newItems in
@@ -1038,8 +1325,9 @@ struct LogDayDetailSheet: View {
                 Task {
                     let newPhotoData = await loadPhotoData(from: newItems)
                     await MainActor.run {
-                        if let pendingDayPhotoEntryID {
-                            appendPhotos(newPhotoData, toEntryID: pendingDayPhotoEntryID)
+                        let targetID = pendingDayPhotoEntryID ?? dayPhotoEntry?.persistentModelID
+                        if let targetID {
+                            appendPhotos(newPhotoData, toEntryID: targetID)
                         }
                         pendingDayPhotoEntryID = nil
                         selectedPhotoItems = []
@@ -1051,100 +1339,113 @@ struct LogDayDetailSheet: View {
 
     private var logCarouselSection: some View {
         VStack(alignment: .leading, spacing: 12) {
-            Text(entries.count > 1 ? "Logs" : "Log")
+            Text("Weight")
                 .font(.headline.weight(.semibold))
                 .padding(.horizontal, 4)
 
-            ScrollView(.horizontal, showsIndicators: false) {
-                HStack(alignment: .top, spacing: 14) {
+            if isEditingEntry {
+                VStack(spacing: 10) {
                     ForEach(Array(entries.enumerated()), id: \.element.persistentModelID) { index, entry in
-                        logCard(for: entry, index: index)
+                        editRow(for: entry, index: index)
                     }
                 }
                 .padding(.horizontal, 4)
-                .padding(.vertical, 2)
+            } else {
+                ScrollView(.horizontal, showsIndicators: false) {
+                    HStack(alignment: .top, spacing: 14) {
+                        ForEach(Array(entries.enumerated()), id: \.element.persistentModelID) { index, entry in
+                            logCard(for: entry, index: index)
+                        }
+                    }
+                    .padding(.horizontal, 4)
+                    .padding(.vertical, 2)
+                }
             }
         }
     }
 
     private func logCard(for entry: WeightEntry, index: Int) -> some View {
-        VStack(alignment: .leading, spacing: 14) {
-            if isEditingEntry, entryDrafts[entry.persistentModelID] != nil {
-                logSectionHeader(for: entry, index: index)
+        let isEditing = isEditingEntry && entryDrafts[entry.persistentModelID] != nil
+        return VStack(alignment: .leading, spacing: 10) {
+            HStack(spacing: 10) {
+                Label("Weight", systemImage: "scalemass.fill")
+                    .font(.caption.weight(.semibold))
+                    .foregroundStyle(.secondary)
 
-                TextField("Weight", text: draftWeightBinding(for: entry))
-                    .keyboardType(.decimalPad)
-
-                DatePicker(
-                    "Date",
-                    selection: draftDateBinding(for: entry),
-                    displayedComponents: [.date]
-                )
-
-                DatePicker(
-                    "Time",
-                    selection: draftTimeBinding(for: entry),
-                    displayedComponents: [.hourAndMinute]
-                )
-
-                TextField("Note", text: draftNoteBinding(for: entry), axis: .vertical)
-                    .lineLimit(2...5)
-
-                LabeledContent("Source") {
-                    Text(entry.source == .appleHealth ? "Apple Health" : "Scale")
+                if !isEditing {
+                    Text(entry.timestamp, format: .dateTime.hour().minute())
+                        .font(.caption.weight(.medium))
+                        .foregroundStyle(.secondary)
+                        .lineLimit(1)
+                        .minimumScaleFactor(0.8)
                 }
-            } else {
-                HStack(alignment: .top, spacing: 12) {
-                    VStack(alignment: .leading, spacing: 4) {
-                        HStack(alignment: .firstTextBaseline, spacing: 4) {
+            }
+
+            VStack(alignment: .leading, spacing: 4) {
+                HStack(alignment: .firstTextBaseline, spacing: 4) {
+                        if isEditing {
+                            TextField("Weight", text: draftWeightBinding(for: entry))
+                                .keyboardType(.decimalPad)
+                                .font(.system(size: 34, weight: .semibold, design: .rounded))
+                                .foregroundStyle(tintColor)
+                                .frame(width: 96)
+                        } else {
                             Text(String(format: "%.1f", entry.weight))
-                                .font(.system(size: 44, weight: .semibold, design: .rounded))
+                                .font(.system(size: 34, weight: .semibold, design: .rounded))
                                 .foregroundStyle(tintColor)
                                 .lineLimit(1)
                                 .minimumScaleFactor(0.72)
                                 .contentTransition(.numericText())
-
-                            Text("lbs")
-                                .font(.title3.weight(.semibold))
-                                .foregroundStyle(.secondary)
-                                .lineLimit(1)
                         }
-                        .fixedSize(horizontal: true, vertical: false)
 
-                        Text(entry.timestamp, format: .dateTime.month(.abbreviated).day().year().hour().minute())
-                            .font(.caption.weight(.medium))
+                        Text("lbs")
+                            .font(.subheadline.weight(.semibold))
                             .foregroundStyle(.secondary)
                             .lineLimit(1)
-                            .minimumScaleFactor(0.8)
                     }
-                    .layoutPriority(1)
+                    .fixedSize(horizontal: true, vertical: false)
 
-                    Spacer(minLength: 8)
+                    if isEditing {
+                        HStack(spacing: 6) {
+                            DatePicker(
+                                "",
+                                selection: draftDateBinding(for: entry),
+                                displayedComponents: [.date]
+                            )
+                            .labelsHidden()
+                            .scaleEffect(0.8, anchor: .leading)
+                            .frame(height: 28)
 
-                    VStack(alignment: .trailing, spacing: 8) {
-                        Text(entry.source == .appleHealth ? "Apple Health" : "Scale")
-                            .font(.caption2.weight(.semibold))
-                            .foregroundStyle(.secondary)
-                            .lineLimit(1)
-
-                        if entries.count > 1 {
-                            editEntryButton(for: entry)
+                            DatePicker(
+                                "",
+                                selection: draftTimeBinding(for: entry),
+                                displayedComponents: [.hourAndMinute]
+                            )
+                            .labelsHidden()
+                            .scaleEffect(0.8, anchor: .leading)
+                            .frame(height: 28)
                         }
                     }
-                }
-                .frame(maxWidth: .infinity, alignment: .leading)
-
-                if let note = entry.note, !note.isEmpty {
-                    Text(note)
-                }
             }
+            .layoutPriority(1)
         }
         .padding(18)
-        .frame(width: logCardWidth, alignment: .leading)
+        .frame(minWidth: logCardMinWidth, maxWidth: logCardMaxWidth, alignment: .leading)
+        .contextMenu {
+            sourceContextMenuItem(sourceText: weightSourceText(entry.source))
+        }
         .glassEffect(
             .regular.tint(tintColor.opacity(0.06)),
             in: RoundedRectangle(cornerRadius: 20, style: .continuous)
         )
+        .overlay(alignment: .topTrailing) {
+            if isEditing {
+                headerIconButton(systemImage: "trash", tint: .red) {
+                    pendingDeletionEntryID = entry.persistentModelID
+                }
+                .padding(12)
+            }
+        }
     }
 
     private var workoutSection: some View {
@@ -1153,21 +1454,27 @@ struct LogDayDetailSheet: View {
                 .font(.headline.weight(.semibold))
                 .padding(.horizontal, 4)
 
-            ScrollView(.horizontal, showsIndicators: false) {
-                HStack(alignment: .top, spacing: 14) {
-                    ForEach(workouts, id: \.persistentModelID) { workout in
-                        WorkoutSummaryRow(workout: workout)
-                            .padding(16)
-                            .frame(width: workoutCardWidth, alignment: .leading)
-                            .glassEffect(
-                                .regular.tint(tintColor.opacity(0.06)),
-                                in: RoundedRectangle(cornerRadius: 18, style: .continuous)
-                            )
-                    }
-                }
+            WorkoutSummaryCard(workouts: workouts, tintColor: tintColor)
+                .padding(16)
+                .glassEffect(
+                    .regular.tint(tintColor.opacity(0.06)),
+                    in: RoundedRectangle(cornerRadius: 18, style: .continuous)
+                )
+        }
+    }
+
+    private var sleepSection: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            Text("Sleep")
+                .font(.headline.weight(.semibold))
                 .padding(.horizontal, 4)
-                .padding(.vertical, 2)
-            }
+
+            SleepSummaryCard(sleepEntries: sleepEntries, tintColor: tintColor)
+                .padding(16)
+                .glassEffect(
+                    .regular.tint(tintColor.opacity(0.06)),
+                    in: RoundedRectangle(cornerRadius: 18, style: .continuous)
+                )
         }
     }
 
@@ -1270,7 +1577,8 @@ struct LogDayDetailSheet: View {
         isPhotoCarouselPresented = false
         modelContext.delete(entry)
         pendingDeletionEntryID = nil
-        cancelEditing()
+        entryDrafts.removeValue(forKey: entryID)
+        editingEntryIDs.remove(entryID)
 
         do {
             try modelContext.save()
@@ -1301,113 +1609,127 @@ struct LogDayDetailSheet: View {
         beginEditing(entry)
     }
 
+    private func removeDisplayedPhoto(at index: Int) {
+        guard displayedPhotoItems.indices.contains(index) else { return }
+        let photoItem = displayedPhotoItems[index]
+
+        removeDraftPhoto(entryID: photoItem.entryID, photoIndex: photoItem.photoIndex)
+
+        if displayedPhotoItems.isEmpty {
+            isPhotoCarouselPresented = false
+        }
+    }
+
+    private func photosCount(for date: Date) -> Int {
+        let calendar = Calendar.current
+        let dayEntries = allEntries.filter { calendar.isDate($0.timestamp, inSameDayAs: date) }
+        return dayEntries.flatMap(\.photosData).count
+    }
+
     @ViewBuilder
     private var photoHeroSection: some View {
-        VStack(spacing: 12) {
-            if displayedPhotos.isEmpty {
-                heroAddPhotosButton
-            } else {
-                TabView(selection: $selectedPhotoIndex) {
-                    ForEach(Array(displayedPhotos.enumerated()), id: \.offset) { index, photo in
-                        photoHeroItem(photo, index: index)
-                            .tag(index)
-                    }
+        if !displayedPhotos.isEmpty {
+            TabView(selection: $selectedPhotoIndex) {
+                ForEach(Array(displayedPhotoItems.enumerated()), id: \.offset) { index, photoItem in
+                    photoHeroItem(photoItem.image, displayIndex: index)
+                        .tag(index)
                 }
-                .frame(height: photoHeroHeight)
-                .tabViewStyle(.page(indexDisplayMode: displayedPhotos.count > 1 ? .always : .never))
-                .clipShape(RoundedRectangle(cornerRadius: 24, style: .continuous))
             }
-
-            if isEditingEntry {
-                PhotosPicker(
-                    selection: $selectedPhotoItems,
-                    maxSelectionCount: nil,
-                    matching: .images
-                ) {
-                    Label("Add Photos", systemImage: "photo.badge.plus")
-                        .font(.subheadline.weight(.semibold))
-                        .foregroundStyle(tintColor)
-                        .frame(maxWidth: .infinity)
-                        .padding(.vertical, 12)
-                        .background(
-                            Capsule(style: .continuous)
-                                .fill(tintColor.opacity(0.10))
-                        )
+            .frame(height: photoHeroHeight)
+            .tabViewStyle(.page(indexDisplayMode: displayedPhotos.count > 1 ? .always : .never))
+            .id(currentDate)
+            .clipShape(RoundedRectangle(cornerRadius: 24, style: .continuous))
+            .simultaneousGesture(
+                DragGesture()
+                    .onChanged { value in
+                        if dragStartIndex == nil {
+                            dragStartIndex = selectedPhotoIndex
+                        }
+                    }
+                    .onEnded { value in
+                        defer { dragStartIndex = nil }
+                        guard let startIndex = dragStartIndex else { return }
+                        let threshold: CGFloat = 50
+                        
+                        if startIndex == 0, value.translation.width > threshold {
+                            if let prevDay = previousDateWithPhotos {
+                                withAnimation(.snappy) {
+                                    currentDate = prevDay
+                                    let count = photosCount(for: prevDay)
+                                    selectedPhotoIndex = max(count - 1, 0)
+                                }
+                            }
+                        }
+                        if startIndex == displayedPhotos.count - 1, value.translation.width < -threshold {
+                            if let nextDay = nextDateWithPhotos {
+                                withAnimation(.snappy) {
+                                    currentDate = nextDay
+                                    selectedPhotoIndex = 0
+                                }
+                            }
+                        }
+                    }
+            )
+            .overlay(alignment: .topTrailing) {
+                if isEditingEntry && displayedPhotoItems.indices.contains(selectedPhotoIndex) {
+                    Button {
+                        removeDisplayedPhoto(at: selectedPhotoIndex)
+                    } label: {
+                        Image(systemName: "trash.circle.fill")
+                            .font(.system(size: 30, weight: .semibold))
+                            .symbolRenderingMode(.palette)
+                            .foregroundStyle(.white, .red.opacity(0.82))
+                            .frame(width: 44, height: 44)
+                    }
+                    .buttonStyle(.plain)
+                    .padding(.top, 14)
+                    .padding(.trailing, 14)
+                    .accessibilityLabel("Remove photo")
                 }
-                .buttonStyle(.plain)
             }
         }
     }
 
     @ViewBuilder
-    private func photoHeroItem(_ photo: UIImage, index: Int) -> some View {
-        ZStack(alignment: .topTrailing) {
-            Button {
-                selectedPhotoIndex = index
+    private func photoHeroItem(_ photo: UIImage, displayIndex: Int) -> some View {
+        Image(uiImage: photo)
+            .resizable()
+            .scaledToFill()
+            .frame(maxWidth: .infinity)
+            .frame(height: photoHeroHeight)
+            .clipped()
+            .contentShape(Rectangle())
+            .onTapGesture {
+                selectedPhotoIndex = displayIndex
                 isPhotoCarouselPresented = true
-            } label: {
-                Image(uiImage: photo)
-                    .resizable()
-                    .scaledToFill()
-                    .frame(maxWidth: .infinity)
-                    .frame(height: photoHeroHeight)
-                    .clipped()
             }
-            .buttonStyle(.plain)
-
-            if isEditingEntry {
-                Button {
-                    removeDraftPhoto(at: index)
-                } label: {
-                    Image(systemName: "xmark.circle.fill")
-                        .font(.title2)
-                        .symbolRenderingMode(.palette)
-                        .foregroundStyle(.white, .black.opacity(0.7))
-                }
-                .padding(12)
-            }
-        }
     }
 
-    private var heroAddPhotosButton: some View {
+    private var addPhotosToolbarButton: some View {
         PhotosPicker(
             selection: $selectedPhotoItems,
             maxSelectionCount: nil,
             matching: .images
         ) {
-            VStack(spacing: 10) {
-                Image(systemName: "photo.badge.plus")
-                    .font(.largeTitle.weight(.semibold))
-                Text("Add Photos")
-                    .font(.headline.weight(.semibold))
-            }
-            .foregroundStyle(tintColor)
-            .frame(maxWidth: .infinity)
-            .frame(height: photoHeroHeight)
-            .background(
-                RoundedRectangle(cornerRadius: 24, style: .continuous)
-                    .fill(tintColor.opacity(0.10))
-            )
-            .overlay {
-                RoundedRectangle(cornerRadius: 24, style: .continuous)
-                    .strokeBorder(tintColor.opacity(0.24), lineWidth: 1)
-            }
+            Image(systemName: "photo.badge.plus")
+                .font(.headline.weight(.semibold))
+                .foregroundStyle(tintColor)
+                .frame(width: 30, height: 30)
         }
         .buttonStyle(.plain)
     }
 
     private var photoHeroHeight: CGFloat {
-        isEditingEntry ? 260 : 340
+        170
     }
 
-    private func removeDraftPhoto(at index: Int) {
-        guard let dayPhotoEntry else { return }
-        guard var draft = entryDrafts[dayPhotoEntry.persistentModelID] else { return }
-        guard draft.photosData.indices.contains(index) else { return }
+    private func removeDraftPhoto(entryID: PersistentIdentifier, photoIndex: Int) {
+        guard var draft = entryDrafts[entryID] else { return }
+        guard draft.photosData.indices.contains(photoIndex) else { return }
 
-        draft.photosData.remove(at: index)
-        entryDrafts[dayPhotoEntry.persistentModelID] = draft
-        selectedPhotoIndex = min(selectedPhotoIndex, max(draft.photosData.count - 1, 0))
+        draft.photosData.remove(at: photoIndex)
+        entryDrafts[entryID] = draft
+        selectedPhotoIndex = min(selectedPhotoIndex, max(displayedPhotoItems.count - 1, 0))
     }
 
     private func loadPhotoData(from items: [PhotosPickerItem]) async -> [Data] {
@@ -1423,38 +1745,6 @@ struct LogDayDetailSheet: View {
     }
 
     @ViewBuilder
-    private func logSectionHeader(for entry: WeightEntry, index: Int) -> some View {
-        HStack(spacing: 12) {
-            Text(entries.count > 1 ? "Log \(index + 1)" : "Log")
-                .font(.headline.weight(.semibold))
-                .foregroundStyle(.primary)
-                .textCase(nil)
-
-            Spacer(minLength: 0)
-
-            if isEditingEntry {
-                headerIconButton(
-                    systemImage: "trash",
-                    tint: .red
-                ) {
-                    pendingDeletionEntryID = entry.persistentModelID
-                }
-            } else {
-                Text(entry.source == .appleHealth ? "Apple Health" : "Scale")
-                    .font(.caption2.weight(.semibold))
-                    .foregroundStyle(.secondary)
-                    .lineLimit(1)
-
-                if entries.count > 1 {
-                    editEntryButton(for: entry)
-                }
-            }
-        }
-        .padding(.top, 4)
-        .padding(.bottom, 6)
-    }
-
-    @ViewBuilder
     private func editEntryButton(for entry: WeightEntry) -> some View {
         if !isEditingEntry {
             headerIconButton(
@@ -1466,49 +1756,57 @@ struct LogDayDetailSheet: View {
         }
     }
 
-    @ViewBuilder
-    private func toolbarPhotoPicker(for entry: WeightEntry) -> some View {
-        PhotosPicker(
-            selection: toolbarPhotoSelectionBinding(for: entry),
-            maxSelectionCount: nil,
-            matching: .images
-        ) {
-            Image(systemName: "photo.badge.plus")
-                .font(.headline.weight(.semibold))
-                .frame(width: 30, height: 30)
-                .foregroundStyle(tintColor)
+    private func editRow(for entry: WeightEntry, index: Int) -> some View {
+        VStack(alignment: .leading, spacing: 10) {
+            HStack(spacing: 12) {
+                Text(entries.count > 1 ? "Weight \(index + 1)" : "Weight")
+                    .font(.headline.weight(.semibold))
+
+                Spacer(minLength: 0)
+
+                headerIconButton(systemImage: "trash", tint: .red) {
+                    pendingDeletionEntryID = entry.persistentModelID
+                }
+            }
+
+            HStack(alignment: .firstTextBaseline, spacing: 4) {
+                TextField("Weight", text: draftWeightBinding(for: entry))
+                    .keyboardType(.decimalPad)
+                    .font(.system(size: 34, weight: .semibold, design: .rounded))
+                    .foregroundStyle(tintColor)
+                    .frame(minWidth: 50)
+
+                Text("lbs")
+                    .font(.subheadline.weight(.semibold))
+                    .foregroundStyle(.secondary)
+            }
+            .fixedSize(horizontal: true, vertical: false)
+
+            HStack(spacing: 6) {
+                DatePicker(
+                    "",
+                    selection: draftDateBinding(for: entry),
+                    displayedComponents: [.date]
+                )
+                .labelsHidden()
+                .scaleEffect(0.8, anchor: .leading)
+                .frame(height: 28)
+
+                DatePicker(
+                    "",
+                    selection: draftTimeBinding(for: entry),
+                    displayedComponents: [.hourAndMinute]
+                )
+                .labelsHidden()
+                .scaleEffect(0.8, anchor: .leading)
+                .frame(height: 28)
+            }
         }
-        .buttonStyle(.plain)
-    }
-
-    private func toolbarPhotoSelectionBinding(for entry: WeightEntry) -> Binding<[PhotosPickerItem]> {
-        Binding(
-            get: { selectedPhotoItems },
-            set: { newItems in
-                guard !newItems.isEmpty else {
-                    pendingDayPhotoEntryID = nil
-                    selectedPhotoItems = []
-                    return
-                }
-
-                pendingDayPhotoEntryID = entry.persistentModelID
-                selectedPhotoItems = newItems
-            }
-        )
-    }
-
-    private func photoSelectionBinding(for entry: WeightEntry) -> Binding<[PhotosPickerItem]> {
-        Binding(
-            get: { selectedPhotoItems },
-            set: { newItems in
-                guard !newItems.isEmpty else {
-                    selectedPhotoItems = []
-                    return
-                }
-
-                beginEditing(entry)
-                selectedPhotoItems = newItems
-            }
+        .padding(18)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .glassEffect(
+            .regular.tint(tintColor.opacity(0.06)),
+            in: RoundedRectangle(cornerRadius: 20, style: .continuous)
         )
     }
 
@@ -1563,69 +1861,175 @@ struct LogDayDetailSheet: View {
         return Calendar.current.date(from: combinedComponents) ?? date
     }
 
-    private func dailyActivityHighlights(summary: DailyActivitySummary) -> some View {
-        HStack(spacing: 12) {
-            activityHighlightCard(
-                systemImage: "shoeprints.fill",
-                title: "Steps",
-                value: summary.stepCount.formatted(),
-                unit: nil,
-                source: activitySourceText(summary.source)
-            )
+    private func compactStatsRow(
+        weight: WeightEntry?,
+        summary: DailyActivitySummary?,
+        workouts: [WorkoutEntry],
+        sleepEntries: [SleepEntry]
+    ) -> some View {
+        let editing = weight.map { isEditingEntry && entryDrafts[$0.persistentModelID] != nil } ?? false
+        return ScrollView(.horizontal, showsIndicators: false) {
+            HStack(spacing: 8) {
+                if let weight {
+                    HStack(spacing: 4) {
+                        Image(systemName: "scalemass.fill")
+                            .font(.caption2)
 
-            activityHighlightCard(
-                systemImage: "flame.fill",
-                title: "Active",
-                value: Int(summary.activeEnergyBurnedKilocalories.rounded()).formatted(),
-                unit: "cal",
-                source: activitySourceText(summary.source)
-            )
-        }
-        .padding(.vertical, 4)
-    }
+                        if editing {
+                            TextField("Weight", text: draftWeightBinding(for: weight))
+                                .keyboardType(.decimalPad)
+                                .font(.subheadline.weight(.semibold))
+                                .fixedSize()
+                        } else {
+                            Text(String(format: "%.1f", weight.weight))
+                                .font(.subheadline.weight(.semibold))
+                                .contentTransition(.numericText())
+                        }
 
-    private func activityHighlightCard(systemImage: String, title: String, value: String, unit: String?, source: String) -> some View {
-        VStack(alignment: .leading, spacing: 10) {
-            HStack(spacing: 10) {
-                Label(title, systemImage: systemImage)
-                    .font(.caption.weight(.semibold))
-                    .foregroundStyle(.secondary)
+                        Text("lbs")
+                            .font(.caption.weight(.medium))
+                    }
+                    .foregroundStyle(tintColor)
+                    .padding(.horizontal, 12)
+                    .padding(.vertical, 8)
+                    .background(
+                        Color(uiColor: .systemBackground).opacity(0.8),
+                        in: Capsule()
+                    )
+                    .overlay {
+                        Capsule()
+                            .stroke(Color.primary.opacity(0.12), lineWidth: 0.5)
+                    }
+                    .shadow(color: Color.black.opacity(0.04), radius: 4, x: 0, y: 2)
+                }
 
-                Spacer(minLength: 8)
-
-                Text(source)
-                    .font(.caption2.weight(.semibold))
-                    .foregroundStyle(.secondary)
-                    .lineLimit(1)
-            }
-
-            HStack(alignment: .firstTextBaseline, spacing: 4) {
-                Text(value)
-                    .font(.system(size: 30, weight: .semibold, design: .rounded))
+                if let summary, summary.stepCount > 0 {
+                    Label {
+                        Text(summary.stepCount.formatted())
+                            .font(.subheadline.weight(.semibold))
+                    } icon: {
+                        Image(systemName: "shoeprints.fill")
+                            .font(.caption2)
+                    }
                     .foregroundStyle(.primary)
-                    .lineLimit(1)
-                    .minimumScaleFactor(0.72)
+                    .padding(.horizontal, 12)
+                    .padding(.vertical, 8)
+                    .background(
+                        Color(uiColor: .systemBackground).opacity(0.8),
+                        in: Capsule()
+                    )
+                    .overlay {
+                        Capsule()
+                            .stroke(Color.primary.opacity(0.12), lineWidth: 0.5)
+                    }
+                    .shadow(color: Color.black.opacity(0.04), radius: 4, x: 0, y: 2)
+                }
 
-                if let unit {
-                    Text(unit)
-                        .font(.subheadline.weight(.semibold))
-                        .foregroundStyle(.secondary)
+                if let summary, summary.activeEnergyBurnedKilocalories > 0 {
+                    Label {
+                        Text("\(Int(summary.activeEnergyBurnedKilocalories.rounded())) cal")
+                            .font(.subheadline.weight(.semibold))
+                    } icon: {
+                        Image(systemName: "flame.fill")
+                            .font(.caption2)
+                    }
+                    .foregroundStyle(.primary)
+                    .padding(.horizontal, 12)
+                    .padding(.vertical, 8)
+                    .background(
+                        Color(uiColor: .systemBackground).opacity(0.8),
+                        in: Capsule()
+                    )
+                    .overlay {
+                        Capsule()
+                            .stroke(Color.primary.opacity(0.12), lineWidth: 0.5)
+                    }
+                    .shadow(color: Color.black.opacity(0.04), radius: 4, x: 0, y: 2)
+                }
+
+                if !workouts.isEmpty {
+                    Label {
+                        Text("\(workouts.count) " + (workouts.count == 1 ? "workout" : "workouts"))
+                            .font(.subheadline.weight(.semibold))
+                    } icon: {
+                        Image(systemName: "figure.run")
+                            .font(.caption2)
+                    }
+                    .foregroundStyle(.primary)
+                    .padding(.horizontal, 12)
+                    .padding(.vertical, 8)
+                    .background(
+                        Color(uiColor: .systemBackground).opacity(0.8),
+                        in: Capsule()
+                    )
+                    .overlay {
+                        Capsule()
+                            .stroke(Color.primary.opacity(0.12), lineWidth: 0.5)
+                    }
+                    .shadow(color: Color.black.opacity(0.04), radius: 4, x: 0, y: 2)
+                }
+
+                let sleepDuration = sleepEntries.map(\.duration).reduce(0, +)
+                if sleepDuration > 0 {
+                    Label {
+                        Text(sleepText(sleepDuration))
+                            .font(.subheadline.weight(.semibold))
+                    } icon: {
+                        Image(systemName: "bed.double.fill")
+                            .font(.caption2)
+                    }
+                    .foregroundStyle(.primary)
+                    .padding(.horizontal, 12)
+                    .padding(.vertical, 8)
+                    .background(
+                        Color(uiColor: .systemBackground).opacity(0.8),
+                        in: Capsule()
+                    )
+                    .overlay {
+                        Capsule()
+                            .stroke(Color.primary.opacity(0.12), lineWidth: 0.5)
+                    }
+                    .shadow(color: Color.black.opacity(0.04), radius: 4, x: 0, y: 2)
                 }
             }
+            .padding(.horizontal, 4)
         }
         .frame(maxWidth: .infinity, alignment: .leading)
-        .padding(.horizontal, 14)
-        .padding(.vertical, 12)
-        .glassEffect(
-            .regular.tint(tintColor.opacity(0.06)),
-            in: RoundedRectangle(cornerRadius: 14, style: .continuous)
-        )
+    }
+
+    private func sleepText(_ duration: TimeInterval) -> String {
+        let totalMinutes = max(Int(duration / 60), 0)
+        let hours = totalMinutes / 60
+        let minutes = totalMinutes % 60
+
+        if hours > 0 && minutes > 0 {
+            return "\(hours)h \(minutes)m"
+        }
+        if hours > 0 {
+            return "\(hours)h"
+        }
+        return "\(minutes)m"
     }
 
     private func activitySourceText(_ source: DailyActivitySource) -> String {
         switch source {
         case .appleHealth:
             return "Apple Health"
+        }
+    }
+
+    private func weightSourceText(_ source: WeightSource) -> String {
+        switch source {
+        case .appleHealth:
+            return "Apple Health"
+        case .manual:
+            return "Scale"
+        }
+    }
+
+    private func sourceContextMenuItem(sourceText: String) -> some View {
+        Button { } label: {
+            Label("From \(sourceText)", systemImage: "info.circle")
         }
     }
 
@@ -1640,7 +2044,7 @@ struct LogDayDetailSheet: View {
         if prominent {
             Button(action: action) {
                 Image(systemName: systemImage)
-                    .font(.headline.weight(.semibold))
+                    .font(.title3.weight(.semibold))
                     .frame(width: 30, height: 30)
             }
             .buttonStyle(.glassProminent)
@@ -1649,7 +2053,7 @@ struct LogDayDetailSheet: View {
         } else {
             Button(action: action) {
                 Image(systemName: systemImage)
-                    .font(.headline.weight(.semibold))
+                    .font(.title3.weight(.semibold))
                     .frame(width: 30, height: 30)
             }
             .buttonStyle(.plain)
@@ -1657,38 +2061,274 @@ struct LogDayDetailSheet: View {
             .disabled(disabled)
         }
     }
+
+    private func goToPreviousDay() {
+        if let prevDay = previousDateWithPhotos {
+            currentDate = prevDay
+        }
+    }
+
+    private func goToNextDay() {
+        if let nextDay = nextDateWithPhotos {
+            currentDate = nextDay
+        }
+    }
 }
 
 struct LogPhotoCarouselView: View {
-    let photos: [UIImage]
+    @Query(sort: \WeightEntry.timestamp, order: .reverse) private var allEntries: [WeightEntry]
+    @Query(sort: \DailyActivitySummary.date, order: .reverse) private var allDailyActivitySummaries: [DailyActivitySummary]
+    @Query(sort: \WorkoutEntry.timestamp, order: .reverse) private var allWorkouts: [WorkoutEntry]
+    @Query(sort: \SleepEntry.endDate, order: .reverse) private var allSleepEntries: [SleepEntry]
+
+    let initialPhotos: [UIImage]
     let initialIndex: Int
     let canEditCurrentPhoto: Bool
     let onEditCurrentPhoto: (Int) -> Void
+    var canRemoveCurrentPhoto = false
+    var onRemoveCurrentPhoto: (Int) -> Void = { _ in }
+    var weightEntry: WeightEntry?
+    var activitySummary: DailyActivitySummary?
+    let tintColor: Color
+    let date: Date
 
     @Environment(\.dismiss) private var dismiss
     @State private var selectedIndex = 0
+    @State private var dateState: Date
+    @State private var photosState: [UIImage]
+    @State private var dragStartIndex: Int? = nil
+
+    init(
+        photos: [UIImage],
+        initialIndex: Int,
+        canEditCurrentPhoto: Bool,
+        onEditCurrentPhoto: @escaping (Int) -> Void,
+        canRemoveCurrentPhoto: Bool = false,
+        onRemoveCurrentPhoto: @escaping (Int) -> Void = { _ in },
+        weightEntry: WeightEntry? = nil,
+        activitySummary: DailyActivitySummary? = nil,
+        tintColor: Color = .blue,
+        date: Date = Date()
+    ) {
+        self.initialPhotos = photos
+        self.initialIndex = initialIndex
+        self.canEditCurrentPhoto = canEditCurrentPhoto
+        self.onEditCurrentPhoto = onEditCurrentPhoto
+        self.canRemoveCurrentPhoto = canRemoveCurrentPhoto
+        self.onRemoveCurrentPhoto = onRemoveCurrentPhoto
+        self.weightEntry = weightEntry
+        self.activitySummary = activitySummary
+        self.tintColor = tintColor
+        self.date = date
+        _dateState = State(initialValue: date)
+        _photosState = State(initialValue: photos)
+    }
+
+    private var formattedDate: String {
+        let calendar = Calendar.current
+        if calendar.isDateInToday(dateState) {
+            return "Today"
+        }
+        let dayNameFormatter = DateFormatter()
+        dayNameFormatter.dateFormat = "EEEE"
+        if let daysAgo = calendar.dateComponents([.day], from: dateState, to: Date()).day,
+           daysAgo >= 1 && daysAgo < 7 {
+            return dayNameFormatter.string(from: dateState)
+        }
+        let formatter = DateFormatter()
+        formatter.dateFormat = "MMM d, yyyy"
+        return formatter.string(from: dateState)
+    }
+
+    private var datesWithPhotos: [Date] {
+        let calendar = Calendar.current
+        let uniqueDays = Set(allEntries.filter { $0.hasPhotos }.map { calendar.startOfDay(for: $0.timestamp) })
+        return uniqueDays.sorted()
+    }
+
+    private var previousDateWithPhotos: Date? {
+        let calendar = Calendar.current
+        let currentDay = calendar.startOfDay(for: dateState)
+        return datesWithPhotos.last(where: { $0 < currentDay })
+    }
+
+    private var nextDateWithPhotos: Date? {
+        let calendar = Calendar.current
+        let currentDay = calendar.startOfDay(for: dateState)
+        return datesWithPhotos.first(where: { $0 > currentDay })
+    }
+
+    private var currentWeightEntry: WeightEntry? {
+        let calendar = Calendar.current
+        let targetDay = calendar.startOfDay(for: dateState)
+        let initialDay = calendar.startOfDay(for: date)
+        if calendar.isDate(targetDay, inSameDayAs: initialDay) {
+            return weightEntry
+        }
+        return allEntries.first { calendar.isDate($0.timestamp, inSameDayAs: targetDay) }
+    }
+
+    private var currentActivitySummary: DailyActivitySummary? {
+        let calendar = Calendar.current
+        let targetDay = calendar.startOfDay(for: dateState)
+        let initialDay = calendar.startOfDay(for: date)
+        if calendar.isDate(targetDay, inSameDayAs: initialDay) {
+            return activitySummary
+        }
+        return allDailyActivitySummaries.first { calendar.isDate($0.date, inSameDayAs: targetDay) }
+    }
+
+    private var currentWorkouts: [WorkoutEntry] {
+        let calendar = Calendar.current
+        let targetDay = calendar.startOfDay(for: dateState)
+        return allWorkouts.filter { calendar.isDate($0.timestamp, inSameDayAs: targetDay) }
+    }
+
+    private var currentSleepEntries: [SleepEntry] {
+        let calendar = Calendar.current
+        let targetDay = calendar.startOfDay(for: dateState)
+        return allSleepEntries.filter { calendar.isDate($0.startDate, inSameDayAs: targetDay) }
+    }
+
+    private func sleepText(_ duration: TimeInterval) -> String {
+        let totalMinutes = max(Int(duration / 60), 0)
+        let hours = totalMinutes / 60
+        let minutes = totalMinutes % 60
+
+        if hours > 0 && minutes > 0 {
+            return "\(hours)h \(minutes)m"
+        }
+        if hours > 0 {
+            return "\(hours)h"
+        }
+        return "\(minutes)m"
+    }
+
+    private func navigateTo(newDate: Date, landingAtRightmost: Bool = false) {
+        let calendar = Calendar.current
+        let targetDay = calendar.startOfDay(for: newDate)
+        let initialDay = calendar.startOfDay(for: date)
+        
+        dateState = newDate
+        
+        if calendar.isDate(targetDay, inSameDayAs: initialDay) {
+            photosState = initialPhotos
+        } else {
+            let dayEntries = allEntries.filter { calendar.isDate($0.timestamp, inSameDayAs: targetDay) }
+            photosState = dayEntries
+                .sorted(by: { $0.timestamp > $1.timestamp })
+                .flatMap(\.photosData)
+                .compactMap(UIImage.init(data:))
+        }
+        
+        selectedIndex = landingAtRightmost ? max(photosState.count - 1, 0) : 0
+    }
+
+    @ViewBuilder
+    private func photoTabView(photo: UIImage, index: Int) -> some View {
+        GeometryReader { proxy in
+            ZStack(alignment: .topLeading) {
+                ZoomableScrollView {
+                    Image(uiImage: photo)
+                        .resizable()
+                        .scaledToFit()
+                        .frame(width: proxy.size.width, height: proxy.size.height)
+                }
+                .background(Color(uiColor: .systemBackground))
+
+                if canRemoveCurrentPhoto {
+                    fullScreenRemoveButton(for: index)
+                        .position(fullScreenRemoveButtonPosition(for: photo, in: proxy.size))
+                }
+            }
+        }
+    }
+
+    private var carouselPhotosTab: some View {
+        TabView(selection: $selectedIndex) {
+            ForEach(Array(photosState.enumerated()), id: \.offset) { index, photo in
+                photoTabView(photo: photo, index: index)
+                    .tag(index)
+            }
+        }
+        .tabViewStyle(.page(indexDisplayMode: .always))
+        .id(dateState)
+        .simultaneousGesture(
+            DragGesture()
+                .onChanged { value in
+                    if dragStartIndex == nil {
+                        dragStartIndex = selectedIndex
+                    }
+                }
+                .onEnded { value in
+                    defer { dragStartIndex = nil }
+                    guard let startIndex = dragStartIndex else { return }
+                    let threshold: CGFloat = 50
+                    if startIndex == 0, value.translation.width > threshold {
+                        if let prevDay = previousDateWithPhotos {
+                            withAnimation(.snappy) { navigateTo(newDate: prevDay, landingAtRightmost: true) }
+                        }
+                    }
+                    if startIndex == photosState.count - 1, value.translation.width < -threshold {
+                        if let nextDay = nextDateWithPhotos {
+                            withAnimation(.snappy) { navigateTo(newDate: nextDay, landingAtRightmost: false) }
+                        }
+                    }
+                }
+        )
+    }
+
+    private var toolbarPrincipalView: some View {
+        HStack(spacing: 8) {
+            Button {
+                if let prevDay = previousDateWithPhotos {
+                    withAnimation(.snappy) { navigateTo(newDate: prevDay, landingAtRightmost: true) }
+                }
+            } label: {
+                Image(systemName: "chevron.left")
+                    .font(.footnote.weight(.bold))
+            }
+            .buttonStyle(.plain)
+            .foregroundStyle(previousDateWithPhotos == nil ? Color.secondary.opacity(0.15) : Color.secondary.opacity(0.5))
+            .disabled(previousDateWithPhotos == nil)
+
+            Text(formattedDate)
+                .font(.headline.weight(.semibold))
+                .lineLimit(1)
+
+            Button {
+                if let nextDay = nextDateWithPhotos {
+                    withAnimation(.snappy) { navigateTo(newDate: nextDay, landingAtRightmost: false) }
+                }
+            } label: {
+                Image(systemName: "chevron.right")
+                    .font(.footnote.weight(.bold))
+            }
+            .buttonStyle(.plain)
+            .foregroundStyle(nextDateWithPhotos == nil ? Color.secondary.opacity(0.15) : Color.secondary.opacity(0.5))
+            .disabled(nextDateWithPhotos == nil)
+        }
+    }
 
     var body: some View {
         NavigationStack {
-            ZStack {
-                Color.black
+            ZStack(alignment: .top) {
+                Color(uiColor: .systemBackground)
                     .ignoresSafeArea()
 
-                TabView(selection: $selectedIndex) {
-                    ForEach(Array(photos.enumerated()), id: \.offset) { index, photo in
-                        GeometryReader { proxy in
-                            Image(uiImage: photo)
-                                .resizable()
-                                .scaledToFit()
-                                .frame(width: proxy.size.width, height: proxy.size.height)
-                                .background(Color.black)
-                        }
-                        .tag(index)
-                    }
+                carouselPhotosTab
+
+                if currentWeightEntry != nil || currentActivitySummary != nil || !currentWorkouts.isEmpty || !currentSleepEntries.isEmpty {
+                    carouselStatsRow
+                        .padding(.top, -2)
                 }
-                .tabViewStyle(.page(indexDisplayMode: .always))
             }
+            .tint(tintColor)
             .toolbar {
+                ToolbarItem(placement: .principal) {
+                    toolbarPrincipalView
+                }
+
                 ToolbarItem(placement: .topBarTrailing) {
                     Button("Done") {
                         dismiss()
@@ -1698,96 +2338,557 @@ struct LogPhotoCarouselView: View {
             }
         }
         .onAppear {
-            selectedIndex = min(max(initialIndex, 0), max(photos.count - 1, 0))
+            selectedIndex = min(max(initialIndex, 0), max(photosState.count - 1, 0))
+        }
+        .onChange(of: photosState.count) { _, count in
+            selectedIndex = min(selectedIndex, max(count - 1, 0))
+        }
+    }
+
+    @ViewBuilder
+    private var carouselStatsRow: some View {
+        ScrollView(.horizontal, showsIndicators: false) {
+            HStack(spacing: 8) {
+                if let weightEntry = currentWeightEntry {
+                    HStack(spacing: 4) {
+                        Image(systemName: "scalemass.fill")
+                            .font(.caption2)
+
+                        Text(String(format: "%.1f", weightEntry.weight))
+                            .font(.subheadline.weight(.semibold))
+
+                        Text("lbs")
+                            .font(.caption.weight(.medium))
+                    }
+                    .foregroundStyle(tintColor)
+                    .padding(.horizontal, 12)
+                    .padding(.vertical, 8)
+                    .background(
+                        Color(uiColor: .systemBackground).opacity(0.8),
+                        in: Capsule()
+                    )
+                    .overlay {
+                        Capsule()
+                            .stroke(Color.primary.opacity(0.12), lineWidth: 0.5)
+                    }
+                    .shadow(color: Color.black.opacity(0.04), radius: 4, x: 0, y: 2)
+                }
+
+                if let activitySummary = currentActivitySummary, activitySummary.stepCount > 0 {
+                    Label {
+                        Text(activitySummary.stepCount.formatted())
+                            .font(.subheadline.weight(.semibold))
+                    } icon: {
+                        Image(systemName: "shoeprints.fill")
+                            .font(.caption2)
+                    }
+                    .foregroundStyle(.primary)
+                    .padding(.horizontal, 12)
+                    .padding(.vertical, 8)
+                    .background(
+                        Color(uiColor: .systemBackground).opacity(0.8),
+                        in: Capsule()
+                    )
+                    .overlay {
+                        Capsule()
+                            .stroke(Color.primary.opacity(0.12), lineWidth: 0.5)
+                    }
+                    .shadow(color: Color.black.opacity(0.04), radius: 4, x: 0, y: 2)
+                }
+
+                if let activitySummary = currentActivitySummary, activitySummary.activeEnergyBurnedKilocalories > 0 {
+                    Label {
+                        Text("\(Int(activitySummary.activeEnergyBurnedKilocalories.rounded())) cal")
+                            .font(.subheadline.weight(.semibold))
+                    } icon: {
+                        Image(systemName: "flame.fill")
+                            .font(.caption2)
+                    }
+                    .foregroundStyle(.primary)
+                    .padding(.horizontal, 12)
+                    .padding(.vertical, 8)
+                    .background(
+                        Color(uiColor: .systemBackground).opacity(0.8),
+                        in: Capsule()
+                    )
+                    .overlay {
+                        Capsule()
+                            .stroke(Color.primary.opacity(0.12), lineWidth: 0.5)
+                    }
+                    .shadow(color: Color.black.opacity(0.04), radius: 4, x: 0, y: 2)
+                }
+
+                if !currentWorkouts.isEmpty {
+                    Label {
+                        Text("\(currentWorkouts.count) " + (currentWorkouts.count == 1 ? "workout" : "workouts"))
+                            .font(.subheadline.weight(.semibold))
+                    } icon: {
+                        Image(systemName: "figure.run")
+                            .font(.caption2)
+                    }
+                    .foregroundStyle(.primary)
+                    .padding(.horizontal, 12)
+                    .padding(.vertical, 8)
+                    .background(
+                        Color(uiColor: .systemBackground).opacity(0.8),
+                        in: Capsule()
+                    )
+                    .overlay {
+                        Capsule()
+                            .stroke(Color.primary.opacity(0.12), lineWidth: 0.5)
+                    }
+                    .shadow(color: Color.black.opacity(0.04), radius: 4, x: 0, y: 2)
+                }
+
+                let sleepDuration = currentSleepEntries.map(\.duration).reduce(0, +)
+                if sleepDuration > 0 {
+                    Label {
+                        Text(sleepText(sleepDuration))
+                            .font(.subheadline.weight(.semibold))
+                    } icon: {
+                        Image(systemName: "bed.double.fill")
+                            .font(.caption2)
+                    }
+                    .foregroundStyle(.primary)
+                    .padding(.horizontal, 12)
+                    .padding(.vertical, 8)
+                    .background(
+                        Color(uiColor: .systemBackground).opacity(0.8),
+                        in: Capsule()
+                    )
+                    .overlay {
+                        Capsule()
+                            .stroke(Color.primary.opacity(0.12), lineWidth: 0.5)
+                    }
+                    .shadow(color: Color.black.opacity(0.04), radius: 4, x: 0, y: 2)
+                }
+            }
+            .padding(.horizontal, 16)
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+    }
+
+    private func fullScreenRemoveButton(for index: Int) -> some View {
+        Button {
+            onRemoveCurrentPhoto(index)
+            selectedIndex = min(selectedIndex, max(photosState.count - 2, 0))
+        } label: {
+            Image(systemName: "trash.circle.fill")
+                .font(.system(size: 30, weight: .semibold))
+                .symbolRenderingMode(.palette)
+                .foregroundStyle(.white, .red.opacity(0.82))
+                .frame(width: 44, height: 44)
+        }
+        .buttonStyle(.plain)
+        .accessibilityLabel("Remove photo")
+    }
+
+    private func fullScreenRemoveButtonPosition(for photo: UIImage, in containerSize: CGSize) -> CGPoint {
+        let imageSize = photo.size
+        guard imageSize.width > 0, imageSize.height > 0, containerSize.width > 0, containerSize.height > 0 else {
+            return CGPoint(x: containerSize.width - 40, y: 40)
+        }
+
+        let scale = min(containerSize.width / imageSize.width, containerSize.height / imageSize.height)
+        let fittedSize = CGSize(width: imageSize.width * scale, height: imageSize.height * scale)
+        let origin = CGPoint(
+            x: (containerSize.width - fittedSize.width) / 2,
+            y: (containerSize.height - fittedSize.height) / 2
+        )
+
+        return CGPoint(
+            x: origin.x + fittedSize.width - 22,
+            y: origin.y + 22
+        )
+    }
+}
+
+struct ZoomableScrollView<Content: View>: UIViewRepresentable {
+    private var content: Content
+
+    init(@ViewBuilder content: () -> Content) {
+        self.content = content()
+    }
+
+    func makeUIView(context: Context) -> UIScrollView {
+        let scrollView = UIScrollView()
+        scrollView.delegate = context.coordinator
+        scrollView.maximumZoomScale = 4.0
+        scrollView.minimumZoomScale = 1.0
+        scrollView.showsHorizontalScrollIndicator = false
+        scrollView.showsVerticalScrollIndicator = false
+        scrollView.bouncesZoom = true
+        scrollView.backgroundColor = .clear
+
+        let hostedController = UIHostingController(rootView: content)
+        hostedController.view.translatesAutoresizingMaskIntoConstraints = false
+        hostedController.view.backgroundColor = .clear
+        scrollView.addSubview(hostedController.view)
+
+        NSLayoutConstraint.activate([
+            hostedController.view.leadingAnchor.constraint(equalTo: scrollView.contentLayoutGuide.leadingAnchor),
+            hostedController.view.trailingAnchor.constraint(equalTo: scrollView.contentLayoutGuide.trailingAnchor),
+            hostedController.view.topAnchor.constraint(equalTo: scrollView.contentLayoutGuide.topAnchor),
+            hostedController.view.bottomAnchor.constraint(equalTo: scrollView.contentLayoutGuide.bottomAnchor),
+            hostedController.view.widthAnchor.constraint(equalTo: scrollView.frameLayoutGuide.widthAnchor),
+            hostedController.view.heightAnchor.constraint(equalTo: scrollView.frameLayoutGuide.heightAnchor)
+        ])
+
+        return scrollView
+    }
+
+    func updateUIView(_ uiView: UIScrollView, context: Context) {}
+
+    func makeCoordinator() -> Coordinator {
+        Coordinator()
+    }
+
+    class Coordinator: NSObject, UIScrollViewDelegate {
+        func viewForZooming(in scrollView: UIScrollView) -> UIView? {
+            return scrollView.subviews.first
         }
     }
 }
 
-struct WorkoutSummaryRow: View {
-    let workout: WorkoutEntry
+struct WorkoutSummaryCard: View {
+    let workouts: [WorkoutEntry]
+    let tintColor: Color
 
-    private var activityType: HKWorkoutActivityType {
-        HKWorkoutActivityType(rawValue: workout.activityTypeRawValue) ?? .other
+    @State private var isExpanded = false
+
+    private var sortedWorkouts: [WorkoutEntry] {
+        workouts.sorted { $0.timestamp < $1.timestamp }
+    }
+
+    private var totalDuration: TimeInterval {
+        workouts.reduce(0) { $0 + $1.duration }
+    }
+
+    private var totalCalories: Double {
+        workouts.compactMap(\.energyBurnedKilocalories).reduce(0, +)
+    }
+
+    private var timelineBounds: (start: Date, end: Date)? {
+        let sorted = sortedWorkouts
+        guard let first = sorted.first,
+              let last = sorted.last else { return nil }
+        return (first.timestamp, last.timestamp.addingTimeInterval(last.duration))
     }
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 10) {
-            HStack(spacing: 10) {
-                Label(activityType.displayName, systemImage: "figure.run")
-                    .font(.caption.weight(.semibold))
-                    .foregroundStyle(.secondary)
+        VStack(alignment: .leading, spacing: 12) {
+            HStack(alignment: .firstTextBaseline) {
+                Label(
+                    workouts.count == 1 ? activityName(for: workouts[0]) : "\(workouts.count) Workouts",
+                    systemImage: workouts.count == 1 ? activitySymbol(for: workouts[0]) : "figure.run"
+                )
+                .font(.caption.weight(.semibold))
+                .foregroundStyle(.secondary)
 
-                Spacer(minLength: 8)
+                Spacer(minLength: 4)
 
-                Text(sourceText)
-                    .font(.caption2.weight(.semibold))
-                    .foregroundStyle(.secondary)
-                    .lineLimit(1)
+                if !workouts.isEmpty {
+                    Text(totalDurationText)
+                        .font(.subheadline.weight(.bold).monospacedDigit())
+                        .foregroundStyle(.primary)
+                        .lineLimit(1)
+                }
             }
 
-            HStack(alignment: .firstTextBaseline, spacing: 8) {
-                Text(durationText)
-                    .font(.system(size: 34, weight: .semibold, design: .rounded))
-                    .foregroundStyle(.primary)
-                    .lineLimit(1)
-                    .minimumScaleFactor(0.72)
-
-                if let metricText {
-                    Text(metricText)
-                        .font(.caption.weight(.semibold))
-                        .foregroundStyle(.secondary)
-                        .lineLimit(1)
-                        .minimumScaleFactor(0.75)
-                }
-
-                Spacer(minLength: 8)
-
-                Text(timeRangeText)
-                    .font(.caption.weight(.medium))
+            if workouts.isEmpty {
+                Text("No data")
+                    .font(.system(size: 30, weight: .semibold, design: .rounded))
                     .foregroundStyle(.secondary)
-                    .lineLimit(1)
-                    .minimumScaleFactor(0.75)
+            } else {
+                Button {
+                    if workouts.count > 1 {
+                        withAnimation(.snappy(duration: 0.25)) {
+                            isExpanded.toggle()
+                        }
+                    }
+                } label: {
+                    VStack(alignment: .leading, spacing: 12) {
+                        if let bounds = timelineBounds {
+                            workoutTimeline(bounds: bounds)
+                        }
+
+                        if totalCalories > 0 {
+                            Text("\(Int(totalCalories.rounded())) cal burned")
+                                .font(.caption.weight(.medium))
+                                .foregroundStyle(.secondary)
+                        }
+                    }
+                }
+                .buttonStyle(.plain)
+
+                if isExpanded {
+                    Divider()
+
+                    ScrollView(.horizontal, showsIndicators: false) {
+                        HStack(spacing: 12) {
+                            ForEach(sortedWorkouts, id: \.persistentModelID) { workout in
+                                workoutDetailCard(workout)
+                            }
+                        }
+                    }
+                }
             }
         }
         .padding(.vertical, 2)
-    }
-
-    private var sourceText: String {
-        switch workout.source {
-        case .appleHealth:
-            return "Apple Health"
+        .contextMenu {
+            Button { } label: {
+                Label("From Apple Health", systemImage: "info.circle")
+            }
         }
     }
 
-    private var timeRangeText: String {
-        let endDate = workout.timestamp.addingTimeInterval(workout.duration)
-        return "\(timeText(for: workout.timestamp))-\(timeText(for: endDate))"
+    private func workoutTimeline(bounds: (start: Date, end: Date)) -> some View {
+        VStack(spacing: 6) {
+            GeometryReader { proxy in
+                let totalSpan = bounds.end.timeIntervalSince(bounds.start)
+
+                ZStack(alignment: .leading) {
+                    RoundedRectangle(cornerRadius: 6, style: .continuous)
+                        .fill(tintColor.opacity(0.08))
+
+                    ForEach(sortedWorkouts, id: \.persistentModelID) { workout in
+                        let activityType = HKWorkoutActivityType(rawValue: workout.activityTypeRawValue) ?? .other
+                        let startFraction = totalSpan > 0
+                            ? workout.timestamp.timeIntervalSince(bounds.start) / totalSpan
+                            : 0
+                        let widthFraction = totalSpan > 0
+                            ? workout.duration / totalSpan
+                            : 1
+                        let barWidth = max(widthFraction * proxy.size.width, 4)
+
+                        ZStack {
+                            RoundedRectangle(cornerRadius: 5, style: .continuous)
+                                .fill(tintColor.opacity(0.55))
+
+                            if barWidth >= 20 {
+                                Image(systemName: activityType.symbolName)
+                                    .font(.system(size: 12, weight: .semibold))
+                                    .foregroundStyle(.white.opacity(0.7))
+                            }
+                        }
+                        .frame(width: barWidth)
+                        .offset(x: startFraction * proxy.size.width)
+                    }
+                }
+            }
+            .frame(height: 28)
+
+            HStack {
+                Text(bounds.start, format: .dateTime.hour().minute())
+                Spacer()
+                Text(bounds.end, format: .dateTime.hour().minute())
+            }
+            .font(.caption2.weight(.medium))
+            .foregroundStyle(.secondary)
+        }
     }
 
-    private func timeText(for date: Date) -> String {
-        date.formatted(.dateTime.hour().minute())
+    private func workoutDetailCard(_ workout: WorkoutEntry) -> some View {
+        let activityType = HKWorkoutActivityType(rawValue: workout.activityTypeRawValue) ?? .other
+
+        return VStack(alignment: .leading, spacing: 6) {
+            Label(activityType.displayName, systemImage: activityType.symbolName)
+                .font(.caption.weight(.semibold))
+                .foregroundStyle(.secondary)
+
+            Text(workoutDurationText(workout.duration))
+                .font(.system(size: 22, weight: .semibold, design: .rounded))
+                .foregroundStyle(.primary)
+                .lineLimit(1)
+
+            HStack(spacing: 4) {
+                Text(workout.timestamp, format: .dateTime.hour().minute())
+
+                if let cal = workout.energyBurnedKilocalories, cal > 0 {
+                    Text("•")
+                    Text("\(Int(cal.rounded())) cal")
+                }
+            }
+            .font(.caption2.weight(.medium))
+            .foregroundStyle(.secondary)
+            .lineLimit(1)
+        }
+        .padding(12)
+        .frame(minWidth: 120, alignment: .leading)
+        .background(tintColor.opacity(0.06), in: RoundedRectangle(cornerRadius: 12, style: .continuous))
     }
 
-    private var durationText: String {
+    private func activityName(for workout: WorkoutEntry) -> String {
+        (HKWorkoutActivityType(rawValue: workout.activityTypeRawValue) ?? .other).displayName
+    }
+
+    private func activitySymbol(for workout: WorkoutEntry) -> String {
+        (HKWorkoutActivityType(rawValue: workout.activityTypeRawValue) ?? .other).symbolName
+    }
+
+    private var totalDurationText: String {
+        workoutDurationText(totalDuration)
+    }
+
+    private func workoutDurationText(_ duration: TimeInterval) -> String {
         let formatter = DateComponentsFormatter()
-        formatter.allowedUnits = workout.duration >= 3600 ? [.hour, .minute] : [.minute]
+        formatter.allowedUnits = duration >= 3600 ? [.hour, .minute] : [.minute]
         formatter.unitsStyle = .abbreviated
         formatter.zeroFormattingBehavior = .dropAll
-        return formatter.string(from: workout.duration) ?? "\(Int(workout.duration / 60)) min"
+        return formatter.string(from: duration) ?? "\(Int(duration / 60)) min"
+    }
+}
+
+struct SleepSummaryCard: View {
+    let sleepEntries: [SleepEntry]
+    let tintColor: Color
+
+    private var totalDuration: TimeInterval {
+        sleepEntries.reduce(0) { $0 + $1.duration }
     }
 
-    private var metricText: String? {
-        var parts: [String] = []
+    private var sortedEntries: [SleepEntry] {
+        sleepEntries.sorted { $0.startDate < $1.startDate }
+    }
 
-        if let distanceMiles = workout.distanceMiles, distanceMiles > 0 {
-            parts.append(String(format: "%.1f mi", distanceMiles))
+    private var timelineBounds: (start: Date, end: Date)? {
+        let sorted = sortedEntries
+        guard let earliest = sorted.first?.startDate,
+              let latest = sorted.last?.endDate else { return nil }
+        return (earliest, latest)
+    }
+
+    private var hasStageData: Bool {
+        sleepEntries.contains { $0.stage != .unspecified }
+    }
+
+    private var visibleStages: [SleepStage] {
+        let present = Set(sleepEntries.map(\.stage))
+        return [.deep, .core, .rem, .unspecified].filter { present.contains($0) }
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            HStack(alignment: .firstTextBaseline) {
+                Label("Sleep", systemImage: "bed.double.fill")
+                    .font(.caption.weight(.semibold))
+                    .foregroundStyle(.secondary)
+
+                Spacer(minLength: 4)
+
+                if !sleepEntries.isEmpty {
+                    Text(totalDurationText)
+                        .font(.subheadline.weight(.bold).monospacedDigit())
+                        .foregroundStyle(.primary)
+                        .lineLimit(1)
+                }
+            }
+
+            if sleepEntries.isEmpty {
+                Text("No data")
+                    .font(.system(size: 30, weight: .semibold, design: .rounded))
+                    .foregroundStyle(.secondary)
+            } else if let bounds = timelineBounds {
+                sleepTimeline(bounds: bounds)
+
+                if hasStageData {
+                    stageLegend
+                }
+            }
         }
-
-        if let energyBurnedKilocalories = workout.energyBurnedKilocalories, energyBurnedKilocalories > 0 {
-            parts.append("\(Int(energyBurnedKilocalories.rounded())) cal")
+        .padding(.vertical, 2)
+        .contextMenu {
+            Button { } label: {
+                Label("From Apple Health", systemImage: "info.circle")
+            }
         }
+    }
 
-        return parts.isEmpty ? nil : parts.joined(separator: " • ")
+    private func sleepTimeline(bounds: (start: Date, end: Date)) -> some View {
+        VStack(spacing: 6) {
+            GeometryReader { proxy in
+                let totalSpan = bounds.end.timeIntervalSince(bounds.start)
+
+                ZStack(alignment: .leading) {
+                    RoundedRectangle(cornerRadius: 6, style: .continuous)
+                        .fill(tintColor.opacity(0.08))
+
+                    ForEach(sortedEntries, id: \.persistentModelID) { entry in
+                        let startFraction = totalSpan > 0
+                            ? entry.startDate.timeIntervalSince(bounds.start) / totalSpan
+                            : 0
+                        let widthFraction = totalSpan > 0
+                            ? entry.endDate.timeIntervalSince(entry.startDate) / totalSpan
+                            : 1
+
+                        RoundedRectangle(cornerRadius: 5, style: .continuous)
+                            .fill(stageColor(entry.stage))
+                            .frame(width: max(widthFraction * proxy.size.width, 4))
+                            .offset(x: startFraction * proxy.size.width)
+                    }
+                }
+            }
+            .frame(height: 28)
+
+            HStack {
+                Text(bounds.start, format: .dateTime.hour().minute())
+                Spacer()
+                Text(bounds.end, format: .dateTime.hour().minute())
+            }
+            .font(.caption2.weight(.medium))
+            .foregroundStyle(.secondary)
+        }
+    }
+
+    private var stageLegend: some View {
+        HStack(spacing: 12) {
+            ForEach(visibleStages, id: \.self) { stage in
+                HStack(spacing: 4) {
+                    Circle()
+                        .fill(stageColor(stage))
+                        .frame(width: 8, height: 8)
+
+                    Text(stageName(stage))
+                        .font(.caption2.weight(.medium))
+                        .foregroundStyle(.secondary)
+                }
+            }
+        }
+    }
+
+    private func stageColor(_ stage: SleepStage) -> Color {
+        switch stage {
+        case .deep:
+            return tintColor.opacity(0.85)
+        case .core:
+            return tintColor.opacity(0.50)
+        case .rem:
+            return tintColor.opacity(0.35)
+        case .unspecified:
+            return tintColor.opacity(0.55)
+        }
+    }
+
+    private func stageName(_ stage: SleepStage) -> String {
+        switch stage {
+        case .deep: return "Deep"
+        case .core: return "Core"
+        case .rem: return "REM"
+        case .unspecified: return "Sleep"
+        }
+    }
+
+    private var totalDurationText: String {
+        let totalMinutes = max(Int(totalDuration / 60), 0)
+        let hours = totalMinutes / 60
+        let minutes = totalMinutes % 60
+        if hours > 0 && minutes > 0 {
+            return "\(hours)h \(minutes)m"
+        }
+        if hours > 0 {
+            return "\(hours)h"
+        }
+        return "\(minutes)m"
     }
 }
 
@@ -1822,6 +2923,66 @@ private extension HKWorkoutActivityType {
             return "Workout"
         }
     }
+
+    var symbolName: String {
+        switch self {
+        case .running:
+            return "figure.run"
+        case .walking:
+            return "figure.walk"
+        case .cycling:
+            return "figure.outdoor.cycle"
+        case .traditionalStrengthTraining, .functionalStrengthTraining:
+            return "figure.strengthtraining.traditional"
+        case .highIntensityIntervalTraining:
+            return "figure.highintensity.intervaltraining"
+        case .hiking:
+            return "figure.hiking"
+        case .swimming:
+            return "figure.pool.swim"
+        case .yoga:
+            return "figure.yoga"
+        case .mixedCardio:
+            return "figure.mixed.cardio"
+        case .cooldown:
+            return "figure.cooldown"
+        default:
+            return "figure.mixed.cardio"
+        }
+    }
+}
+
+#Preview("Workout Card – Multiple") {
+    let now = Calendar.current.startOfDay(for: Date())
+    let workouts: [WorkoutEntry] = [
+        WorkoutEntry(
+            timestamp: now.addingTimeInterval(6 * 3600),
+            activityTypeRawValue: HKWorkoutActivityType.running.rawValue,
+            duration: 35 * 60,
+            energyBurnedKilocalories: 320,
+            distanceMiles: 3.2
+        ),
+        WorkoutEntry(
+            timestamp: now.addingTimeInterval(8 * 3600),
+            activityTypeRawValue: HKWorkoutActivityType.traditionalStrengthTraining.rawValue,
+            duration: 55 * 60,
+            energyBurnedKilocalories: 210
+        ),
+        WorkoutEntry(
+            timestamp: now.addingTimeInterval(17.5 * 3600),
+            activityTypeRawValue: HKWorkoutActivityType.yoga.rawValue,
+            duration: 30 * 60,
+            energyBurnedKilocalories: 95
+        ),
+    ]
+
+    WorkoutSummaryCard(workouts: workouts, tintColor: .blue)
+        .padding(16)
+        .glassEffect(
+            .regular.tint(Color.blue.opacity(0.06)),
+            in: RoundedRectangle(cornerRadius: 18, style: .continuous)
+        )
+        .padding()
 }
 
 struct LogDayCreateSheet: View {
@@ -1830,9 +2991,14 @@ struct LogDayCreateSheet: View {
     @Environment(HealthKitManager.self) private var healthManager
     @Environment(NotificationManager.self) private var notificationManager
     @Query(sort: \WeightEntry.timestamp, order: .reverse) private var allEntries: [WeightEntry]
+    @Query(sort: \DailyActivitySummary.date, order: .reverse) private var allDailyActivitySummaries: [DailyActivitySummary]
     @AppStorage("weightGoal") private var weightGoal = WeightGoal.defaultValue.rawValue
     @AppStorage("cutTargetWeight") private var cutTargetWeight = 180.0
     @AppStorage("bulkTargetWeight") private var bulkTargetWeight = 180.0
+
+    private var dailyActivitySummary: DailyActivitySummary? {
+        allDailyActivitySummaries.first { Calendar.current.isDate($0.date, inSameDayAs: date) }
+    }
 
     let date: Date
     let title: String
@@ -1872,6 +3038,14 @@ struct LogDayCreateSheet: View {
     var body: some View {
         NavigationStack {
             List {
+                if dailyActivitySummary != nil {
+                    Section {
+                        createStatsRow
+                            .listRowInsets(EdgeInsets(top: 8, leading: 16, bottom: 8, trailing: 16))
+                            .listRowBackground(Color.clear)
+                    }
+                }
+
                 Section {
                     createPhotoSection
 
@@ -1930,7 +3104,9 @@ struct LogDayCreateSheet: View {
                     photos: photos,
                     initialIndex: selectedPhotoIndex,
                     canEditCurrentPhoto: false,
-                    onEditCurrentPhoto: { _ in }
+                    onEditCurrentPhoto: { _ in },
+                    tintColor: tintColor,
+                    date: date
                 )
             }
         }
@@ -1945,6 +3121,8 @@ struct LogDayCreateSheet: View {
         }
 
         let goal = WeightGoal(rawValue: weightGoal) ?? .defaultValue
+        let isFirstEverLog = allEntries.isEmpty
+        let previousLongestStreak = WeightCalculations.longestStreak(from: allEntries)
         let reachedGoal = GoalProgressFeedback.didReachGoal(
             goal: goal,
             newWeight: weight,
@@ -1987,13 +3165,36 @@ struct LogDayCreateSheet: View {
         }
 
         Haptics.success()
-        if reachedGoal {
+        let isNewMaxStreak = streak > 1 && streak > previousLongestStreak
+        if isFirstEverLog {
+            NotificationCenter.default.post(name: .didLogFirstWeight, object: nil)
+        } else if reachedGoal {
             NotificationCenter.default.post(
                 name: .didReachWeightGoal,
                 object: GoalReachedPayload(goal: goal, weight: weight)
             )
         } else if movedCloserToGoal {
-            NotificationCenter.default.post(name: .didMoveCloserToGoal, object: nil)
+            let distanceCloser = GoalProgressFeedback.distanceCloserToGoal(
+                goal: goal,
+                previousWeight: allEntries.first?.weight,
+                newWeight: weight,
+                cutTarget: cutTargetWeight,
+                bulkTarget: bulkTargetWeight
+            ) ?? 0
+            let miniGoals = MiniGoalStore.load(for: goal)
+            let achievedMiniGoal = GoalProgressFeedback.achievedMiniGoal(
+                goal: goal,
+                previousWeight: allEntries.first?.weight,
+                newWeight: weight,
+                miniGoals: miniGoals
+            )
+            NotificationCenter.default.post(
+                name: .didMoveCloserToGoal,
+                object: CloserToGoalPayload(distanceCloser: distanceCloser, achievedMiniGoal: achievedMiniGoal)
+            )
+        }
+        if isNewMaxStreak {
+            NotificationCenter.default.post(name: .didSetNewMaxStreak, object: streak)
         }
         dismissSheet()
     }
@@ -2001,6 +3202,36 @@ struct LogDayCreateSheet: View {
     private func dismissSheet() {
         dismiss()
         onDismiss()
+    }
+
+    @ViewBuilder
+    private var createStatsRow: some View {
+        let summary = dailyActivitySummary
+        HStack(spacing: 16) {
+            if let summary, summary.stepCount > 0 {
+                Label {
+                    Text(summary.stepCount.formatted())
+                        .font(.subheadline.weight(.semibold))
+                } icon: {
+                    Image(systemName: "shoeprints.fill")
+                        .font(.caption2)
+                }
+                .foregroundStyle(.secondary)
+            }
+
+            if let summary, summary.activeEnergyBurnedKilocalories > 0 {
+                Label {
+                    Text("\(Int(summary.activeEnergyBurnedKilocalories.rounded())) cal")
+                        .font(.subheadline.weight(.semibold))
+                } icon: {
+                    Image(systemName: "flame.fill")
+                        .font(.caption2)
+                }
+                .foregroundStyle(.secondary)
+            }
+
+            Spacer()
+        }
     }
 
     @ViewBuilder
@@ -2085,5 +3316,306 @@ struct LogDayCreateSheet: View {
     private func endOfDay(for date: Date) -> Date {
         let nextDay = Calendar.current.date(byAdding: .day, value: 1, to: date) ?? date
         return nextDay.addingTimeInterval(-1)
+    }
+}
+
+fileprivate struct MonthSectionView: View {
+    let monthStart: Date
+    let title: String
+    let renderData: JournalView.MonthRenderData
+    let tintColor: Color
+    let calendar: Calendar
+    let dayRowSpacing: CGFloat
+    let dayColumnSpacing: CGFloat
+    let dayCardCornerRadius: CGFloat
+    let weekdaySymbols: [String]
+    let secondaryTextColor: Color
+    let cardColor: Color
+
+    @Binding var suppressNextDayTap: Bool
+    @Binding var pressedPreviewDay: Date?
+    @Binding var logDate: Date?
+    @Binding var showLog: Bool
+    @Binding var presentedSheet: JournalView.PresentedDaySheet?
+    let thumbnailLoader: JournalView.LazyThumbnailLoader
+    let pendingThumbnails: [String: JournalView.PendingThumbnail]
+    let presentDayPreview: (Date) -> Void
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            Text(title)
+                .font(.title3.weight(.semibold))
+                .foregroundStyle(.primary)
+
+            weekdayHeader
+
+            LazyVStack(spacing: dayRowSpacing) {
+                ForEach(Array(renderData.weeks.enumerated()), id: \.offset) { _, week in
+                    HStack(spacing: dayColumnSpacing) {
+                        ForEach(week, id: \.self) { date in
+                            dayCell(
+                                for: date,
+                                in: monthStart,
+                                dayData: renderData.dayDataByDate[calendar.startOfDay(for: date)]
+                            )
+                            .id(calendar.startOfDay(for: date))
+                        }
+                    }
+                }
+            }
+            .frame(height: calendarGridHeight(weekCount: renderData.weeks.count))
+        }
+    }
+
+    private func calendarGridHeight(weekCount: Int) -> CGFloat {
+        CGFloat(weekCount) * 64 + CGFloat(max(weekCount - 1, 0)) * dayRowSpacing
+    }
+
+    private var weekdayHeader: some View {
+        HStack(spacing: 8) {
+            ForEach(weekdaySymbols, id: \.self) { symbol in
+                Text(symbol)
+                    .font(.caption.weight(.semibold))
+                    .foregroundStyle(secondaryTextColor)
+                    .frame(maxWidth: .infinity)
+            }
+        }
+        .padding(.bottom, 6)
+    }
+
+    @ViewBuilder
+    private func dayCell(for date: Date, in monthStart: Date, dayData: JournalView.DayData?) -> some View {
+        let workoutCount = dayData?.workoutCount ?? 0
+        let isCurrentMonth = calendar.isDate(date, equalTo: monthStart, toGranularity: .month)
+        let isToday = calendar.isDateInToday(date)
+        let isLoggableDay = JournalView.isLoggableDay(date, calendar: calendar)
+        let isLogged = dayData?.isLogged ?? false
+        let hasWorkouts = workoutCount > 0
+        let hasSleep = (dayData?.sleepCount ?? 0) > 0
+        let photoCacheKey = dayData?.photoCacheKey
+        let primaryPhoto = photoCacheKey.flatMap { thumbnailLoader.thumbnails[$0] }
+        let hasVisiblePhoto = primaryPhoto != nil
+        let streakDay = dayData?.streakDay ?? 0
+        let isStreakPotential = dayData?.isStreakPotential ?? false
+
+        if !isCurrentMonth {
+            Color.clear
+                .frame(maxWidth: .infinity)
+                .frame(height: 64)
+                .allowsHitTesting(false)
+        } else {
+            Button {
+                if suppressNextDayTap {
+                    suppressNextDayTap = false
+                    return
+                }
+
+                Haptics.selection()
+                let day = calendar.startOfDay(for: date)
+                if JournalView.shouldPresentCreateSheet(hasLoggedWeight: isLogged, hasWorkouts: hasWorkouts || hasSleep) {
+                    logDate = day
+                    showLog = true
+                } else {
+                    presentedSheet = JournalView.PresentedDaySheet(date: day, kind: .detail)
+                }
+            } label: {
+                ZStack(alignment: .topLeading) {
+                    cellBackground(
+                        primaryPhoto: primaryPhoto,
+                        isLogged: isLogged,
+                        isCurrentMonth: isCurrentMonth
+                    )
+
+                    VStack(alignment: .leading, spacing: 2) {
+                        HStack(alignment: .top, spacing: 2) {
+                            Text(dayLabel(for: date))
+                                .font(.system(size: 10, weight: .medium))
+                                .foregroundStyle(
+                                    hasVisiblePhoto
+                                        ? Color.white.opacity(isCurrentMonth ? 0.98 : 0.72)
+                                        : dayNumberColor(isCurrentMonth: isCurrentMonth)
+                                )
+                                .lineLimit(1)
+
+                            Spacer(minLength: 0)
+                        }
+
+                        Spacer(minLength: 0)
+
+                        if let weightText = dayData?.weightText {
+                            HStack {
+                                Spacer(minLength: 0)
+
+                                Text(weightText)
+                                    .font(.system(size: 9.5, weight: .bold, design: .rounded))
+                                    .foregroundStyle(
+                                        hasVisiblePhoto
+                                            ? .white.opacity(0.92)
+                                            : (isLogged ? tintColor.opacity(0.82) : .primary.opacity(0.82))
+                                    )
+                                    .lineLimit(1)
+                                    .minimumScaleFactor(0.72)
+                                    .shadow(
+                                        color: hasVisiblePhoto ? .black.opacity(0.6) : .clear,
+                                        radius: hasVisiblePhoto ? 3 : 0,
+                                        x: 0,
+                                        y: 1
+                                    )
+
+                                Spacer(minLength: 0)
+                            }
+                        }
+                    }
+                    .padding(6)
+                }
+                .frame(maxWidth: .infinity)
+                .frame(height: 64)
+                .overlay {
+                    RoundedRectangle(cornerRadius: dayCardCornerRadius, style: .continuous)
+                        .strokeBorder(
+                            dayOutlineColor(isToday: isToday, isCurrentMonth: isCurrentMonth),
+                            lineWidth: dayOutlineWidth(isToday: isToday)
+                        )
+                }
+                .clipShape(RoundedRectangle(cornerRadius: dayCardCornerRadius, style: .continuous))
+                .overlay(alignment: .topTrailing) {
+                    if streakDay >= 1 && !isStreakPotential {
+                        ZStack {
+                            Image(systemName: "flame.fill")
+                                .font(.system(size: 16))
+                                .foregroundStyle(.orange)
+                                .shadow(color: .black.opacity(0.25), radius: 2, x: 0, y: 1)
+
+                            Circle()
+                                .fill(.orange)
+                                .frame(width: 8, height: 8)
+                                .offset(y: 2)
+
+                            Text("\(streakDay)")
+                                .font(.system(size: 7.5, weight: .black, design: .rounded))
+                                .foregroundStyle(.white)
+                                .offset(y: 2.2)
+                                .minimumScaleFactor(0.5)
+                                .lineLimit(1)
+                        }
+                        .fixedSize()
+                        .offset(x: 5, y: -5)
+                    }
+                }
+            }
+            .buttonStyle(.plain)
+            .frame(maxWidth: .infinity)
+            .scaleEffect(pressedPreviewDay == calendar.startOfDay(for: date) ? 0.96 : 1)
+            .animation(.snappy(duration: 0.16), value: pressedPreviewDay)
+            .onLongPressGesture(
+                minimumDuration: 0.38,
+                maximumDistance: 12,
+                pressing: { isPressing in
+                    withAnimation(.snappy(duration: 0.16)) {
+                        pressedPreviewDay = isPressing ? calendar.startOfDay(for: date) : nil
+                    }
+                },
+                perform: {
+                    presentDayPreview(date)
+                }
+            )
+            .allowsHitTesting(isLoggableDay)
+            .onAppear {
+                guard let photoCacheKey else { return }
+                thumbnailLoader.loadIfNeeded(
+                    key: photoCacheKey,
+                    pending: pendingThumbnails[photoCacheKey]
+                )
+            }
+        }
+    }
+
+    @ViewBuilder
+    private func cellBackground(
+        primaryPhoto: UIImage?,
+        isLogged: Bool,
+        isCurrentMonth: Bool
+    ) -> some View {
+        if let photo = primaryPhoto {
+            GeometryReader { geometry in
+                Image(uiImage: photo)
+                    .resizable()
+                    .scaledToFill()
+                    .frame(width: geometry.size.width, height: geometry.size.height)
+                    .clipped()
+            }
+            .frame(height: 64)
+            .overlay {
+                ZStack {
+                    RoundedRectangle(cornerRadius: dayCardCornerRadius, style: .continuous)
+                        .fill(
+                            LinearGradient(
+                                colors: [
+                                    Color.black.opacity(0.54),
+                                    Color.black.opacity(0.12),
+                                    Color.black.opacity(0.74)
+                                ],
+                                startPoint: .top,
+                                endPoint: .bottom
+                            )
+                        )
+
+                    RoundedRectangle(cornerRadius: dayCardCornerRadius, style: .continuous)
+                        .fill(
+                            RadialGradient(
+                                colors: [
+                                    Color.clear,
+                                    Color.black.opacity(0.34)
+                                ],
+                                center: .center,
+                                startRadius: 12,
+                                endRadius: 68
+                            )
+                        )
+
+                    RoundedRectangle(cornerRadius: dayCardCornerRadius, style: .continuous)
+                        .fill(Color(.systemBackground).opacity(isCurrentMonth ? 0.10 : 0.16))
+
+                    if isLogged {
+                        RoundedRectangle(cornerRadius: dayCardCornerRadius, style: .continuous)
+                            .fill(tintColor.opacity(isCurrentMonth ? 0.10 : 0.06))
+                    }
+                }
+            }
+        } else if isLogged {
+            RoundedRectangle(cornerRadius: dayCardCornerRadius, style: .continuous)
+                .fill(tintColor.opacity(isCurrentMonth ? 0.11 : 0.06))
+        } else {
+            RoundedRectangle(cornerRadius: dayCardCornerRadius, style: .continuous)
+                .fill(unloggedBackgroundColor(isCurrentMonth: isCurrentMonth))
+        }
+    }
+
+    private func unloggedBackgroundColor(isCurrentMonth: Bool) -> Color {
+        isCurrentMonth ? cardColor.opacity(0.52) : cardColor.opacity(0.20)
+    }
+
+    private func dayNumberColor(isCurrentMonth: Bool) -> Color {
+        return isCurrentMonth ? .primary : .secondary.opacity(0.45)
+    }
+
+    private func dayLabel(for date: Date) -> String {
+        String(calendar.component(.day, from: date))
+    }
+
+    private func dayOutlineColor(isToday: Bool, isCurrentMonth: Bool) -> Color {
+        if isToday {
+            return tintColor
+        }
+
+        return Color.secondary.opacity(isCurrentMonth ? 0.14 : 0.08)
+    }
+
+    private func dayOutlineWidth(isToday: Bool) -> CGFloat {
+        if isToday {
+            return 2
+        }
+
+        return 1
     }
 }

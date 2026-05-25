@@ -74,6 +74,23 @@ final class HealthKitManager {
         let removedCount: Int
         let skippedCount: Int
     }
+
+    struct ImportedSleep: Equatable {
+        let uuid: UUID
+        let startDate: Date
+        let endDate: Date
+        let duration: TimeInterval
+        let stage: SleepStage
+        let sourceBundleIdentifier: String
+    }
+
+    struct SleepImportPlan: Equatable {
+        let removedEntryIDs: [PersistentIdentifier]
+        let insertedEntries: [ImportedSleep]
+        let importedCount: Int
+        let skippedCount: Int
+        let removedCount: Int
+    }
     
     // MARK: - State
     
@@ -84,6 +101,8 @@ final class HealthKitManager {
     var workoutImportResult: ImportResult? = nil
     var isImportingDailyActivity: Bool = false
     var dailyActivityImportResult: ImportResult? = nil
+    var isImportingSleep: Bool = false
+    var sleepImportResult: ImportResult? = nil
     
     enum ImportResult: Equatable {
         case success(imported: Int, skipped: Int, removed: Int)
@@ -361,6 +380,318 @@ final class HealthKitManager {
     }
 
     @MainActor
+    func importSleepData(modelContext: ModelContext, authorizationRequested: Bool = false) async {
+        guard isAvailable else { return }
+
+        isImportingSleep = true
+        sleepImportResult = nil
+
+        do {
+            if !authorizationRequested {
+                try await requestSleepAuthorization()
+            }
+
+            let sleepType = HKCategoryType(.sleepAnalysis)
+            let descriptor = HKSampleQueryDescriptor(
+                predicates: [.categorySample(type: sleepType)],
+                sortDescriptors: [SortDescriptor(\.startDate, order: .forward)]
+            )
+            let samples = try await descriptor.result(for: healthStore)
+            let existingEntries = try modelContext.fetch(FetchDescriptor<SleepEntry>())
+            let asleepValues: Set<Int> = [
+                HKCategoryValueSleepAnalysis.asleepUnspecified.rawValue,
+                HKCategoryValueSleepAnalysis.asleepCore.rawValue,
+                HKCategoryValueSleepAnalysis.asleepDeep.rawValue,
+                HKCategoryValueSleepAnalysis.asleepREM.rawValue
+            ]
+
+            let importedSleep = samples.compactMap { sample -> ImportedSleep? in
+                guard asleepValues.contains(sample.value), sample.endDate > sample.startDate else { return nil }
+                let stage: SleepStage = switch sample.value {
+                case HKCategoryValueSleepAnalysis.asleepCore.rawValue: .core
+                case HKCategoryValueSleepAnalysis.asleepDeep.rawValue: .deep
+                case HKCategoryValueSleepAnalysis.asleepREM.rawValue: .rem
+                default: .unspecified
+                }
+                return ImportedSleep(
+                    uuid: sample.uuid,
+                    startDate: sample.startDate,
+                    endDate: sample.endDate,
+                    duration: sample.endDate.timeIntervalSince(sample.startDate),
+                    stage: stage,
+                    sourceBundleIdentifier: sample.sourceRevision.source.bundleIdentifier
+                )
+            }
+
+            let plan = Self.makeSleepImportPlan(
+                sleepSamples: importedSleep,
+                existingEntries: existingEntries
+            )
+
+            for entry in existingEntries where plan.removedEntryIDs.contains(entry.persistentModelID) {
+                modelContext.delete(entry)
+            }
+
+            for pendingEntry in plan.insertedEntries {
+                modelContext.insert(
+                    SleepEntry(
+                        startDate: pendingEntry.startDate,
+                        endDate: pendingEntry.endDate,
+                        duration: pendingEntry.duration,
+                        source: .appleHealth,
+                        stage: pendingEntry.stage,
+                        healthKitUUID: pendingEntry.uuid
+                    )
+                )
+            }
+
+            try modelContext.save()
+            sleepImportResult = .success(
+                imported: plan.importedCount,
+                skipped: plan.skippedCount,
+                removed: plan.removedCount
+            )
+        } catch {
+            sleepImportResult = .error(error.localizedDescription)
+        }
+
+        isImportingSleep = false
+    }
+
+    @MainActor
+    func forceReimportWeightData(modelContext: ModelContext) async {
+        guard isAvailable else { return }
+
+        isImporting = true
+        importResult = nil
+
+        do {
+            try await requestWeightAuthorization()
+
+            let existingEntries = try modelContext.fetch(FetchDescriptor<WeightEntry>())
+            let existingAppleHealthEntries = existingEntries.filter { $0.source == .appleHealth }
+            for entry in existingAppleHealthEntries {
+                modelContext.delete(entry)
+            }
+            try modelContext.save()
+
+            let bodyMassType = HKQuantityType(.bodyMass)
+            let descriptor = HKSampleQueryDescriptor(
+                predicates: [.quantitySample(type: bodyMassType)],
+                sortDescriptors: [SortDescriptor(\.startDate, order: .forward)]
+            )
+            let samples = try await descriptor.result(for: healthStore)
+            let poundUnit = HKUnit.pound()
+
+            var importedCount = 0
+            for sample in samples {
+                let entry = WeightEntry(
+                    weight: sample.quantity.doubleValue(for: poundUnit),
+                    timestamp: sample.startDate,
+                    source: .appleHealth,
+                    healthKitUUID: sample.uuid
+                )
+                modelContext.insert(entry)
+                importedCount += 1
+            }
+
+            try modelContext.save()
+            let refreshedEntries = try modelContext.fetch(
+                FetchDescriptor<WeightEntry>(
+                    sortBy: [SortDescriptor(\WeightEntry.timestamp, order: .reverse)]
+                )
+            )
+            WeightWidgetSnapshotStore.refresh(using: refreshedEntries)
+            importResult = .success(
+                imported: importedCount,
+                skipped: 0,
+                removed: existingAppleHealthEntries.count
+            )
+        } catch {
+            importResult = .error(error.localizedDescription)
+        }
+
+        isImporting = false
+    }
+
+    @MainActor
+    func forceReimportWorkoutData(modelContext: ModelContext) async {
+        guard isAvailable else { return }
+
+        isImportingWorkouts = true
+        workoutImportResult = nil
+
+        do {
+            try await requestWorkoutAuthorization()
+
+            let existingEntries = try modelContext.fetch(FetchDescriptor<WorkoutEntry>())
+            for entry in existingEntries {
+                modelContext.delete(entry)
+            }
+            try modelContext.save()
+
+            let descriptor = HKSampleQueryDescriptor(
+                predicates: [.workout()],
+                sortDescriptors: [SortDescriptor(\.startDate, order: .forward)]
+            )
+            let workouts = try await descriptor.result(for: healthStore)
+            let calorieUnit = HKUnit.largeCalorie()
+            let mileUnit = HKUnit.mile()
+
+            var importedCount = 0
+            for workout in workouts {
+                let entry = WorkoutEntry(
+                    timestamp: workout.startDate,
+                    activityTypeRawValue: workout.workoutActivityType.rawValue,
+                    duration: workout.duration,
+                    energyBurnedKilocalories: Self.activeEnergyBurned(for: workout)?.doubleValue(for: calorieUnit),
+                    distanceMiles: workout.totalDistance?.doubleValue(for: mileUnit),
+                    source: .appleHealth,
+                    healthKitUUID: workout.uuid
+                )
+                modelContext.insert(entry)
+                importedCount += 1
+            }
+
+            try modelContext.save()
+            workoutImportResult = .success(
+                imported: importedCount,
+                skipped: 0,
+                removed: existingEntries.count
+            )
+        } catch {
+            workoutImportResult = .error(error.localizedDescription)
+        }
+
+        isImportingWorkouts = false
+    }
+
+    @MainActor
+    func forceReimportDailyActivityData(modelContext: ModelContext) async {
+        guard isAvailable else { return }
+
+        isImportingDailyActivity = true
+        dailyActivityImportResult = nil
+
+        do {
+            try await requestDailyActivityAuthorization()
+
+            let existingEntries = try modelContext.fetch(FetchDescriptor<DailyActivitySummary>())
+            for entry in existingEntries {
+                modelContext.delete(entry)
+            }
+            try modelContext.save()
+
+            let endDate = Calendar.current.date(byAdding: .day, value: 1, to: Calendar.current.startOfDay(for: .now)) ?? .now
+            let startDate = Calendar.current.date(byAdding: .year, value: -5, to: endDate) ?? .distantPast
+
+            let stepStats = try await dailyCumulativeStatistics(
+                for: HKQuantityType(.stepCount),
+                startDate: startDate,
+                endDate: endDate
+            )
+            let activeEnergyStats = try await dailyCumulativeStatistics(
+                for: HKQuantityType(.activeEnergyBurned),
+                startDate: startDate,
+                endDate: endDate
+            )
+
+            let summaries = mergeDailyActivitySummaries(
+                stepStats: stepStats,
+                activeEnergyStats: activeEnergyStats
+            )
+
+            var importedCount = 0
+            for summary in summaries {
+                modelContext.insert(
+                    DailyActivitySummary(
+                        date: summary.date,
+                        stepCount: summary.stepCount,
+                        activeEnergyBurnedKilocalories: summary.activeEnergyBurnedKilocalories,
+                        source: .appleHealth
+                    )
+                )
+                importedCount += 1
+            }
+
+            try modelContext.save()
+            dailyActivityImportResult = .success(
+                imported: importedCount,
+                skipped: 0,
+                removed: existingEntries.count
+            )
+        } catch {
+            dailyActivityImportResult = .error(error.localizedDescription)
+        }
+
+        isImportingDailyActivity = false
+    }
+
+    @MainActor
+    func forceReimportSleepData(modelContext: ModelContext) async {
+        guard isAvailable else { return }
+
+        isImportingSleep = true
+        sleepImportResult = nil
+
+        do {
+            try await requestSleepAuthorization()
+
+            let existingEntries = try modelContext.fetch(FetchDescriptor<SleepEntry>())
+            for entry in existingEntries {
+                modelContext.delete(entry)
+            }
+            try modelContext.save()
+
+            let sleepType = HKCategoryType(.sleepAnalysis)
+            let descriptor = HKSampleQueryDescriptor(
+                predicates: [.categorySample(type: sleepType)],
+                sortDescriptors: [SortDescriptor(\.startDate, order: .forward)]
+            )
+            let samples = try await descriptor.result(for: healthStore)
+            let asleepValues: Set<Int> = [
+                HKCategoryValueSleepAnalysis.asleepUnspecified.rawValue,
+                HKCategoryValueSleepAnalysis.asleepCore.rawValue,
+                HKCategoryValueSleepAnalysis.asleepDeep.rawValue,
+                HKCategoryValueSleepAnalysis.asleepREM.rawValue
+            ]
+
+            var importedCount = 0
+            for sample in samples {
+                guard asleepValues.contains(sample.value), sample.endDate > sample.startDate else { continue }
+                let stage: SleepStage = switch sample.value {
+                case HKCategoryValueSleepAnalysis.asleepCore.rawValue: .core
+                case HKCategoryValueSleepAnalysis.asleepDeep.rawValue: .deep
+                case HKCategoryValueSleepAnalysis.asleepREM.rawValue: .rem
+                default: .unspecified
+                }
+                modelContext.insert(
+                    SleepEntry(
+                        startDate: sample.startDate,
+                        endDate: sample.endDate,
+                        duration: sample.endDate.timeIntervalSince(sample.startDate),
+                        source: .appleHealth,
+                        stage: stage,
+                        healthKitUUID: sample.uuid
+                    )
+                )
+                importedCount += 1
+            }
+
+            try modelContext.save()
+            sleepImportResult = .success(
+                imported: importedCount,
+                skipped: 0,
+                removed: existingEntries.count
+            )
+        } catch {
+            sleepImportResult = .error(error.localizedDescription)
+        }
+
+        isImportingSleep = false
+    }
+
+    @MainActor
     func importAllData(modelContext: ModelContext) async {
         guard isAvailable else { return }
 
@@ -371,12 +702,14 @@ final class HealthKitManager {
             importResult = .error(message)
             workoutImportResult = .error(message)
             dailyActivityImportResult = .error(message)
+            sleepImportResult = .error(message)
             return
         }
 
         await importWeightData(modelContext: modelContext, authorizationRequested: true)
         await importWorkoutData(modelContext: modelContext, authorizationRequested: true)
         await importDailyActivityData(modelContext: modelContext, authorizationRequested: true)
+        await importSleepData(modelContext: modelContext, authorizationRequested: true)
     }
 
     func requestImportPermission() async -> Bool {
@@ -523,6 +856,28 @@ final class HealthKitManager {
         )
     }
 
+    static func makeSleepImportPlan(
+        sleepSamples: [ImportedSleep],
+        existingEntries: [SleepEntry]
+    ) -> SleepImportPlan {
+        let existingUUIDs = Set(existingEntries.compactMap(\.healthKitUUID))
+        let importedUUIDs = Set(sleepSamples.map(\.uuid))
+        let removableEntries = existingEntries.filter { entry in
+            guard let uuid = entry.healthKitUUID else { return false }
+            return !importedUUIDs.contains(uuid)
+        }
+        let insertedEntries = sleepSamples.filter { !existingUUIDs.contains($0.uuid) }
+        let skippedCount = sleepSamples.count - insertedEntries.count
+
+        return SleepImportPlan(
+            removedEntryIDs: removableEntries.map(\.persistentModelID),
+            insertedEntries: insertedEntries,
+            importedCount: insertedEntries.count,
+            skippedCount: skippedCount,
+            removedCount: removableEntries.count
+        )
+    }
+
     private func requestWeightAuthorization() async throws {
         let bodyMassType = HKQuantityType(.bodyMass)
         try await healthStore.requestAuthorization(toShare: [bodyMassType], read: [bodyMassType])
@@ -539,15 +894,21 @@ final class HealthKitManager {
         try await healthStore.requestAuthorization(toShare: [], read: [stepType, activeEnergyType])
     }
 
+    private func requestSleepAuthorization() async throws {
+        let sleepType = HKCategoryType(.sleepAnalysis)
+        try await healthStore.requestAuthorization(toShare: [], read: [sleepType])
+    }
+
     private func requestImportAuthorization() async throws {
         let bodyMassType = HKQuantityType(.bodyMass)
         let workoutType = HKObjectType.workoutType()
         let stepType = HKQuantityType(.stepCount)
         let activeEnergyType = HKQuantityType(.activeEnergyBurned)
+        let sleepType = HKCategoryType(.sleepAnalysis)
 
         try await healthStore.requestAuthorization(
             toShare: [bodyMassType],
-            read: [bodyMassType, workoutType, stepType, activeEnergyType]
+            read: [bodyMassType, workoutType, stepType, activeEnergyType, sleepType]
         )
     }
 

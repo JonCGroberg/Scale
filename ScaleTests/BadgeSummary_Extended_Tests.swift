@@ -38,6 +38,27 @@ struct BadgeSummaryExtendedTests {
         #expect(summary.weightChange == nil)
     }
 
+    @Test func yesterdayEntryStillShowsCurrentDisplayStreak() {
+        let entries = [WeightEntry(weight: 180.0, timestamp: daysAgo(1))]
+        let summary = WeightCalculations.badgeSummary(from: entries, over: .week)
+
+        #expect(summary.streak == 1)
+    }
+
+    @Test func runEndingYesterdayShowsCurrentDisplayStreakWithoutAddingToday() {
+        let entries = (1...4).map { WeightEntry(weight: 180.0, timestamp: daysAgo($0)) }
+        let summary = WeightCalculations.badgeSummary(from: entries, over: .week)
+
+        #expect(summary.streak == 4)
+    }
+
+    @Test func displayStreakIsZeroWhenNeitherTodayNorYesterdayIsLogged() {
+        let entries = [WeightEntry(weight: 180.0, timestamp: daysAgo(2))]
+        let summary = WeightCalculations.badgeSummary(from: entries, over: .week)
+
+        #expect(summary.streak == 0)
+    }
+
     @Test func weightLossShowsNegativeChange() {
         let entries = [
             WeightEntry(weight: 175.0, timestamp: Date()),
@@ -85,4 +106,3 @@ struct BadgeSummaryExtendedTests {
         #expect(summary.weightChange == nil)
     }
 }
-

@@ -10,6 +10,7 @@ import Foundation
 struct WeightWidgetSnapshot: Codable, Equatable, Sendable {
     let generatedAt: Date
     let appTintRawValue: String
+    let customTintHex: String?
     let latestWeight: Double?
     let latestTimestamp: Date?
     let streakCount: Int
@@ -19,6 +20,7 @@ struct WeightWidgetSnapshot: Codable, Equatable, Sendable {
     static let empty = WeightWidgetSnapshot(
         generatedAt: .distantPast,
         appTintRawValue: "blue",
+        customTintHex: nil,
         latestWeight: nil,
         latestTimestamp: nil,
         streakCount: 0,
@@ -33,10 +35,14 @@ struct WeightWidgetSnapshot: Codable, Equatable, Sendable {
     ) -> WeightWidgetSnapshot {
         let sortedEntries = entries.sorted { $0.timestamp > $1.timestamp }
         let summary = WeightCalculations.badgeSummary(from: sortedEntries, over: .month)
+        let customTintHex: String? = tintRawValue == "custom"
+            ? UserDefaults.standard.string(forKey: "customTintHex")
+            : nil
 
         return WeightWidgetSnapshot(
             generatedAt: now,
             appTintRawValue: tintRawValue,
+            customTintHex: customTintHex,
             latestWeight: sortedEntries.first?.weight,
             latestTimestamp: sortedEntries.first?.timestamp,
             streakCount: summary.streak,

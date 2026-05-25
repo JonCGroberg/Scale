@@ -108,7 +108,7 @@ struct WidgetSnapshotDataTests {
     }
 
     @Test func snapshotTintRawValueIsPreserved() {
-        for tint in AppTint.allCases {
+        for tint in AppTint.presets {
             let snapshot = WeightWidgetSnapshot.make(
                 from: [WeightEntry(weight: 180.0, timestamp: .now)],
                 tintRawValue: tint.rawValue,

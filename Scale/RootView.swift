@@ -21,15 +21,21 @@ struct RootView: View {
     @Query(sort: \WeightEntry.timestamp, order: .reverse) private var entries: [WeightEntry]
     @AppStorage("showChangePill") private var showChangePill = true
     @AppStorage("appTint") private var appTint = AppTint.defaultValue.rawValue
+    @AppStorage("customTintHex") private var customTintHex = ""
     @State private var historyScrollRequest = 0
     @State private var historySelectedEntry: WeightEntry?
     @State private var journalScrollToBottomRequest = 0
     @State private var logDate: Date?
     @State private var showGoalCelebration = false
     @State private var goalCelebrationID = 0
-    @State private var goalCelebrationMessage = "Closer to goal"
+    @State private var goalCelebrationMessage: Text = Text("Closer to goal")
     @State private var goalCelebrationImage = "target"
+    @State private var goalCelebrationType: CelebrationType = .confetti
     @State private var reachedGoalContext: ReachedGoalContext?
+    @State private var celebrationQueue: [(message: Text, systemImage: String, type: CelebrationType)] = []
+    @State private var isCelebrationRunning = false
+    @State private var showSettings = false
+    @Namespace private var tabNamespace
     private var selectedTint: AppTint {
         AppTint(rawValue: appTint) ?? .defaultValue
     }
@@ -81,44 +87,30 @@ struct RootView: View {
     }
 
     var body: some View {
-        TabView(selection: tabSelection) {
-            Tab(value: 1) {
-                JournalView(
-                    scrollToEntryTrigger: historyScrollRequest,
-                    focusedEntry: historySelectedEntry,
-                    scrollToBottomTrigger: journalScrollToBottomRequest,
-                    showLog: $showLog,
-                    logDate: $logDate
-                )
-            } label: {
-                Label("Journal", systemImage: "calendar")
-            }
+        ZStack {
+            JournalView(
+                scrollToEntryTrigger: historyScrollRequest,
+                focusedEntry: historySelectedEntry,
+                scrollToBottomTrigger: journalScrollToBottomRequest,
+                showLog: $showLog,
+                logDate: $logDate
+            )
+            .opacity(selectedTab == 1 ? 1 : 0)
+            .allowsHitTesting(selectedTab == 1)
 
-            Tab(value: 3) {
-                OverviewView()
-            } label: {
-                Label("Overview", systemImage: "chart.line.uptrend.xyaxis")
-            }
-
-            Tab(value: 4) {
-                SettingsView()
-            } label: {
-                Label("Settings", systemImage: "gearshape")
-            }
+            OverviewView()
+                .opacity(selectedTab == 3 ? 1 : 0)
+                .allowsHitTesting(selectedTab == 3)
         }
         .tint(selectedTint.color)
-        .id(appTint)
-        .overlay(alignment: .bottomTrailing) {
-            logButton
-                .padding(.trailing, 16)
-                .padding(.bottom, 52)
-        }
+        .id("\(appTint)-\(customTintHex)")
         .overlay {
             if showGoalCelebration {
                 GoalCelebrationView(
                     tintColor: selectedTint.color,
                     message: goalCelebrationMessage,
-                    systemImage: goalCelebrationImage
+                    systemImage: goalCelebrationImage,
+                    type: goalCelebrationType
                 )
                     .id(goalCelebrationID)
                     .transition(.opacity)
@@ -131,6 +123,15 @@ struct RootView: View {
                 .frame(height: Self.isPillVisible(selectedTab: selectedTab) ? nil : 0)
                 .animation(.default, value: selectedTab)
         }
+        .safeAreaInset(edge: .bottom) {
+            HStack {
+                customNavBar
+                Spacer()
+                logButton
+            }
+            .padding(.horizontal, 16)
+            .padding(.bottom, 8)
+        }
         .sheet(isPresented: $showLog, onDismiss: { logDate = nil }) {
             EntryView(
                 historyScrollRequest: $historyScrollRequest,
@@ -140,6 +141,10 @@ struct RootView: View {
             )
             .presentationDetents([.height(430), .large])
             .liquidGlassSheetPresentation()
+        }
+        .sheet(isPresented: $showSettings) {
+            SettingsView()
+                .liquidGlassSheetPresentation()
         }
         .sheet(item: $reachedGoalContext) { context in
             GoalTargetUpdateSheet(
@@ -157,26 +162,24 @@ struct RootView: View {
         .onChange(of: appTint) { _, _ in
             WeightWidgetSnapshotStore.refresh(using: entries)
         }
-        .background {
-            TabBarControllerObserver { tappedIndex, wasReselected in
-                guard Self.shouldScrollJournalToBottom(
-                    tappedIndex: tappedIndex,
-                    wasReselected: wasReselected
-                ) else { return }
-                Haptics.selection()
-                journalScrollToBottomRequest += 1
-            }
+        .onReceive(NotificationCenter.default.publisher(for: .didLogFirstWeight)) { _ in
+            enqueueCelebration(message: Text("One step closer to your goal"), systemImage: "figure.walk", type: .confetti)
         }
-        .onReceive(NotificationCenter.default.publisher(for: .didMoveCloserToGoal)) { _ in
-            showCelebration(message: "Closer to goal", systemImage: "target")
+        .onReceive(NotificationCenter.default.publisher(for: .didMoveCloserToGoal)) { notification in
+            if let payload = notification.object as? CloserToGoalPayload,
+               let miniGoal = payload.achievedMiniGoal {
+                enqueueCelebration(message: Text("\(miniGoal.name) achieved!"), systemImage: "flag.fill", type: .fireworks)
+            } else if let payload = notification.object as? CloserToGoalPayload {
+                let formatted = String(format: "%.1f", payload.distanceCloser)
+                let message = Text("\(Text(formatted).foregroundStyle(selectedTint.color)) lbs closer to goal")
+                enqueueCelebration(message: message, systemImage: "target", type: .confetti)
+            } else {
+                enqueueCelebration(message: Text("Closer to goal"), systemImage: "target", type: .confetti)
+            }
         }
         .onReceive(NotificationCenter.default.publisher(for: .didReachWeightGoal)) { notification in
-            guard let payload = notification.object as? GoalReachedPayload else {
-                return
-            }
-
-            showCelebration(message: "Goal reached", systemImage: "party.popper.fill")
-
+            guard let payload = notification.object as? GoalReachedPayload else { return }
+            enqueueCelebration(message: Text("Goal reached"), systemImage: "party.popper.fill", type: .fireworks)
             Task {
                 try? await Task.sleep(for: .milliseconds(650))
                 await MainActor.run {
@@ -184,12 +187,31 @@ struct RootView: View {
                 }
             }
         }
+        .onReceive(NotificationCenter.default.publisher(for: .didSetNewMaxStreak)) { notification in
+            let streak = notification.object as? Int ?? 0
+            let message = Text("New best streak — \(Text("\(streak)").foregroundStyle(selectedTint.color)) days")
+            enqueueCelebration(message: message, systemImage: "flame.fill")
+        }
         .sensoryFeedback(.success, trigger: goalCelebrationID)
     }
 
-    private func showCelebration(message: String, systemImage: String) {
-        goalCelebrationMessage = message
-        goalCelebrationImage = systemImage
+    private func enqueueCelebration(message: Text, systemImage: String, type: CelebrationType = .confetti) {
+        celebrationQueue.append((message: message, systemImage: systemImage, type: type))
+        if !isCelebrationRunning {
+            showNextCelebration()
+        }
+    }
+
+    private func showNextCelebration() {
+        guard !celebrationQueue.isEmpty else {
+            isCelebrationRunning = false
+            return
+        }
+        isCelebrationRunning = true
+        let next = celebrationQueue.removeFirst()
+        goalCelebrationMessage = next.message
+        goalCelebrationImage = next.systemImage
+        goalCelebrationType = next.type
         goalCelebrationID += 1
 
         withAnimation(.easeOut(duration: 0.18)) {
@@ -202,6 +224,10 @@ struct RootView: View {
                 withAnimation(.easeIn(duration: 0.22)) {
                     showGoalCelebration = false
                 }
+            }
+            try? await Task.sleep(for: .milliseconds(260))
+            await MainActor.run {
+                showNextCelebration()
             }
         }
     }
@@ -216,14 +242,35 @@ struct RootView: View {
 
     private var topAccessoryRow: some View {
         HStack {
-            Spacer(minLength: 0)
+            Button { } label: {
+                Image(systemName: "gearshape")
+                    .font(.footnote.weight(.semibold))
+                    .frame(width: 28, height: 28)
+            }
+            .buttonStyle(.glass)
+            .opacity(0)
+            .allowsHitTesting(false)
+
+            Spacer()
 
             topAccessoryBadge
 
-            Spacer(minLength: 0)
+            Spacer()
+
+            Button {
+                Haptics.selection()
+                showSettings = true
+            } label: {
+                Image(systemName: "gearshape.fill")
+                    .font(.footnote.weight(.semibold))
+                    .frame(width: 28, height: 28)
+            }
+            .buttonStyle(.glass)
+            .tint(.primary)
+            .accessibilityLabel("Settings")
         }
         .padding(.top, 4)
-        .padding(.horizontal, 12)
+        .padding(.horizontal, 16)
     }
 
     private var topAccessoryBadge: some View {
@@ -244,14 +291,71 @@ struct RootView: View {
             showLog = true
         } label: {
             Image(systemName: "square.and.pencil")
-                .font(.title3.weight(.semibold))
-                .frame(width: 42, height: 42)
+                .font(.callout.weight(.semibold))
+                .frame(width: 40, height: 40)
         }
         .buttonStyle(.glassProminent)
         .clipShape(Circle())
         .tint(selectedTint.color)
         .accessibilityLabel("Log")
         .help("Log")
+    }
+
+    private var customNavBar: some View {
+        HStack(spacing: 6) {
+            tabButton(title: "Journal", systemImage: "calendar", tabValue: 1)
+            tabButton(title: "Overview", systemImage: "chart.line.uptrend.xyaxis", tabValue: 3)
+        }
+        .padding(6)
+        .background {
+            Capsule(style: .continuous)
+                .fill(.ultraThinMaterial)
+                .overlay {
+                    Capsule(style: .continuous)
+                        .stroke(.white.opacity(0.18), lineWidth: 0.5)
+                }
+                .shadow(color: .black.opacity(0.12), radius: 10, x: 0, y: 5)
+        }
+    }
+
+    private func tabButton(title: String, systemImage: String, tabValue: Int) -> some View {
+        Button {
+            let action = Self.actionForTabTap(currentTab: selectedTab, tappedTab: tabValue)
+            switch action {
+            case .switchTab:
+                withAnimation(.spring(response: 0.32, dampingFraction: 0.78)) {
+                    selectedTab = tabValue
+                }
+                Haptics.selection()
+            case .scrollJournalToBottom:
+                Haptics.selection()
+                journalScrollToBottomRequest += 1
+            case .ignore:
+                break
+            }
+        } label: {
+            HStack(spacing: 7) {
+                Image(systemName: systemImage)
+                    .font(.callout.weight(.semibold))
+
+                if selectedTab == tabValue {
+                    Text(title)
+                        .font(.subheadline.weight(.semibold))
+                        .transition(.opacity.combined(with: .move(edge: .leading)))
+                }
+            }
+            .foregroundStyle(selectedTab == tabValue ? selectedTint.color : .secondary)
+            .padding(.horizontal, 16)
+            .padding(.vertical, 12)
+            .background {
+                if selectedTab == tabValue {
+                    Capsule(style: .continuous)
+                        .fill(selectedTint.color.opacity(0.12))
+                        .matchedGeometryEffect(id: "activeTabBackground", in: tabNamespace)
+                }
+            }
+        }
+        .buttonStyle(.plain)
     }
 }
 
@@ -324,7 +428,7 @@ struct TabBarControllerObserver: UIViewControllerRepresentable {
 
 #Preview {
     RootView(selectedTab: .constant(1), showLog: .constant(false))
-        .modelContainer(for: [WeightEntry.self, WorkoutEntry.self, DailyActivitySummary.self], inMemory: true)
+        .modelContainer(for: [WeightEntry.self, WorkoutEntry.self, DailyActivitySummary.self, SleepEntry.self], inMemory: true)
         .environment(HealthKitManager())
         .environment(NotificationManager())
 }

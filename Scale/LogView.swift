@@ -32,7 +32,7 @@ struct LogView: View {
         showLog: .constant(false),
         logDate: .constant(nil)
     )
-        .modelContainer(for: [WeightEntry.self, WorkoutEntry.self, DailyActivitySummary.self], inMemory: true)
+        .modelContainer(for: [WeightEntry.self, WorkoutEntry.self, DailyActivitySummary.self, SleepEntry.self], inMemory: true)
         .environment(HealthKitManager())
         .environment(NotificationManager())
 }

@@ -85,7 +85,7 @@ struct ScaleWidgetView: View {
     }
 
     private var tintColor: Color {
-        WidgetTintPalette.color(for: entry.snapshot.appTintRawValue)
+        WidgetTintPalette.color(for: entry.snapshot.appTintRawValue, customHex: entry.snapshot.customTintHex)
     }
 }
 
@@ -93,7 +93,7 @@ struct ScaleHomeWidgetView: View {
     let snapshot: WeightWidgetSnapshot
 
     private var tintColor: Color {
-        WidgetTintPalette.color(for: snapshot.appTintRawValue)
+        WidgetTintPalette.color(for: snapshot.appTintRawValue, customHex: snapshot.customTintHex)
     }
 
     var body: some View {
@@ -158,7 +158,7 @@ struct AddWeightSmallWidgetView: View {
     let snapshot: WeightWidgetSnapshot
 
     private var tintColor: Color {
-        WidgetTintPalette.color(for: snapshot.appTintRawValue)
+        WidgetTintPalette.color(for: snapshot.appTintRawValue, customHex: snapshot.customTintHex)
     }
 
     var body: some View {
@@ -188,7 +188,7 @@ struct ScaleMediumWidgetView: View {
     let snapshot: WeightWidgetSnapshot
 
     private var tintColor: Color {
-        WidgetTintPalette.color(for: snapshot.appTintRawValue)
+        WidgetTintPalette.color(for: snapshot.appTintRawValue, customHex: snapshot.customTintHex)
     }
 
     var body: some View {
@@ -262,7 +262,7 @@ struct ScaleRectangularWidgetView: View {
     let snapshot: WeightWidgetSnapshot
 
     private var tintColor: Color {
-        WidgetTintPalette.color(for: snapshot.appTintRawValue)
+        WidgetTintPalette.color(for: snapshot.appTintRawValue, customHex: snapshot.customTintHex)
     }
 
     var body: some View {
@@ -308,7 +308,7 @@ struct ScaleCircularWidgetView: View {
     let snapshot: WeightWidgetSnapshot
 
     private var tintColor: Color {
-        WidgetTintPalette.color(for: snapshot.appTintRawValue)
+        WidgetTintPalette.color(for: snapshot.appTintRawValue, customHex: snapshot.customTintHex)
     }
 
     var body: some View {
@@ -382,7 +382,7 @@ struct AddWeightWidget: Widget {
                 .containerBackground(for: .widget) {
                     LinearGradient(
                         colors: [
-                            WidgetTintPalette.color(for: entry.snapshot.appTintRawValue).opacity(0.24),
+                            WidgetTintPalette.color(for: entry.snapshot.appTintRawValue, customHex: entry.snapshot.customTintHex).opacity(0.24),
                             Color(.systemBackground)
                         ],
                         startPoint: .topLeading,

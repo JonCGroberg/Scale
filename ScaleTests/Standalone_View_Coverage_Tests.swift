@@ -219,10 +219,7 @@ struct StandaloneViewCoverageTests {
         healthManager.isAvailable = false
 
         let detail = LogDayDetailSheet(
-            title: "Today",
-            entryIDs: [entry.persistentModelID, secondEntry.persistentModelID],
-            workoutIDs: [workout.persistentModelID],
-            dailyActivityDate: activity.date,
+            initialDate: Date(),
             tintColor: .blue,
             onDismiss: {}
         )
@@ -246,7 +243,7 @@ struct StandaloneViewCoverageTests {
             mount(detail).view,
             mount(create).view,
             mount(LogPhotoCarouselView(photos: [image], initialIndex: 3, canEditCurrentPhoto: true, onEditCurrentPhoto: { _ in })).view,
-            mount(WorkoutSummaryRow(workout: workout)).view
+            mount(WorkoutSummaryCard(workouts: [workout], tintColor: .blue)).view
         ]
 
         #expect(controllers.allSatisfy { $0 != nil })
@@ -395,10 +392,12 @@ struct StandaloneViewCoverageTests {
     }
 
     @Test func remainingSmallPureBranchesAreCovered() {
-        #expect(AppTint.allCases.map(\.id) == AppTint.allCases.map(\.rawValue))
-        for tint in AppTint.allCases {
+        #expect(AppTint.presets.map(\.id) == AppTint.presets.map(\.rawValue))
+        for tint in AppTint.presets {
             _ = tint.color
         }
+        _ = AppTint.custom.id
+        _ = AppTint.custom.color
 
         let calendar = Calendar.current
         let today = calendar.startOfDay(for: Date())

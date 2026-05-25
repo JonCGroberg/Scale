@@ -17,8 +17,8 @@ import XCTest
 
 struct AppTintTests {
 
-    @Test func allCasesCount() {
-        #expect(AppTint.allCases.count == 6)
+    @Test func presetCasesCount() {
+        #expect(AppTint.presets.count == 6)
     }
 
     @Test func defaultValueIsBlue() {
@@ -40,6 +40,17 @@ struct AppTintTests {
         #expect(AppTint.pink.title == "Pink")
         #expect(AppTint.lavender.title == "Lavender")
         #expect(AppTint.red.title == "Red")
+    }
+
+    @Test func customCaseProperties() {
+        #expect(AppTint.custom.rawValue == "custom")
+        #expect(AppTint.custom.title == "Custom")
+    }
+
+    @Test func customColorParsesSavedHex() {
+        UserDefaults.standard.set("#FF0000", forKey: "customTintHex")
+        defer { UserDefaults.standard.removeObject(forKey: "customTintHex") }
+        #expect(AppTint.custom.color.toHex() == "#FF0000")
     }
 }
 

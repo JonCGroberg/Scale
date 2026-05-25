@@ -17,6 +17,7 @@ struct ReminderSettingsContent: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 16) {
             Toggle("Daily Reminders", isOn: $remindersEnabled)
+                .tint(tintColor)
                 .onChange(of: remindersEnabled) { _, enabled in
                     updateReminderToggle(enabled: enabled)
                 }

@@ -9,15 +9,19 @@ import ConfettiSwiftUI
 import SwiftUI
 
 struct OnboardingView: View {
-    @AppStorage("hasCompletedOnboarding") private var hasCompletedOnboarding = false
+    @AppStorage("hasCompletedOnboarding_v2") private var hasCompletedOnboarding = false
     @AppStorage("remindersEnabled") private var remindersEnabled = false
     @AppStorage("autoSyncHealthKit") private var autoSyncHealthKit = false
     @AppStorage("appTint") private var appTint = AppTint.defaultValue.rawValue
+    @AppStorage("customTintHex") private var customTintHex = ""
     @AppStorage("weightGoal") private var weightGoal = WeightGoal.defaultValue.rawValue
+    @AppStorage("cutTargetWeight") private var cutTargetWeight = 180.0
+    @AppStorage("bulkTargetWeight") private var bulkTargetWeight = 180.0
     @Environment(NotificationManager.self) private var notificationManager
     @Environment(HealthKitManager.self) private var healthManager
     @State private var currentPage = 0
     @State private var reminders: [Reminder] = []
+    @State private var miniGoals: [MiniGoal] = []
     @State private var isRequestingHealthPermission = false
     @State private var isCompletingOnboarding = false
     @State private var onboardingConfettiTrigger = 0
@@ -36,8 +40,39 @@ struct OnboardingView: View {
         )
     }
 
+    private var selectedTargetWeight: Binding<Double> {
+        Binding(
+            get: {
+                switch selectedGoal.wrappedValue {
+                case .lose: cutTargetWeight
+                case .maintain: cutTargetWeight
+                case .gain: bulkTargetWeight
+                }
+            },
+            set: { newValue in
+                switch selectedGoal.wrappedValue {
+                case .lose: cutTargetWeight = newValue
+                case .maintain: break
+                case .gain: bulkTargetWeight = newValue
+                }
+            }
+        )
+    }
+
     private var tintColor: Color {
         (AppTint(rawValue: appTint) ?? .defaultValue).color
+    }
+
+    private var customColor: Binding<Color> {
+        Binding(
+            get: {
+                guard !customTintHex.isEmpty, let color = Color(hex: customTintHex) else {
+                    return .blue
+                }
+                return color
+            },
+            set: { customTintHex = $0.toHex() }
+        )
     }
 
     private let pages: [OnboardingPage] = [
@@ -65,12 +100,17 @@ struct OnboardingView: View {
         OnboardingPage(
             icon: "heart.fill",
             title: "Connect Apple Health",
-            subtitle: "Import weight entries, workouts, steps, and active calories automatically."
+            subtitle: "Sync your Oura Ring, smartwatch, or other data via Apple Health."
         ),
         OnboardingPage(
             icon: "bell.badge.fill",
             title: "Stay Consistent",
             subtitle: "Set daily reminders so you never miss a weigh-in."
+        ),
+        OnboardingPage(
+            icon: nil,
+            title: "Widgets",
+            subtitle: "Add a widget to your Home Screen or Lock Screen for quick access to your progress."
         ),
     ]
 
@@ -132,7 +172,7 @@ struct OnboardingView: View {
 
                 if index < 2 {
                     onboardingIllustration(for: index)
-                        .padding(.top, 8)
+                        .padding(.top, index == 0 ? 40 : 8)
                         .padding(.horizontal, 28)
                 } else if index == 2 {
                     goalSetupCard
@@ -146,10 +186,13 @@ struct OnboardingView: View {
                     healthSetupCard
                         .padding(.top, 12)
                         .padding(.horizontal, 24)
-                } else if index == pages.count - 1 {
+                } else if index == pages.count - 2 {
                     remindersSetupCard
                         .padding(.top, 12)
                         .padding(.horizontal, 24)
+                } else if index == pages.count - 1 {
+                    widgetSetupCard
+                        .padding(.top, 36)
                 }
 
                 Spacer(minLength: 40)
@@ -163,30 +206,32 @@ struct OnboardingView: View {
     private func onboardingIllustration(for index: Int) -> some View {
         ZStack {
             if index == 0 {
+                // Card 1: Typed manual entry
                 PlaceholderPhotoCard(
-                    title: "Morning weigh-in",
-                    subtitle: "Camera capture",
+                    title: "Manual log",
+                    subtitle: "Quick keyboard entry",
                     background: LinearGradient(
-                        colors: [Color(red: 0.98, green: 0.90, blue: 0.76), Color(red: 0.89, green: 0.69, blue: 0.53)],
-                        startPoint: .topLeading,
-                        endPoint: .bottomTrailing
-                    ),
-                    accent: Color.white.opacity(0.9),
-                    systemImage: "figure.stand"
-                )
-                .rotationEffect(.degrees(-8))
-                .offset(x: -54, y: 20)
-
-                PlaceholderPhotoCard(
-                    title: "Quick scan",
-                    subtitle: "Typed or scanned",
-                    background: LinearGradient(
-                        colors: [Color(red: 0.81, green: 0.90, blue: 0.99), Color(red: 0.53, green: 0.73, blue: 0.95)],
+                        colors: [tintColor, tintColor.opacity(0.7)],
                         startPoint: .topLeading,
                         endPoint: .bottomTrailing
                     ),
                     accent: Color.white.opacity(0.92),
-                    systemImage: "person.fill"
+                    systemImage: "keyboard"
+                )
+                .rotationEffect(.degrees(-8))
+                .offset(x: -54, y: 20)
+
+                // Card 2: Scanned entry via camera/photo
+                PlaceholderPhotoCard(
+                    title: "Quick scan",
+                    subtitle: "Parsed from scale photo",
+                    background: LinearGradient(
+                        colors: [tintColor.opacity(0.65), tintColor.opacity(0.4)],
+                        startPoint: .topLeading,
+                        endPoint: .bottomTrailing
+                    ),
+                    accent: Color.white.opacity(0.92),
+                    systemImage: "barcode.viewfinder"
                 )
                 .rotationEffect(.degrees(7))
                 .offset(x: 46, y: -18)
@@ -214,9 +259,65 @@ struct OnboardingView: View {
                 .foregroundStyle(.secondary)
 
             GoalPicker(selection: selectedGoal, tintColor: tintColor)
+
+            if selectedGoal.wrappedValue.showsTarget {
+                Divider()
+
+                TargetWeightRow(
+                    goal: selectedGoal.wrappedValue,
+                    targetWeight: selectedTargetWeight,
+                    tintColor: tintColor
+                )
+
+                ForEach($miniGoals) { $miniGoal in
+                    Divider()
+
+                    MiniGoalRow(
+                        miniGoal: $miniGoal,
+                        goal: selectedGoal.wrappedValue,
+                        mainTarget: selectedTargetWeight.wrappedValue,
+                        tintColor: tintColor
+                    ) {
+                        MiniGoalStore.save(miniGoals, for: selectedGoal.wrappedValue)
+                    }
+                    .padding(.leading, 32)
+                }
+
+                Divider()
+
+                Button {
+                    withAnimation {
+                        miniGoals.append(
+                            MiniGoal(
+                                parentGoal: selectedGoal.wrappedValue,
+                                targetWeight: MiniGoalStore.defaultTarget(
+                                    for: selectedGoal.wrappedValue,
+                                    mainTarget: selectedTargetWeight.wrappedValue,
+                                    existingGoals: miniGoals
+                                )
+                            )
+                        )
+                    }
+                    MiniGoalStore.save(miniGoals, for: selectedGoal.wrappedValue)
+                    Haptics.selection()
+                } label: {
+                    Label("Add mini goal", systemImage: "plus.circle.fill")
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .padding(.leading, 32)
+                }
+                .buttonStyle(.plain)
+                .foregroundStyle(tintColor)
+            }
         }
         .padding(20)
-        .background(.background, in: RoundedRectangle(cornerRadius: 24, style: .continuous))
+        .background(Color(.secondarySystemGroupedBackground), in: RoundedRectangle(cornerRadius: 24, style: .continuous))
+        .animation(.snappy, value: selectedGoal.wrappedValue)
+        .onChange(of: selectedGoal.wrappedValue) { _, newGoal in
+            miniGoals = MiniGoalStore.load(for: newGoal)
+        }
+        .onAppear {
+            miniGoals = MiniGoalStore.load(for: selectedGoal.wrappedValue)
+        }
     }
 
     private var remindersSetupCard: some View {
@@ -233,12 +334,217 @@ struct OnboardingView: View {
             )
         }
             .padding(20)
-            .background(.background, in: RoundedRectangle(cornerRadius: 24, style: .continuous))
+            .background(Color(.secondarySystemGroupedBackground), in: RoundedRectangle(cornerRadius: 24, style: .continuous))
+    }
+
+    private var widgetSetupCard: some View {
+        VStack(spacing: 28) {
+            ZStack {
+                lockScreenPhoneCard
+                    .rotationEffect(.degrees(-6))
+                    .offset(x: -40, y: 14)
+
+                homeScreenPhoneCard
+                    .rotationEffect(.degrees(5))
+                    .offset(x: 40, y: -10)
+            }
+            .frame(height: 280)
+
+            Label("Add widgets by long-pressing your Home Screen or Lock Screen", systemImage: "plus.circle")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+                .padding(.top, 24)
+        }
+        .padding(.horizontal, 28)
+        .padding(.bottom, 32)
+    }
+
+    private var lockScreenPhoneCard: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            VStack(spacing: 2) {
+                Text("TUESDAY, SEPTEMBER 15")
+                    .font(.system(size: 8, weight: .bold))
+                    .foregroundStyle(.white.opacity(0.6))
+                    .tracking(0.5)
+                
+                Text("9:41")
+                    .font(.system(size: 34, weight: .semibold, design: .rounded))
+                    .foregroundStyle(.white)
+            }
+            .frame(maxWidth: .infinity)
+            .padding(.top, 22)
+
+            Spacer()
+
+            VStack(alignment: .leading, spacing: 4) {
+                HStack {
+                    Image(systemName: "scalemass.fill")
+                        .font(.system(size: 8, weight: .semibold))
+                        .foregroundStyle(tintColor)
+                    Text("Scale")
+                        .font(.system(size: 8, weight: .semibold))
+                        .foregroundStyle(tintColor)
+                    Spacer()
+                    Text("yesterday")
+                        .font(.system(size: 7))
+                        .foregroundStyle(.secondary)
+                }
+                .padding(.bottom, 2)
+
+                HStack(alignment: .firstTextBaseline, spacing: 3) {
+                    Text("142.5")
+                        .font(.system(size: 22, weight: .bold, design: .rounded))
+                        .foregroundStyle(.white)
+                    Text("lb")
+                        .font(.system(size: 8, weight: .semibold))
+                        .foregroundStyle(.secondary)
+                        .padding(.bottom, 3)
+                }
+
+                HStack(spacing: 4) {
+                    HStack(spacing: 2) {
+                        Text("Streak")
+                            .font(.system(size: 7, weight: .medium))
+                            .foregroundStyle(.secondary)
+                        Text("6d")
+                            .font(.system(size: 7, weight: .bold, design: .rounded))
+                            .foregroundStyle(tintColor)
+                    }
+                    .padding(.horizontal, 6)
+                    .padding(.vertical, 3)
+                    .background(tintColor.opacity(0.14), in: Capsule())
+
+                    HStack(spacing: 2) {
+                        Text("30D")
+                            .font(.system(size: 7, weight: .medium))
+                            .foregroundStyle(.secondary)
+                        Text("-1.4%")
+                            .font(.system(size: 7, weight: .bold, design: .rounded))
+                            .foregroundStyle(.green)
+                    }
+                    .padding(.horizontal, 6)
+                    .padding(.vertical, 3)
+                    .background(tintColor.opacity(0.14), in: Capsule())
+                }
+            }
+            .padding(10)
+            .frame(width: 130)
+            .background(
+                RoundedRectangle(cornerRadius: 12, style: .continuous)
+                    .fill(Color.white.opacity(0.12))
+            )
+            .overlay {
+                RoundedRectangle(cornerRadius: 12, style: .continuous)
+                    .stroke(.white.opacity(0.15), lineWidth: 1.5)
+            }
+            .padding(.horizontal, 18)
+            .padding(.bottom, 12)
+        }
+        .frame(width: 168)
+        .background(
+            LinearGradient(
+                colors: [
+                    Color(red: 0.32, green: 0.18, blue: 0.44), // Cosmic purple
+                    Color(red: 0.18, green: 0.14, blue: 0.32), // Deep violet
+                    Color(red: 0.08, green: 0.08, blue: 0.14)  // Midnight black
+                ],
+                startPoint: .top,
+                endPoint: .bottom
+            )
+        )
+        .clipShape(RoundedRectangle(cornerRadius: 28, style: .continuous))
+        .overlay {
+            RoundedRectangle(cornerRadius: 28, style: .continuous)
+                .stroke(.white.opacity(0.25), lineWidth: 3)
+        }
+        .shadow(color: .black.opacity(0.2), radius: 24, y: 12)
+    }
+
+    private var homeScreenPhoneCard: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            HStack(alignment: .center, spacing: 4) {
+                Text("9:41")
+                    .font(.system(size: 18, weight: .semibold, design: .rounded))
+                    .foregroundStyle(.white)
+                Spacer()
+                HStack(spacing: 3) {
+                    Image(systemName: "cellularbars")
+                        .font(.system(size: 10))
+                    Image(systemName: "wifi")
+                        .font(.system(size: 10))
+                    Image(systemName: "battery.100")
+                        .font(.system(size: 11))
+                }
+                .foregroundStyle(.white)
+            }
+            .padding(.top, 16)
+            .padding(.horizontal, 14)
+
+            Spacer()
+
+            VStack(alignment: .leading, spacing: 6) {
+                HStack(spacing: 4) {
+                    Image(systemName: "flame.fill")
+                        .font(.system(size: 11, weight: .bold))
+                        .foregroundStyle(tintColor)
+                    Text("Streak")
+                        .font(.system(size: 9, weight: .bold))
+                        .foregroundStyle(.white)
+                }
+
+                Spacer(minLength: 0)
+
+                HStack(alignment: .firstTextBaseline, spacing: 1) {
+                    Text("12")
+                        .font(.system(size: 30, weight: .black, design: .rounded))
+                        .foregroundStyle(.white)
+                    Text("days")
+                        .font(.system(size: 10, weight: .bold, design: .rounded))
+                        .foregroundStyle(.white.opacity(0.8))
+                }
+
+                Spacer(minLength: 0)
+
+                Text("Best: 24 days")
+                    .font(.system(size: 8, weight: .medium))
+                    .foregroundStyle(.white.opacity(0.7))
+            }
+            .padding(10)
+            .frame(width: 100, height: 100, alignment: .leading)
+            .background(
+                RoundedRectangle(cornerRadius: 16, style: .continuous)
+                    .fill(Color.white.opacity(0.12))
+            )
+            .overlay {
+                RoundedRectangle(cornerRadius: 16, style: .continuous)
+                    .stroke(.white.opacity(0.15), lineWidth: 1.5)
+            }
+            .padding(.horizontal, 18)
+            .padding(.bottom, 40)
+        }
+        .frame(width: 168)
+        .background(
+            LinearGradient(
+                colors: [
+                    Color(red: 0.12, green: 0.42, blue: 0.74), // Royal twilight blue
+                    Color(red: 0.18, green: 0.22, blue: 0.48), // Royal twilight indigo
+                    Color(red: 0.08, green: 0.10, blue: 0.18)  // Dark twilight black
+                ],
+                startPoint: .top,
+                endPoint: .bottom
+            )
+        )
+        .clipShape(RoundedRectangle(cornerRadius: 28, style: .continuous))
+        .overlay {
+            RoundedRectangle(cornerRadius: 28, style: .continuous)
+                .stroke(.white.opacity(0.25), lineWidth: 3)
+        }
+        .shadow(color: .black.opacity(0.2), radius: 24, y: 12)
     }
 
     private var themeSetupCard: some View {
         VStack(alignment: .leading, spacing: 16) {
-            ForEach(AppTint.allCases) { tint in
+            ForEach(AppTint.presets) { tint in
                 Button {
                     selectedTint.wrappedValue = tint
                     Haptics.selection()
@@ -275,9 +581,45 @@ struct OnboardingView: View {
                 }
                 .buttonStyle(.plain)
             }
+
+            customThemeRow
         }
         .padding(20)
-        .background(.background, in: RoundedRectangle(cornerRadius: 24, style: .continuous))
+        .background(Color(.secondarySystemGroupedBackground), in: RoundedRectangle(cornerRadius: 24, style: .continuous))
+    }
+
+    private var customThemeRow: some View {
+        HStack(spacing: 12) {
+            Circle()
+                .fill(selectedTint.wrappedValue == .custom ? tintColor : Color.gray.opacity(0.3))
+                .frame(width: 20, height: 20)
+
+            Text("Custom")
+                .font(.body.weight(.medium))
+                .foregroundStyle(.primary)
+
+            Spacer()
+
+            ColorPicker("", selection: customColor, supportsOpacity: false)
+                .labelsHidden()
+                .onChange(of: customTintHex) { _, _ in
+                    selectedTint.wrappedValue = .custom
+                    Haptics.selection()
+                }
+        }
+        .padding(.horizontal, 14)
+        .frame(height: 48)
+        .background(
+            tintColor.opacity(selectedTint.wrappedValue == .custom ? 0.14 : 0.06),
+            in: RoundedRectangle(cornerRadius: 14, style: .continuous)
+        )
+        .overlay {
+            RoundedRectangle(cornerRadius: 14, style: .continuous)
+                .stroke(
+                    selectedTint.wrappedValue == .custom ? tintColor.opacity(0.7) : Color.secondary.opacity(0.16),
+                    lineWidth: 1
+                )
+        }
     }
 
     private var healthSetupCard: some View {
@@ -326,7 +668,7 @@ struct OnboardingView: View {
             }
         }
         .padding(20)
-        .background(.background, in: RoundedRectangle(cornerRadius: 24, style: .continuous))
+        .background(Color(.secondarySystemGroupedBackground), in: RoundedRectangle(cornerRadius: 24, style: .continuous))
     }
 
     private var healthSyncBinding: Binding<Bool> {
@@ -455,7 +797,7 @@ struct PlaceholderPhotoCard: View {
         .clipShape(RoundedRectangle(cornerRadius: 28, style: .continuous))
         .overlay {
             RoundedRectangle(cornerRadius: 28, style: .continuous)
-                .stroke(Color.white.opacity(0.85), lineWidth: 4)
+                .stroke(Color.white.opacity(0.15), lineWidth: 1.5)
         }
         .shadow(color: .black.opacity(0.12), radius: 24, y: 12)
     }
@@ -507,7 +849,7 @@ struct PlaceholderCalendarCard: View {
         .background(Color(.systemBackground), in: RoundedRectangle(cornerRadius: 26, style: .continuous))
         .overlay {
             RoundedRectangle(cornerRadius: 26, style: .continuous)
-                .stroke(Color.white.opacity(0.9), lineWidth: 4)
+                .stroke(Color.white.opacity(0.15), lineWidth: 1.5)
         }
         .shadow(color: .black.opacity(0.12), radius: 24, y: 12)
     }
@@ -566,7 +908,7 @@ struct PlaceholderGraphCard: View {
         .background(Color(.systemBackground), in: RoundedRectangle(cornerRadius: 26, style: .continuous))
         .overlay {
             RoundedRectangle(cornerRadius: 26, style: .continuous)
-                .stroke(Color.white.opacity(0.9), lineWidth: 4)
+                .stroke(Color.white.opacity(0.15), lineWidth: 1.5)
         }
         .shadow(color: .black.opacity(0.12), radius: 24, y: 12)
     }
@@ -602,7 +944,7 @@ struct PlaceholderMiniGraphCard: View {
         .background(Color(.systemBackground), in: RoundedRectangle(cornerRadius: 24, style: .continuous))
         .overlay {
             RoundedRectangle(cornerRadius: 24, style: .continuous)
-                .stroke(Color.white.opacity(0.88), lineWidth: 4)
+                .stroke(Color.white.opacity(0.15), lineWidth: 1.5)
         }
         .shadow(color: .black.opacity(0.1), radius: 20, y: 10)
     }

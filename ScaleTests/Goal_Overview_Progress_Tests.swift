@@ -30,7 +30,7 @@ struct GoalOverviewProgressTests {
         #expect(abs(progress.totalDistance - 20) < 0.01)
         #expect(abs(progress.completedChange - -10) < 0.01)
         #expect(abs(progress.totalChange - -20) < 0.01)
-        #expect(GoalProgressFeedback.progressText(progress) == "-10.0/20.0 lbs")
+        #expect(GoalProgressFeedback.progressText(progress) == "Down 10.0 of 20.0 lbs")
         #expect(progress.daysRemaining != nil)
         #expect(abs(progress.daysRemaining! - 10) < 0.25)
     }
@@ -55,7 +55,7 @@ struct GoalOverviewProgressTests {
         #expect(abs(progress.totalDistance - 20) < 0.01)
         #expect(abs(progress.completedChange - 10) < 0.01)
         #expect(abs(progress.totalChange - 20) < 0.01)
-        #expect(GoalProgressFeedback.progressText(progress) == "+10.0/20.0 lbs")
+        #expect(GoalProgressFeedback.progressText(progress) == "Up 10.0 of 20.0 lbs")
         #expect(progress.daysRemaining != nil)
         #expect(abs(progress.daysRemaining! - 10) < 0.25)
     }

@@ -15,6 +15,9 @@ struct EntryView: View {
     @Environment(\.dismiss) private var dismiss
     @Environment(HealthKitManager.self) private var healthManager
     @Environment(NotificationManager.self) private var notificationManager
+    @Query(sort: \DailyActivitySummary.date, order: .reverse) private var allDailyActivitySummaries: [DailyActivitySummary]
+    @Query(sort: \SleepEntry.startDate, order: .reverse) private var allSleepEntries: [SleepEntry]
+    @Query(sort: \WorkoutEntry.timestamp, order: .reverse) private var allWorkouts: [WorkoutEntry]
     @Binding var historyScrollRequest: Int
     @Binding var historySelectedEntry: WeightEntry?
     var logDate: Date?
@@ -25,6 +28,37 @@ struct EntryView: View {
     @AppStorage("weightGoal") private var weightGoal = WeightGoal.defaultValue.rawValue
     @AppStorage("cutTargetWeight") private var cutTargetWeight = 180.0
     @AppStorage("bulkTargetWeight") private var bulkTargetWeight = 180.0
+
+    private var effectiveDate: Date {
+        logDate ?? Date()
+    }
+
+    private var dailyActivitySummary: DailyActivitySummary? {
+        let calendar = Calendar.current
+        let targetDay = calendar.startOfDay(for: effectiveDate)
+        return allDailyActivitySummaries.first { calendar.startOfDay(for: $0.date) == targetDay }
+    }
+
+    private var sleepDurationForDay: TimeInterval? {
+        let calendar = Calendar.current
+        let targetDay = calendar.startOfDay(for: effectiveDate)
+        let nextDay = calendar.date(byAdding: .day, value: 1, to: targetDay)!
+        let dayEntries = allSleepEntries.filter {
+            $0.startDate >= targetDay && $0.startDate < nextDay
+        }
+        guard !dayEntries.isEmpty else { return nil }
+        return dayEntries.reduce(0) { $0 + $1.duration }
+    }
+
+    private var workoutCountForDay: Int {
+        let calendar = Calendar.current
+        let targetDay = calendar.startOfDay(for: effectiveDate)
+        let nextDay = calendar.date(byAdding: .day, value: 1, to: targetDay)!
+        return allWorkouts.filter {
+            $0.timestamp >= targetDay && $0.timestamp < nextDay
+        }.count
+    }
+
     @State private var currentWeight: Double = 142.5
     @State private var isEditingWeight = false
     @State private var weightText = ""
@@ -48,11 +82,22 @@ struct EntryView: View {
         return formatter
     }()
 
+    private let dayNameFormatter: DateFormatter = {
+        let formatter = DateFormatter()
+        formatter.dateFormat = "EEEE"
+        return formatter
+    }()
+
     private var weightStatusText: String {
-        if let logDate {
-            return dayFormatter.string(from: logDate)
+        let calendar = Calendar.current
+        if calendar.isDateInToday(effectiveDate) {
+            return "Today"
         }
-        return "Log your weight"
+        if let daysAgo = calendar.dateComponents([.day], from: effectiveDate, to: Date()).day,
+           daysAgo >= 1 && daysAgo < 7 {
+            return dayNameFormatter.string(from: effectiveDate)
+        }
+        return dayFormatter.string(from: effectiveDate)
     }
 
     private var tintColor: Color {
@@ -66,28 +111,49 @@ struct EntryView: View {
                     .ignoresSafeArea()
 
                 VStack(spacing: 0) {
+                    dayStatsRow
+                        .padding(.horizontal, 46)
+                        .padding(.top, 8)
+
                     Spacer()
 
                     VStack(spacing: 16) {
                         weightDisplay
                     }
-                    .padding(.horizontal, 32)
+                    .padding(.horizontal, 46)
                     .padding(.vertical, 28)
                     .frame(maxWidth: .infinity)
-                    .padding(.horizontal, 14)
                     .padding(.bottom, 28)
                 }
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity)
             .toolbar {
-                ToolbarItem(placement: .cancellationAction) {
-                    Button {
-                        Haptics.selection()
-                        close()
-                    } label: {
-                        Image(systemName: "xmark")
+                ToolbarItem(placement: .topBarLeading) {
+                    HStack(spacing: 6) {
+                        Button {
+                            Haptics.selection()
+                            close()
+                        } label: {
+                            Image(systemName: "xmark")
+                        }
+                        .buttonStyle(.glass)
+
+                        addPhotosButton
                     }
-                    .buttonStyle(.glass)
+                }
+
+                ToolbarItem(placement: .principal) {
+                    Text(weightStatusText)
+                        .font(.headline.weight(.semibold))
+                        .lineLimit(1)
+                }
+
+                ToolbarItem(placement: .topBarTrailing) {
+                    if !isEditingWeight {
+                        Button("Save") {
+                            saveEntry()
+                        }
+                    }
                 }
             }
             .onAppear {
@@ -122,25 +188,67 @@ struct EntryView: View {
 
     private var weightDisplay: some View {
         VStack(spacing: weightDisplaySpacing) {
-            Text(weightStatusText)
-                .font(.caption2.weight(.medium))
-                .foregroundStyle(.secondary)
-                .multilineTextAlignment(.center)
-
             weightValue
 
             quickAdjustRow
 
-            if !isEditingWeight {
-                saveButton
-
-                if !photos.isEmpty {
-                    entryPhotoSection
-                        .transition(.move(edge: .bottom).combined(with: .opacity))
-                }
+            if !isEditingWeight, !photos.isEmpty {
+                entryPhotoSection
             }
         }
         .frame(maxHeight: .infinity)
+    }
+
+    @ViewBuilder
+    private var dayStatsRow: some View {
+        let summary = dailyActivitySummary
+        let stepsText = summary.map { $0.stepCount.formatted() } ?? "—"
+        let calText = summary.map { "\(Int($0.activeEnergyBurnedKilocalories.rounded())) cal" } ?? "—"
+        let sleepHours = sleepDurationForDay.map { String(format: "%.1fh", $0 / 3600) } ?? "—"
+
+        HStack(spacing: 12) {
+            Label {
+                Text(stepsText)
+                    .font(.caption.weight(.semibold))
+                    .lineLimit(1)
+            } icon: {
+                Image(systemName: "shoeprints.fill")
+                    .font(.caption2)
+            }
+            .foregroundStyle(.secondary)
+
+            Label {
+                Text(calText)
+                    .font(.caption.weight(.semibold))
+                    .lineLimit(1)
+            } icon: {
+                Image(systemName: "flame.fill")
+                    .font(.caption2)
+            }
+            .foregroundStyle(.secondary)
+
+            Label {
+                Text(sleepHours)
+                    .font(.caption.weight(.semibold))
+                    .lineLimit(1)
+            } icon: {
+                Image(systemName: "bed.double.fill")
+                    .font(.caption2)
+            }
+            .foregroundStyle(.secondary)
+
+            if workoutCountForDay > 0 {
+                Label {
+                    Text("\(workoutCountForDay)")
+                        .font(.caption.weight(.semibold))
+                        .lineLimit(1)
+                } icon: {
+                    Image(systemName: "figure.run")
+                        .font(.caption2)
+                }
+                .foregroundStyle(.secondary)
+            }
+        }
     }
 
     private var weightValue: some View {
@@ -165,10 +273,6 @@ struct EntryView: View {
                 .foregroundStyle(.secondary)
                 .padding(.bottom, 4)
 
-            if !isEditingWeight {
-                addPhotosButton
-                    .padding(.leading, 8)
-            }
         }
         .contentShape(Rectangle())
         .onTapGesture {
@@ -198,23 +302,6 @@ struct EntryView: View {
             .frame(height: 44)
             .buttonStyle(.glassProminent)
         }
-    }
-
-    private var saveButton: some View {
-        Button {
-            saveEntry()
-        } label: {
-            HStack(spacing: 8) {
-                Image(systemName: "square.and.arrow.down.fill")
-                Text("Save")
-            }
-            .font(.headline.weight(.semibold))
-            .padding(.horizontal, 18)
-            .frame(maxWidth: .infinity)
-            .frame(height: 44)
-        }
-        .buttonStyle(.glassProminent)
-        .tint(tintColor)
     }
 
     @ViewBuilder
@@ -258,45 +345,23 @@ struct EntryView: View {
             matching: .images
         ) {
             Image(systemName: "photo.badge.plus")
-                .font(.caption.weight(.semibold))
+                .font(.footnote.weight(.semibold))
                 .foregroundStyle(tintColor)
-                .frame(width: 28, height: 28)
-                .background(
-                    Circle()
-                        .fill(tintColor.opacity(0.10))
-                )
-                .overlay {
-                    Circle()
-                        .strokeBorder(tintColor.opacity(0.24), lineWidth: 1)
-                }
         }
-        .buttonStyle(.plain)
-        .accessibilityLabel("Add photo")
+        .buttonStyle(.glass)
+        .accessibilityLabel("Add photos")
     }
 
     private var quickAdjustRow: some View {
         HStack(spacing: 16) {
-            quickAdjustButton(systemImage: "minus") {
+            RepeatingWeightAdjustButton(systemImage: "minus", tint: tintColor) {
                 adjustWeight(by: -step)
             }
 
-            quickAdjustButton(systemImage: "plus") {
+            RepeatingWeightAdjustButton(systemImage: "plus", tint: tintColor) {
                 adjustWeight(by: step)
             }
         }
-    }
-
-    private func quickAdjustButton(systemImage: String, action: @escaping () -> Void) -> some View {
-        Button {
-            Haptics.selection()
-            action()
-        } label: {
-            Image(systemName: systemImage)
-                .font(.title3.weight(.semibold))
-                .foregroundStyle(tintColor)
-                .frame(width: 52, height: 44)
-        }
-        .buttonStyle(VisibleGlassButtonStyle(tint: tintColor))
     }
 
     // MARK: - Actions
@@ -332,6 +397,7 @@ struct EntryView: View {
 
     private func saveEntry() {
         let goal = WeightGoal(rawValue: weightGoal) ?? .defaultValue
+        let isFirstEverLog = latestWeight == nil
         let reachedGoal = GoalProgressFeedback.didReachGoal(
             goal: goal,
             newWeight: currentWeight,
@@ -351,13 +417,19 @@ struct EntryView: View {
             timestamp: timestamp
         )
         entry.photosData = photoData
+
+        let preInsertDescriptor = FetchDescriptor<WeightEntry>(sortBy: [SortDescriptor(\.timestamp, order: .reverse)])
+        let preInsertEntries = (try? modelContext.fetch(preInsertDescriptor)) ?? []
+        let previousLongestStreak = WeightCalculations.longestStreak(from: preInsertEntries)
+
         modelContext.insert(entry)
 
         // Fetch existing entries for streak + widget refresh after insert.
         let descriptor = FetchDescriptor<WeightEntry>(sortBy: [SortDescriptor(\.timestamp, order: .reverse)])
         let allEntries = (try? modelContext.fetch(descriptor)) ?? []
 
-        entry.streakCount = WeightCalculations.currentStreak(from: allEntries, includingToday: true)
+        let streak = WeightCalculations.currentStreak(from: allEntries, includingToday: true)
+        entry.streakCount = streak
         WeightWidgetSnapshotStore.refresh(using: allEntries)
 
         // Reschedule reminders so tomorrow's notification reflects the updated streak.
@@ -372,13 +444,36 @@ struct EntryView: View {
         saved = true
         pendingEntry = entry
         Haptics.success()
-        if reachedGoal {
+        let isNewMaxStreak = streak > 1 && streak > previousLongestStreak
+        if isFirstEverLog {
+            NotificationCenter.default.post(name: .didLogFirstWeight, object: nil)
+        } else if reachedGoal {
             NotificationCenter.default.post(
                 name: .didReachWeightGoal,
                 object: GoalReachedPayload(goal: goal, weight: currentWeight)
             )
         } else if movedCloserToGoal {
-            NotificationCenter.default.post(name: .didMoveCloserToGoal, object: nil)
+            let distanceCloser = GoalProgressFeedback.distanceCloserToGoal(
+                goal: goal,
+                previousWeight: latestWeight,
+                newWeight: currentWeight,
+                cutTarget: cutTargetWeight,
+                bulkTarget: bulkTargetWeight
+            ) ?? 0
+            let miniGoals = MiniGoalStore.load(for: goal)
+            let achievedMiniGoal = GoalProgressFeedback.achievedMiniGoal(
+                goal: goal,
+                previousWeight: latestWeight,
+                newWeight: currentWeight,
+                miniGoals: miniGoals
+            )
+            NotificationCenter.default.post(
+                name: .didMoveCloserToGoal,
+                object: CloserToGoalPayload(distanceCloser: distanceCloser, achievedMiniGoal: achievedMiniGoal)
+            )
+        }
+        if isNewMaxStreak {
+            NotificationCenter.default.post(name: .didSetNewMaxStreak, object: streak)
         }
         close()
     }
@@ -430,6 +525,95 @@ private struct VisibleGlassButtonStyle: ButtonStyle {
             }
             .scaleEffect(configuration.isPressed ? 0.97 : 1)
             .animation(.snappy(duration: 0.16), value: configuration.isPressed)
+    }
+}
+
+private struct RepeatingWeightAdjustButton: View {
+    let systemImage: String
+    let tint: Color
+    let action: () -> Void
+
+    @State private var isPressed = false
+    @State private var didRepeat = false
+    @State private var repeatTask: Task<Void, Never>?
+
+    var body: some View {
+        Image(systemName: systemImage)
+            .font(.title3.weight(.semibold))
+            .foregroundStyle(tint)
+            .frame(width: 52, height: 44)
+            .frame(minHeight: 44)
+            .padding(.horizontal, 14)
+            .background(.ultraThinMaterial, in: Capsule(style: .continuous))
+            .background(
+                tint.opacity(isPressed ? 0.24 : 0.14),
+                in: Capsule(style: .continuous)
+            )
+            .overlay {
+                Capsule(style: .continuous)
+                    .strokeBorder(tint.opacity(isPressed ? 0.62 : 0.38), lineWidth: 1)
+            }
+            .scaleEffect(isPressed ? 0.97 : 1)
+            .contentShape(Capsule(style: .continuous))
+            .gesture(
+                DragGesture(minimumDistance: 0)
+                    .onChanged { _ in
+                        guard !isPressed else { return }
+                        beginPress()
+                    }
+                    .onEnded { _ in
+                        endPress()
+                    }
+            )
+            .accessibilityLabel(systemImage == "minus" ? "Decrease weight" : "Increase weight")
+            .accessibilityAddTraits(.isButton)
+            .onDisappear {
+                cancelRepeat()
+            }
+            .animation(.snappy(duration: 0.16), value: isPressed)
+    }
+
+    private func beginPress() {
+        isPressed = true
+        didRepeat = false
+
+        repeatTask = Task { @MainActor in
+            try? await Task.sleep(for: .milliseconds(450))
+            guard !Task.isCancelled else { return }
+
+            let startedAt = Date()
+            while !Task.isCancelled {
+                didRepeat = true
+                Haptics.selection()
+                action()
+
+                let elapsed = Date().timeIntervalSince(startedAt)
+                let delay: Duration = if elapsed < 1.0 {
+                    .milliseconds(180)
+                } else if elapsed < 2.0 {
+                    .milliseconds(110)
+                } else {
+                    .milliseconds(65)
+                }
+                try? await Task.sleep(for: delay)
+            }
+        }
+    }
+
+    private func endPress() {
+        let shouldHandleAsTap = !didRepeat
+        cancelRepeat()
+
+        if shouldHandleAsTap {
+            Haptics.selection()
+            action()
+        }
+    }
+
+    private func cancelRepeat() {
+        repeatTask?.cancel()
+        repeatTask = nil
+        isPressed = false
     }
 }
 

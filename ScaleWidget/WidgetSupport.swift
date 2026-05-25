@@ -12,6 +12,7 @@ import UniformTypeIdentifiers
 struct WeightWidgetSnapshot: Codable, Equatable, Sendable {
     let generatedAt: Date
     let appTintRawValue: String
+    let customTintHex: String?
     let latestWeight: Double?
     let latestTimestamp: Date?
     let streakCount: Int
@@ -21,6 +22,7 @@ struct WeightWidgetSnapshot: Codable, Equatable, Sendable {
     static let empty = WeightWidgetSnapshot(
         generatedAt: .distantPast,
         appTintRawValue: "blue",
+        customTintHex: nil,
         latestWeight: nil,
         latestTimestamp: nil,
         streakCount: 0,
@@ -31,6 +33,7 @@ struct WeightWidgetSnapshot: Codable, Equatable, Sendable {
     static let preview = WeightWidgetSnapshot(
         generatedAt: .now,
         appTintRawValue: "green",
+        customTintHex: nil,
         latestWeight: 182.4,
         latestTimestamp: .now.addingTimeInterval(-4_200),
         streakCount: 6,
@@ -65,21 +68,48 @@ enum WeightWidgetSnapshotStore {
 }
 
 enum WidgetTintPalette {
-    static func color(for rawValue: String) -> Color {
+    static func color(for rawValue: String, customHex: String? = nil) -> Color {
+        if rawValue == "custom", let hex = customHex ?? UserDefaults.standard.string(forKey: "customTintHex") {
+            return Color(hex: hex) ?? .blue
+        }
         switch rawValue {
         case "green":
-            .green
+            return .green
         case "orange":
-            .orange
+            return .orange
         case "pink":
-            Color(red: 1.0, green: 0.72, blue: 0.84)
+            return Color(red: 1.0, green: 0.72, blue: 0.84)
         case "lavender":
-            Color(red: 0.72, green: 0.66, blue: 0.96)
+            return Color(red: 0.72, green: 0.66, blue: 0.96)
         case "red":
-            .red
+            return .red
         default:
-            .blue
+            return .blue
         }
+    }
+}
+
+extension Color {
+    init?(hex: String) {
+        let hex = hex.trimmingCharacters(in: CharacterSet.alphanumerics.inverted)
+        var int: UInt64 = 0
+        Scanner(string: hex).scanHexInt64(&int)
+        let a, r, g, b: UInt64
+        switch hex.count {
+        case 6:
+            (a, r, g, b) = (255, (int >> 16) & 0xFF, (int >> 8) & 0xFF, int & 0xFF)
+        case 8:
+            (a, r, g, b) = ((int >> 24) & 0xFF, (int >> 16) & 0xFF, (int >> 8) & 0xFF, int & 0xFF)
+        default:
+            return nil
+        }
+        self.init(
+            .sRGB,
+            red: Double(r) / 255,
+            green: Double(g) / 255,
+            blue: Double(b) / 255,
+            opacity: Double(a) / 255
+        )
     }
 }
 

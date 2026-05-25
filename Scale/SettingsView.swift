@@ -10,6 +10,8 @@ import SwiftData
 import UIKit
 
 struct SettingsView: View {
+    @Environment(\.dismiss) private var dismiss
+    @Environment(\.modelContext) private var modelContext
     @Environment(HealthKitManager.self) private var healthManager
     @Environment(NotificationManager.self) private var notificationManager
     @AppStorage("autoSyncHealthKit") private var autoSyncHealthKit = false
@@ -18,8 +20,10 @@ struct SettingsView: View {
     @AppStorage("weightGoal") private var weightGoal = WeightGoal.defaultValue.rawValue
     @AppStorage("cutTargetWeight") private var cutTargetWeight = 180.0
     @AppStorage("bulkTargetWeight") private var bulkTargetWeight = 180.0
+    @AppStorage("customTintHex") private var customTintHex = ""
     @State private var reminders: [Reminder] = []
     @State private var miniGoals: [MiniGoal] = []
+    @State private var showDeveloperTools = false
 
     private var selectedTint: Binding<AppTint> {
         Binding(
@@ -37,6 +41,18 @@ struct SettingsView: View {
 
     private var tintColor: Color {
         (AppTint(rawValue: appTint) ?? .defaultValue).color
+    }
+
+    private var customColor: Binding<Color> {
+        Binding(
+            get: {
+                guard !customTintHex.isEmpty, let color = Color(hex: customTintHex) else {
+                    return .blue
+                }
+                return color
+            },
+            set: { customTintHex = $0.toHex() }
+        )
     }
 
     private var selectedTargetWeight: Binding<Double> {
@@ -153,6 +169,7 @@ struct SettingsView: View {
                 Section {
                     if healthManager.isAvailable {
                         Toggle("Import Apple Health updates automatically", isOn: $autoSyncHealthKit)
+                            .tint(tintColor)
                     }
                     HealthImportRows(tintColor: tintColor)
                 } header: {
@@ -163,6 +180,7 @@ struct SettingsView: View {
 
                 Section {
                     Toggle("Daily Reminders", isOn: $remindersEnabled)
+                        .tint(tintColor)
                         .onChange(of: remindersEnabled) { _, enabled in
                             if enabled {
                                 Task {
@@ -217,7 +235,7 @@ struct SettingsView: View {
 
                 Section {
                     Picker(selection: selectedTint) {
-                        ForEach(AppTint.allCases) { tint in
+                        ForEach(AppTint.presets) { tint in
                             HStack(spacing: 10) {
                                 Circle()
                                     .fill(tint.color)
@@ -228,16 +246,69 @@ struct SettingsView: View {
                             }
                             .tag(tint)
                         }
+
+                        HStack(spacing: 10) {
+                            Circle()
+                                .fill(selectedTint.wrappedValue == .custom ? tintColor : .gray.opacity(0.3))
+                                .frame(width: 12, height: 12)
+
+                            Text("Custom")
+                                .foregroundStyle(selectedTint.wrappedValue == .custom ? tintColor : .primary)
+                        }
+                        .tag(AppTint.custom)
                     }
                     label: {
                         Text("Tint Color")
                             .foregroundStyle(tintColor)
                     }
+
+                    if selectedTint.wrappedValue == .custom {
+                        HStack {
+                            ColorPicker("Custom Color",
+                                        selection: customColor,
+                                        supportsOpacity: false)
+                        }
+                    }
                 } header: {
                     Text("Display")
                 }
+                
+                Section {
+                    Button {
+                        Haptics.selection()
+                        showDeveloperTools = true
+                    } label: {
+                        HStack(spacing: 12) {
+                            Image(systemName: "exclamationmark.triangle.fill")
+                                .foregroundStyle(.red)
+                            
+                            Text("Developer Testing Tools")
+                                .foregroundStyle(.red)
+                                .fontWeight(.semibold)
+                            
+                            Spacer()
+                            
+                            Image(systemName: "chevron.right")
+                                .font(.caption.weight(.bold))
+                                .foregroundStyle(.secondary)
+                        }
+                    }
+                } header: {
+                    Text("Developer")
+                } footer: {
+                    Text("Warning: These options are for developer testing only.")
+                }
             }
             .navigationTitle("Settings")
+            .toolbar {
+                ToolbarItem(placement: .topBarTrailing) {
+                    Button("Done") {
+                        Haptics.selection()
+                        dismiss()
+                    }
+                    .fontWeight(.semibold)
+                }
+            }
             .onAppear {
                 reminders = notificationManager.loadReminders()
                 miniGoals = MiniGoalStore.load(for: selectedWeightGoal.wrappedValue)
@@ -257,6 +328,11 @@ struct SettingsView: View {
                 if case .success = new { return true }
                 return false
             }
+        }
+        .tint(tintColor)
+        .sheet(isPresented: $showDeveloperTools) {
+            DeveloperView()
+                .liquidGlassSheetPresentation()
         }
     }
 
@@ -626,6 +702,7 @@ struct HealthImportRows: View {
         healthImportRow
         workoutImportRow
         dailyActivityImportRow
+        sleepImportRow
     }
 
     // MARK: - Health Import Row
@@ -679,6 +756,17 @@ struct HealthImportRows: View {
                 }
             }
             .disabled(healthManager.isImporting)
+            .contextMenu {
+                Button {
+                    Haptics.impact()
+                    Task {
+                        await healthManager.forceReimportWeightData(modelContext: modelContext)
+                    }
+                } label: {
+                    Label("Force reimport all weight", systemImage: "arrow.triangle.2.circlepath")
+                }
+                .disabled(healthManager.isImporting)
+            }
         }
     }
 
@@ -718,6 +806,17 @@ struct HealthImportRows: View {
                 }
             }
             .disabled(healthManager.isImportingWorkouts)
+            .contextMenu {
+                Button {
+                    Haptics.impact()
+                    Task {
+                        await healthManager.forceReimportWorkoutData(modelContext: modelContext)
+                    }
+                } label: {
+                    Label("Force reimport all workouts", systemImage: "arrow.triangle.2.circlepath")
+                }
+                .disabled(healthManager.isImportingWorkouts)
+            }
         }
     }
 
@@ -757,6 +856,67 @@ struct HealthImportRows: View {
                 }
             }
             .disabled(healthManager.isImportingDailyActivity)
+            .contextMenu {
+                Button {
+                    Haptics.impact()
+                    Task {
+                        await healthManager.forceReimportDailyActivityData(modelContext: modelContext)
+                    }
+                } label: {
+                    Label("Force reimport all activity", systemImage: "arrow.triangle.2.circlepath")
+                }
+                .disabled(healthManager.isImportingDailyActivity)
+            }
+        }
+    }
+
+    @ViewBuilder
+    private var sleepImportRow: some View {
+        if healthManager.isAvailable {
+            Button {
+                Haptics.selection()
+                Task {
+                    await healthManager.importSleepData(modelContext: modelContext)
+                }
+            } label: {
+                Label {
+                    VStack(alignment: .leading, spacing: 4) {
+                        Text("Import sleep")
+                            .font(.body)
+
+                        if healthManager.isImportingSleep {
+                            Text("Reading sleep from Apple Health")
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                        } else if let result = healthManager.sleepImportResult {
+                            resultText(result)
+                        } else {
+                            Text("Add Apple Health sleep summaries to your journal")
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                        }
+                    }
+                } icon: {
+                    if healthManager.isImportingSleep {
+                        ProgressView()
+                    } else {
+                        Image(systemName: "bed.double.fill")
+                            .foregroundStyle(tintColor)
+                    }
+                }
+            }
+            .disabled(healthManager.isImportingSleep)
+            .contextMenu {
+                Button {
+                    Haptics.impact()
+                    Task {
+                        await healthManager.forceReimportSleepData(modelContext: modelContext)
+                    }
+                } label: {
+                    Label("Force reimport all sleep", systemImage: "arrow.triangle.2.circlepath")
+                }
+                .disabled(healthManager.isImportingSleep)
+            }
         }
     }
 
@@ -792,7 +952,98 @@ struct HealthImportRows: View {
 
 #Preview {
     SettingsView()
-        .modelContainer(for: [WeightEntry.self, WorkoutEntry.self, DailyActivitySummary.self], inMemory: true)
+        .modelContainer(for: [WeightEntry.self, WorkoutEntry.self, DailyActivitySummary.self, SleepEntry.self], inMemory: true)
         .environment(HealthKitManager())
         .environment(NotificationManager())
+}
+
+// MARK: - Developer View
+struct DeveloperView: View {
+    @Environment(\.dismiss) private var dismiss
+    @Environment(\.modelContext) private var modelContext
+    @AppStorage("hasCompletedOnboarding_v2") private var hasCompletedOnboarding = false
+    @AppStorage("appTint") private var appTint = AppTint.defaultValue.rawValue
+    @State private var isDeveloperResetting = false
+    @State private var resetCompleted = false
+    
+    private var tintColor: Color {
+        (AppTint(rawValue: appTint) ?? .defaultValue).color
+    }
+    
+    var body: some View {
+        NavigationStack {
+            List {
+                Section {
+                    VStack(alignment: .leading, spacing: 10) {
+                        HStack {
+                            Image(systemName: "exclamationmark.triangle.fill")
+                                .foregroundStyle(.red)
+                                .font(.title3)
+                            Text("WARNING: Developers Only")
+                                .font(.headline)
+                                .foregroundStyle(.red)
+                                .fontWeight(.bold)
+                        }
+                        
+                        Text("These actions will purge and reset the local persistent store. Do not use this in production as it will permanently delete your personal weight history and HealthKit mappings.")
+                            .font(.subheadline)
+                            .foregroundStyle(.secondary)
+                    }
+                    .padding(.vertical, 8)
+                }
+                .listRowBackground(Color.red.opacity(0.08))
+                
+                Section {
+                    Button(role: .destructive) {
+                        isDeveloperResetting = true
+                        Haptics.impact(.heavy)
+                        
+                        ScaleApp.resetAndPopulateMockData(context: modelContext)
+                        
+                        isDeveloperResetting = false
+                        resetCompleted = true
+                        Haptics.success()
+                        
+                        DispatchQueue.main.asyncAfter(deadline: .now() + 2.0) {
+                            resetCompleted = false
+                        }
+                    } label: {
+                        HStack {
+                            Label("Reset & Load Mock Data", systemImage: "arrow.triangle.2.circlepath")
+                                .foregroundStyle(.red)
+                                .fontWeight(.semibold)
+                            
+                            Spacer()
+                            
+                            if isDeveloperResetting {
+                                ProgressView()
+                            } else if resetCompleted {
+                                Image(systemName: "checkmark.circle.fill")
+                                    .foregroundStyle(.green)
+                            }
+                        }
+                    }
+                    .disabled(isDeveloperResetting)
+
+                    Toggle("Bypass Onboarding", isOn: $hasCompletedOnboarding)
+                        .tint(tintColor)
+                } header: {
+                    Text("Developer Actions")
+                } footer: {
+                    Text("Forces the app to load a mock 30-day weight database with workouts and sleep summaries, and lets you toggle the onboarding experience.")
+                }
+            }
+            .navigationTitle("Developer Testing")
+            .toolbar {
+                ToolbarItem(placement: .topBarTrailing) {
+                    Button("Done") {
+                        Haptics.selection()
+                        dismiss()
+                    }
+                    .fontWeight(.semibold)
+                }
+            }
+        }
+        .tint(tintColor)
+    }
 }

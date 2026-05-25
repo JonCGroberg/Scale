@@ -21,6 +21,10 @@ enum DailyActivitySource: String, Codable {
     case appleHealth
 }
 
+enum SleepSource: String, Codable {
+    case appleHealth
+}
+
 @Model
 final class WeightEntry {
     var weight: Double
@@ -34,10 +38,22 @@ final class WeightEntry {
     /// Stored as an encoded blob because SwiftData/Core Data does not reliably bridge `[Data]`.
     private var photosStorage: Data?
 
+    @Transient private var decodedPhotosCache: [Data]?
+
     /// All progress photos attached to this entry.
     var photosData: [Data] {
-        get { Self.decodePhotos(from: photosStorage) }
-        set { photosStorage = Self.encodePhotos(newValue) }
+        get {
+            if let cached = decodedPhotosCache {
+                return cached
+            }
+            let decoded = Self.decodePhotos(from: photosStorage)
+            decodedPhotosCache = decoded
+            return decoded
+        }
+        set {
+            photosStorage = Self.encodePhotos(newValue)
+            decodedPhotosCache = newValue
+        }
     }
 
     /// Convenience accessor for the first (primary) photo.
@@ -131,5 +147,44 @@ final class DailyActivitySummary {
         self.stepCount = stepCount
         self.activeEnergyBurnedKilocalories = activeEnergyBurnedKilocalories
         self.source = source
+    }
+}
+
+enum SleepStage: String, Codable {
+    case core
+    case deep
+    case rem
+    case unspecified
+}
+
+@Model
+final class SleepEntry {
+    var startDate: Date
+    var endDate: Date
+    var duration: TimeInterval
+    var source: SleepSource
+    var stageRawValue: String?
+    /// The UUID of the corresponding HealthKit category sample, used to deduplicate imports.
+    var healthKitUUID: UUID?
+
+    var stage: SleepStage {
+        get { stageRawValue.flatMap(SleepStage.init(rawValue:)) ?? .unspecified }
+        set { stageRawValue = newValue.rawValue }
+    }
+
+    init(
+        startDate: Date,
+        endDate: Date,
+        duration: TimeInterval,
+        source: SleepSource = .appleHealth,
+        stage: SleepStage = .unspecified,
+        healthKitUUID: UUID? = nil
+    ) {
+        self.startDate = startDate
+        self.endDate = endDate
+        self.duration = duration
+        self.source = source
+        self.stageRawValue = stage.rawValue
+        self.healthKitUUID = healthKitUUID
     }
 }

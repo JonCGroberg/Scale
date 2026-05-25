@@ -7,8 +7,9 @@
 	objects = {
 
 /* Begin PBXBuildFile section */
-		D4CF10002F9EEE0000000001 /* ConfettiSwiftUI in Frameworks */ = {isa = PBXBuildFile; productRef = D4CF10012F9EEE0000000001 /* ConfettiSwiftUI */; };
 		D46C100D2F66D10000A1B2C3 /* ScaleWidget.appex in Embed App Extensions */ = {isa = PBXBuildFile; fileRef = D46C100C2F66D10000A1B2C3 /* ScaleWidget.appex */; settings = {ATTRIBUTES = (RemoveHeadersOnCopy, ); }; };
+		D4CF10002F9EEE0000000001 /* ConfettiSwiftUI in Frameworks */ = {isa = PBXBuildFile; productRef = D4CF10012F9EEE0000000001 /* ConfettiSwiftUI */; };
+		D4CF10052F9EEE0000000004 /* Vortex in Frameworks */ = {isa = PBXBuildFile; productRef = D4CF10042F9EEE0000000003 /* Vortex */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXContainerItemProxy section */
@@ -81,6 +82,7 @@
 			buildActionMask = 2147483647;
 			files = (
 				D4CF10002F9EEE0000000001 /* ConfettiSwiftUI in Frameworks */,
+				D4CF10052F9EEE0000000004 /* Vortex in Frameworks */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -153,6 +155,7 @@
 			name = Scale;
 			packageProductDependencies = (
 				D4CF10012F9EEE0000000001 /* ConfettiSwiftUI */,
+				D4CF10042F9EEE0000000003 /* Vortex */,
 			);
 			productName = Scale;
 			productReference = D45B3F152F669AF1008AB112 /* Scale.app */;
@@ -258,11 +261,12 @@
 			);
 			mainGroup = D45B3F0C2F669AF1008AB112;
 			minimizedProjectReferenceProxies = 1;
-			preferredProjectObjectVersion = 77;
-			productRefGroup = D45B3F162F669AF1008AB112 /* Products */;
 			packageReferences = (
 				D4CF10022F9EEE0000000001 /* XCRemoteSwiftPackageReference "ConfettiSwiftUI" */,
+				D4CF10032F9EEE0000000002 /* XCRemoteSwiftPackageReference "Vortex" */,
 			);
+			preferredProjectObjectVersion = 77;
+			productRefGroup = D45B3F162F669AF1008AB112 /* Products */;
 			projectDirPath = "";
 			projectRoot = "";
 			targets = (
@@ -353,25 +357,6 @@
 			targetProxy = D46C10162F66D10000A1B2C3 /* PBXContainerItemProxy */;
 		};
 /* End PBXTargetDependency section */
-
-/* Begin XCRemoteSwiftPackageReference section */
-		D4CF10022F9EEE0000000001 /* XCRemoteSwiftPackageReference "ConfettiSwiftUI" */ = {
-			isa = XCRemoteSwiftPackageReference;
-			repositoryURL = "https://github.com/simibac/ConfettiSwiftUI.git";
-			requirement = {
-				kind = upToNextMajorVersion;
-				minimumVersion = 3.0.0;
-			};
-		};
-/* End XCRemoteSwiftPackageReference section */
-
-/* Begin XCSwiftPackageProductDependency section */
-		D4CF10012F9EEE0000000001 /* ConfettiSwiftUI */ = {
-			isa = XCSwiftPackageProductDependency;
-			package = D4CF10022F9EEE0000000001 /* XCRemoteSwiftPackageReference "ConfettiSwiftUI" */;
-			productName = ConfettiSwiftUI;
-		};
-/* End XCSwiftPackageProductDependency section */
 
 /* Begin XCBuildConfiguration section */
 		D45B3F362F669AF2008AB112 /* Debug */ = {
@@ -764,6 +749,38 @@
 			defaultConfigurationName = Release;
 		};
 /* End XCConfigurationList section */
+
+/* Begin XCRemoteSwiftPackageReference section */
+		D4CF10022F9EEE0000000001 /* XCRemoteSwiftPackageReference "ConfettiSwiftUI" */ = {
+			isa = XCRemoteSwiftPackageReference;
+			repositoryURL = "https://github.com/simibac/ConfettiSwiftUI.git";
+			requirement = {
+				kind = upToNextMajorVersion;
+				minimumVersion = 3.0.0;
+			};
+		};
+		D4CF10032F9EEE0000000002 /* XCRemoteSwiftPackageReference "Vortex" */ = {
+			isa = XCRemoteSwiftPackageReference;
+			repositoryURL = "https://github.com/twostraws/Vortex.git";
+			requirement = {
+				kind = upToNextMajorVersion;
+				minimumVersion = 1.0.0;
+			};
+		};
+/* End XCRemoteSwiftPackageReference section */
+
+/* Begin XCSwiftPackageProductDependency section */
+		D4CF10012F9EEE0000000001 /* ConfettiSwiftUI */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = D4CF10022F9EEE0000000001 /* XCRemoteSwiftPackageReference "ConfettiSwiftUI" */;
+			productName = ConfettiSwiftUI;
+		};
+		D4CF10042F9EEE0000000003 /* Vortex */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = D4CF10032F9EEE0000000002 /* XCRemoteSwiftPackageReference "Vortex" */;
+			productName = Vortex;
+		};
+/* End XCSwiftPackageProductDependency section */
 	};
 	rootObject = D45B3F0D2F669AF1008AB112 /* Project object */;
 }

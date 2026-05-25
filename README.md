@@ -1,6 +1,6 @@
 # Scale
 
-A lightweight iOS app for tracking your daily weight — with Apple Health sync, Live Text scale scanning, and streak tracking.
+A lightweight, high-precision iOS app for tracking daily weight, designed to remove friction through Apple Health sync, Live Text scale scanning, and motivational streak tracking.
 
 [![CI](https://github.com/JonCGroberg/Scale/actions/workflows/ci.yml/badge.svg)](https://github.com/JonCGroberg/Scale/actions/workflows/ci.yml)
 ![Platform](https://img.shields.io/badge/platform-iOS%2026%2B-blue)
@@ -10,13 +10,26 @@ A lightweight iOS app for tracking your daily weight — with Apple Health sync,
 
 ## Features
 
-- **📊 Weight Logging** — Enter your weight manually or via a stepper with ±0.1 lb precision
-- **📷 Live Text Scanning** — Point your camera at your scale and the app reads the display automatically
-- **🏥 Apple Health Sync** — Import and export weight data to/from the Health app
-- **📈 History & Charts** — Interactive chart with period selectors (1W, 1M, 3M, 6M, 1Y)
-- **🔥 Streak Tracking** — Tracks consecutive days you've logged your weight
-- **🔔 Daily Reminders** — Set multiple custom daily reminders to stay consistent
-- **🎨 Themes** — Choose from 6 accent colors (Blue, Green, Orange, Pink, Lavender, Red)
+- **📊 High-Precision Logging** — Manual entry via a dedicated stepper with ±0.1 lb precision for absolute accuracy.
+- **📷 Live Text Scanning** — Leverages VisionKit's `DataScanner` to automatically read digital scale displays, eliminating manual entry.
+- **🏥 Bidirectional Health Sync** — Deep integration with Apple Health via HealthKit. Supports full import/export and an optional `autoSync` mode to keep local data aligned with the system source of truth.
+- **📈 Trend Analysis** — Interactive data visualization using Swift Charts with selectable time-windows (1W, 1M, 3M, 6M, 1Y).
+- **🔥 Motivational Streaks** — A persistence-aware streak system that tracks consecutive logging days. Notifications use "potential streak" logic to motivate users to maintain their run.
+- **🔔 Dynamic Reminders** — Multiple customizable daily alerts that adapt their messaging based on the user's current streak status.
+- **🎨 Visual Themes** — 6 curated accent colors (Blue, Green, Orange, Pink, Lavender, Red) to personalize the experience.
+
+---
+
+## User Experience Flow
+
+The app is structured as a focused loop to encourage consistency:
+
+1. **Onboarding:** First-run experience guiding users through goal selection (Lose/Gain/Maintain), target weight setting, and HealthKit authorization.
+2. **The Daily Loop:** 
+   - **Trigger:** A streak-aware notification prompts the user.
+   - **Action:** User logs weight via the `EntryView` (Manual or OCR scan).
+   - **Feedback:** Immediate visual confirmation of goal progress and streak increment.
+3. **Review:** The `LogView` provides a historical perspective, allowing users to correlate weight trends with other health metrics.
 
 ---
 
@@ -47,30 +60,29 @@ A lightweight iOS app for tracking your daily weight — with Apple Health sync,
 
 ## Architecture
 
-Scale is built with modern Apple frameworks — no external dependencies.
+Scale is built with a modern, dependency-free Apple stack.
 
-| Layer | Technology |
-|-------|-----------|
-| UI | SwiftUI |
-| Persistence | SwiftData |
-| Health Data | HealthKit |
-| Charts | Swift Charts |
-| Camera OCR | VisionKit (DataScanner) |
-| Notifications | UserNotifications |
+| Layer | Technology | Purpose |
+|-------|-----------|---------|
+| **UI** | SwiftUI | Declarative view hierarchy and state management |
+| **Persistence** | SwiftData | Local storage for `WeightEntry`, `WorkoutEntry`, and `SleepEntry` |
+| **Health Data** | HealthKit | Interface for system-wide health metrics and syncing |
+| **Charts** | Swift Charts | High-performance weight trend visualization |
+| **Camera OCR** | VisionKit | Live Text parsing for digital scale displays |
+| **Notifications** | UserNotifications | Scheduling and delivering streak-aware reminders |
 
-**Key files:**
-- `ScaleApp.swift` — App entry point, SwiftData container setup
-- `RootView.swift` — TabView with Log, History, and Settings tabs
-- `EntryView.swift` — Weight entry screen with stepper and camera scanning
-- `LogView.swift` — Weight history with interactive chart
-- `SettingsView.swift` — App preferences (theme, HealthKit, reminders)
-- `WeightCalculations.swift` — Business logic (streaks, averages, % change)
-- `HealthKitManager.swift` — HealthKit read/write/import
-- `NotificationManager.swift` — Reminder scheduling
+### Key Implementation Details
+- `ScaleApp.swift` — App entry point; configures the SwiftData `ModelContainer`.
+- `WeightCalculations.swift` — Pure business logic layer for streaks, averages, and percentage changes.
+- `HealthKitManager.swift` — Manages the complex bridge between SwiftData and the HealthKit store.
+- `NotificationManager.swift` — Handles the lifecycle of `UNCalendarNotificationTrigger` and dynamic body generation.
+- `RootView.swift` — Primary navigation hub (Log, History, and Settings).
 
 ---
 
 ## Running Tests
+
+The project maintains high confidence through a suite of 60+ tests covering OCR parsing, streak edge cases, and data migration.
 
 ```bash
 xcodebuild test \
@@ -79,8 +91,6 @@ xcodebuild test \
   -destination 'platform=iOS Simulator,name=iPhone 16' \
   CODE_SIGN_IDENTITY="" CODE_SIGNING_REQUIRED=NO
 ```
-
-63 tests cover weight entry CRUD, calculation logic, input parsing, reminder models, and more.
 
 ---
 

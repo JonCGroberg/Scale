@@ -25,10 +25,11 @@ struct CalendarMonthLoader {
 
     /// Loads the initial batch of months backward from the current month (inclusive).
     /// No-op if months are already loaded.
-    mutating func loadInitialMonths(now: Date = .now) {
+    mutating func loadInitialMonths(count: Int? = nil, now: Date = .now) {
         guard monthStarts.isEmpty else { return }
+        let limit = count ?? batchSize
         let anchor = Self.currentMonthStart(using: calendar, now: now)
-        monthStarts = (0..<batchSize).compactMap { offset in
+        monthStarts = (0..<limit).compactMap { offset in
             calendar.date(byAdding: .month, value: -offset, to: anchor)
         }
     }
