@@ -131,7 +131,10 @@ struct RootView: View {
                         showSettings = true
                     } label: {
                         Image(systemName: "gearshape.fill")
+                            .font(.callout)
+                            .foregroundStyle(.secondary)
                     }
+                    .buttonStyle(.plain)
                     .accessibilityLabel("Settings")
                 }
                 ToolbarItem(placement: .principal) {
@@ -308,7 +311,7 @@ struct RootView: View {
             .background {
                 if selectedTab == tabValue {
                     Capsule(style: .continuous)
-                        .fill(.primary.opacity(0.08))
+                        .fill(.primary.opacity(0.18))
                         .matchedGeometryEffect(id: "activeTab", in: tabNamespace)
                         .offset(x: tabDragOffset)
                         .gesture(

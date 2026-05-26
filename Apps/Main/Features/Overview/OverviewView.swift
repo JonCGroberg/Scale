@@ -396,6 +396,8 @@ struct OverviewView: View {
         ScrollView {
             VStack(spacing: 16) {
                 chartCard
+                
+                statsFooter
             }
             .padding(.horizontal, 20)
         }
@@ -433,7 +435,7 @@ struct OverviewView: View {
 
     private var chartCard: some View {
         VStack(alignment: .leading, spacing: 0) {
-            summaryRow
+            centeredWeightDisplay
 
             Picker("Period", selection: $badgePeriodIndex) {
                 ForEach(Array(TimePeriod.allCases.enumerated()), id: \.offset) { index, period in
@@ -680,38 +682,14 @@ struct OverviewView: View {
             .offset(x: -8)
     }
 
-    // MARK: - Summary Row
+    // MARK: - Centered Weight Display
 
-    private var summaryRow: some View {
-        HStack(alignment: .center, spacing: 16) {
-            weightDisplay
-
-            Spacer(minLength: 8)
-
-            compactStat(
-                title: "Change",
-                value: snapshot.weightChangeLbs.map { String(format: "%+.1f lbs", $0) } ?? "--",
-                valueColor: snapshot.weightChangeLbs.map { $0 < 0 ? .green : ($0 > 0 ? .red : .primary) } ?? .secondary
-            )
-
-            compactStat(
-                title: "Goal",
-                value: snapshot.goalProgress.map { goalCompletionText($0) } ?? "--",
-                valueColor: tintColor
-            )
-        }
-        .padding(.horizontal, 12)
-        .padding(.vertical, 16)
-    }
-
-    @ViewBuilder
-    private var weightDisplay: some View {
-        VStack(alignment: .leading, spacing: 0) {
+    private var centeredWeightDisplay: some View {
+        VStack(spacing: 4) {
             if let selectedData = selectedDataPoint {
                 if let weight = selectedData.weight {
                     Text(String(format: "%.1f", weight))
-                        .font(.system(size: 36, weight: .semibold, design: .rounded))
-                        .foregroundStyle(tintColor)
+                        .font(.system(size: 64, weight: .semibold, design: .rounded))
                         .contentTransition(.numericText())
                         .lineLimit(1)
                 } else {
@@ -722,31 +700,144 @@ struct OverviewView: View {
                 }
 
                 Text(selectedData.date, format: .dateTime.month(.abbreviated).day().year())
-                    .font(.caption.weight(.medium))
+                    .font(.subheadline.weight(.semibold))
                     .foregroundStyle(.secondary)
                     .lineLimit(1)
             } else if let weight = snapshot.currentWeight {
                 Text(String(format: "%.1f", weight))
-                    .font(.system(size: 36, weight: .regular, design: .rounded))
+                    .font(.system(size: 64, weight: .semibold, design: .rounded))
                     .contentTransition(.numericText())
                     .lineLimit(1)
 
                 Text("lbs today")
-                    .font(.caption.weight(.medium))
+                    .font(.subheadline.weight(.semibold))
                     .foregroundStyle(.secondary)
                     .lineLimit(1)
             } else {
                 Text("--")
-                    .font(.system(size: 36, weight: .regular, design: .rounded))
+                    .font(.system(size: 64, weight: .semibold, design: .rounded))
                     .foregroundStyle(.secondary)
                     .lineLimit(1)
 
                 Text("No entries yet")
-                    .font(.caption.weight(.medium))
+                    .font(.subheadline.weight(.semibold))
                     .foregroundStyle(.secondary)
                     .lineLimit(1)
             }
         }
+        .frame(maxWidth: .infinity)
+        .padding(.top, 8)
+        .padding(.bottom, 16)
+    }
+
+    // MARK: - Bottom Stats Footer
+
+    private var statsFooter: some View {
+        VStack(spacing: 20) {
+            // First Card: Change & Average
+            HStack(spacing: 0) {
+                VStack(alignment: .leading, spacing: 4) {
+                    Text("Change")
+                        .font(.system(size: 13, weight: .medium))
+                        .foregroundStyle(.secondary)
+                    
+                    let change = snapshot.weightChangeLbs
+                    let changeColor: Color = change.map { $0 < 0 ? .green : ($0 > 0 ? .red : .primary) } ?? .secondary
+                    Text(change.map { String(format: "%+.1f lbs", $0) } ?? "--")
+                        .font(.system(size: 20, weight: .bold, design: .rounded))
+                        .foregroundStyle(changeColor)
+                }
+                .frame(maxWidth: .infinity, alignment: .leading)
+                
+                VStack(alignment: .trailing, spacing: 4) {
+                    Text("Average")
+                        .font(.system(size: 13, weight: .medium))
+                        .foregroundStyle(.secondary)
+                    Text(snapshot.averageWeight.map { String(format: "%.1f lbs", $0) } ?? "--")
+                        .font(.system(size: 20, weight: .bold, design: .rounded))
+                        .foregroundStyle(.primary)
+                }
+                .frame(maxWidth: .infinity, alignment: .trailing)
+            }
+            .padding(.horizontal, 20)
+            .padding(.vertical, 16)
+            .background(Color(.secondarySystemGroupedBackground))
+            .cornerRadius(16)
+            
+            // Second Row: Goal & At This Rate
+            HStack(spacing: 0) {
+                VStack(alignment: .leading, spacing: 4) {
+                    Text("Goal")
+                        .font(.system(size: 13, weight: .medium))
+                        .foregroundStyle(.secondary)
+                    
+                    let goalText: String = {
+                        if let progress = snapshot.goalProgress, let change = snapshot.weightChangeLbs {
+                            let numerator = String(format: "%+.1f", change)
+                            let denominator = String(format: "%.1f", abs(progress.totalChange))
+                            return "\(numerator)/\(denominator) lbs"
+                        }
+                        return "--"
+                    }()
+                    Text(goalText)
+                        .font(.system(size: 20, weight: .bold, design: .rounded))
+                        .foregroundStyle(tintColor)
+                }
+                .frame(maxWidth: .infinity, alignment: .leading)
+                
+                VStack(alignment: .trailing, spacing: 4) {
+                    Text("At This Rate")
+                        .font(.system(size: 13, weight: .medium))
+                        .foregroundStyle(.secondary)
+                    
+                    let rateText: String = {
+                        if let progress = snapshot.goalProgress, let days = progress.daysRemaining, days > 0 {
+                            if days < 30 {
+                                return String(format: "%.0f days", days)
+                            } else {
+                                return String(format: "%.1f mo", days / 30.4)
+                            }
+                        }
+                        return "--"
+                    }()
+                    Text(rateText)
+                        .font(.system(size: 20, weight: .bold, design: .rounded))
+                        .foregroundStyle(.primary)
+                }
+                .frame(maxWidth: .infinity, alignment: .trailing)
+            }
+            .padding(.horizontal, 16)
+            
+            // Third Row: Entries & Longest Streak
+            HStack(spacing: 0) {
+                VStack(alignment: .leading, spacing: 4) {
+                    Text("Entries")
+                        .font(.system(size: 13, weight: .medium))
+                        .foregroundStyle(.secondary)
+                    Text("\(entries.count)")
+                        .font(.system(size: 20, weight: .bold, design: .rounded))
+                        .foregroundStyle(.primary)
+                }
+                .frame(maxWidth: .infinity, alignment: .leading)
+                
+                VStack(alignment: .trailing, spacing: 4) {
+                    Text("Longest Streak")
+                        .font(.system(size: 13, weight: .medium))
+                        .foregroundStyle(.secondary)
+                    HStack(spacing: 4) {
+                        Image(systemName: "flame.fill")
+                            .font(.system(size: 16))
+                            .foregroundStyle(.orange)
+                        Text("\(snapshot.longestStreak)d")
+                            .font(.system(size: 20, weight: .bold, design: .rounded))
+                    }
+                }
+                .frame(maxWidth: .infinity, alignment: .trailing)
+            }
+            .padding(.horizontal, 16)
+        }
+        .padding(.top, 24)
+        .padding(.bottom, 100)
     }
 
     private func compactStat(title: String, value: String, valueColor: Color) -> some View {
