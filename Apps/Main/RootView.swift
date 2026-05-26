@@ -35,7 +35,9 @@ struct RootView: View {
     @State private var celebrationQueue: [(message: Text, systemImage: String, type: CelebrationType)] = []
     @State private var isCelebrationRunning = false
     @State private var showSettings = false
+    @State private var tabDragOffset: CGFloat = 0
     @Namespace private var tabNamespace
+
     private var selectedTint: AppTint {
         AppTint(rawValue: appTint) ?? .defaultValue
     }
@@ -44,16 +46,9 @@ struct RootView: View {
         Binding(
             get: { selectedTab },
             set: { newValue in
-                switch Self.actionForTabTap(currentTab: selectedTab, tappedTab: newValue) {
-                case .switchTab:
-                    Haptics.selection()
-                    selectedTab = newValue
-                case .scrollJournalToBottom:
-                    Haptics.selection()
-                    journalScrollToBottomRequest += 1
-                case .ignore:
-                    return
-                }
+                guard newValue != selectedTab else { return }
+                Haptics.selection()
+                selectedTab = newValue
             }
         )
     }
@@ -87,20 +82,80 @@ struct RootView: View {
     }
 
     var body: some View {
-        ZStack {
-            JournalView(
-                scrollToEntryTrigger: historyScrollRequest,
-                focusedEntry: historySelectedEntry,
-                scrollToBottomTrigger: journalScrollToBottomRequest,
-                showLog: $showLog,
-                logDate: $logDate
+        NavigationStack {
+            ZStack {
+                if selectedTab == 1 {
+                    JournalView(
+                        scrollToEntryTrigger: historyScrollRequest,
+                        focusedEntry: historySelectedEntry,
+                        scrollToBottomTrigger: journalScrollToBottomRequest,
+                        showLog: $showLog,
+                        logDate: $logDate
+                    )
+                    .transition(.asymmetric(insertion: .move(edge: .leading), removal: .move(edge: .trailing)))
+                } else if selectedTab == 3 {
+                    OverviewView()
+                        .transition(.asymmetric(insertion: .move(edge: .trailing), removal: .move(edge: .leading)))
+                }
+            }
+            .gesture(
+                DragGesture(minimumDistance: 25)
+                    .onEnded { value in
+                        let horizontal = value.translation.width
+                        let vertical = value.translation.height
+                        if abs(horizontal) > abs(vertical) && abs(horizontal) > 45 {
+                            if horizontal < 0 {
+                                if selectedTab == 1 {
+                                    Haptics.selection()
+                                    withAnimation(.spring(response: 0.35, dampingFraction: 0.8)) {
+                                        selectedTab = 3
+                                    }
+                                }
+                            } else {
+                                if selectedTab == 3 {
+                                    Haptics.selection()
+                                    withAnimation(.spring(response: 0.35, dampingFraction: 0.8)) {
+                                        selectedTab = 1
+                                    }
+                                }
+                            }
+                        }
+                    }
             )
-            .opacity(selectedTab == 1 ? 1 : 0)
-            .allowsHitTesting(selectedTab == 1)
-
-            OverviewView()
-                .opacity(selectedTab == 3 ? 1 : 0)
-                .allowsHitTesting(selectedTab == 3)
+            .navigationTitle("")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .topBarTrailing) {
+                    Button {
+                        Haptics.selection()
+                        showSettings = true
+                    } label: {
+                        Image(systemName: "gearshape.fill")
+                    }
+                    .accessibilityLabel("Settings")
+                }
+                ToolbarItem(placement: .principal) {
+                    Button {
+                        Haptics.selection()
+                        selectedTab = 3
+                    } label: {
+                        ChangeBadge(entries: entries)
+                    }
+                    .buttonStyle(.plain)
+                    .tint(.primary)
+                }
+            }
+            .safeAreaInset(edge: .bottom) {
+                GlassEffectContainer(spacing: 40) {
+                    HStack(spacing: 10) {
+                        tabPill
+                        Spacer()
+                        logButton
+                    }
+                }
+                .padding(.horizontal, 16)
+                .padding(.bottom, 8)
+            }
         }
         .tint(selectedTint.color)
         .id("\(appTint)-\(customTintHex)")
@@ -117,21 +172,6 @@ struct RootView: View {
                     .allowsHitTesting(false)
             }
         }
-        .safeAreaInset(edge: .top, spacing: 0) {
-            topAccessoryRow
-                .opacity(Self.isPillVisible(selectedTab: selectedTab) ? 1 : 0)
-                .frame(height: Self.isPillVisible(selectedTab: selectedTab) ? nil : 0)
-                .animation(.default, value: selectedTab)
-        }
-        .safeAreaInset(edge: .bottom) {
-            HStack {
-                customNavBar
-                Spacer()
-                logButton
-            }
-            .padding(.horizontal, 16)
-            .padding(.bottom, 8)
-        }
         .sheet(isPresented: $showLog, onDismiss: { logDate = nil }) {
             EntryView(
                 historyScrollRequest: $historyScrollRequest,
@@ -140,11 +180,9 @@ struct RootView: View {
                 latestWeight: entries.first?.weight
             )
             .presentationDetents([.height(430), .large])
-            .liquidGlassSheetPresentation()
         }
         .sheet(isPresented: $showSettings) {
             SettingsView()
-                .liquidGlassSheetPresentation()
         }
         .sheet(item: $reachedGoalContext) { context in
             GoalTargetUpdateSheet(
@@ -232,90 +270,14 @@ struct RootView: View {
         }
     }
 
-    private var widgetSnapshotSignature: Int {
-        var hasher = Hasher()
-        hasher.combine(entries.count)
-        hasher.combine(entries.first?.timestamp.timeIntervalSinceReferenceDate ?? 0)
-        hasher.combine(entries.first?.weight ?? 0)
-        return hasher.finalize()
-    }
-
-    private var topAccessoryRow: some View {
-        HStack {
-            Button { } label: {
-                Image(systemName: "gearshape")
-                    .font(.footnote.weight(.semibold))
-                    .frame(width: 28, height: 28)
-            }
-            .buttonStyle(.glass)
-            .opacity(0)
-            .allowsHitTesting(false)
-
-            Spacer()
-
-            topAccessoryBadge
-
-            Spacer()
-
-            Button {
-                Haptics.selection()
-                showSettings = true
-            } label: {
-                Image(systemName: "gearshape.fill")
-                    .font(.footnote.weight(.semibold))
-                    .frame(width: 28, height: 28)
-            }
-            .buttonStyle(.glass)
-            .tint(.primary)
-            .accessibilityLabel("Settings")
-        }
-        .padding(.top, 4)
-        .padding(.horizontal, 16)
-    }
-
-    private var topAccessoryBadge: some View {
-        Button {
-            Haptics.selection()
-            selectedTab = 3
-        } label: {
-            ChangeBadge(entries: entries)
-        }
-        .buttonStyle(.glass)
-        .tint(.primary)
-    }
-
-    private var logButton: some View {
-        Button {
-            Haptics.impact()
-            logDate = nil
-            showLog = true
-        } label: {
-            Image(systemName: "square.and.pencil")
-                .font(.callout.weight(.semibold))
-                .frame(width: 40, height: 40)
-        }
-        .buttonStyle(.glassProminent)
-        .clipShape(Circle())
-        .tint(selectedTint.color)
-        .accessibilityLabel("Log")
-        .help("Log")
-    }
-
-    private var customNavBar: some View {
-        HStack(spacing: 6) {
+    private var tabPill: some View {
+        HStack(spacing: 4) {
             tabButton(title: "Journal", systemImage: "calendar", tabValue: 1)
-            tabButton(title: "Overview", systemImage: "chart.line.uptrend.xyaxis", tabValue: 3)
+            tabButton(title: "Overview", systemImage: "chart.xyaxis.line", tabValue: 3)
         }
-        .padding(6)
-        .background {
-            Capsule(style: .continuous)
-                .fill(.ultraThinMaterial)
-                .overlay {
-                    Capsule(style: .continuous)
-                        .stroke(.white.opacity(0.18), lineWidth: 0.5)
-                }
-                .shadow(color: .black.opacity(0.12), radius: 10, x: 0, y: 5)
-        }
+        .padding(5)
+        .glassEffect(.regular.interactive(), in: Capsule())
+        .glassEffectID("tabPill", in: tabNamespace)
     }
 
     private func tabButton(title: String, systemImage: String, tabValue: Int) -> some View {
@@ -334,28 +296,77 @@ struct RootView: View {
                 break
             }
         } label: {
-            HStack(spacing: 7) {
+            HStack(spacing: 6) {
                 Image(systemName: systemImage)
                     .font(.callout.weight(.semibold))
-
-                if selectedTab == tabValue {
-                    Text(title)
-                        .font(.subheadline.weight(.semibold))
-                        .transition(.opacity.combined(with: .move(edge: .leading)))
-                }
+                Text(title)
+                    .font(.subheadline.weight(.semibold))
             }
             .foregroundStyle(selectedTab == tabValue ? selectedTint.color : .secondary)
-            .padding(.horizontal, 16)
-            .padding(.vertical, 12)
+            .padding(.horizontal, 14)
+            .frame(height: 42)
             .background {
                 if selectedTab == tabValue {
                     Capsule(style: .continuous)
-                        .fill(selectedTint.color.opacity(0.12))
-                        .matchedGeometryEffect(id: "activeTabBackground", in: tabNamespace)
+                        .fill(.primary.opacity(0.08))
+                        .matchedGeometryEffect(id: "activeTab", in: tabNamespace)
+                        .offset(x: tabDragOffset)
+                        .gesture(
+                            DragGesture(minimumDistance: 5)
+                                .onChanged { value in
+                                    let translation = value.translation.width
+                                    if selectedTab == 1 {
+                                        tabDragOffset = max(0, min(110, translation))
+                                    } else {
+                                        tabDragOffset = min(0, max(-110, translation))
+                                    }
+                                }
+                                .onEnded { value in
+                                    let translation = value.translation.width
+                                    let threshold: CGFloat = 50
+                                    
+                                    withAnimation(.spring(response: 0.32, dampingFraction: 0.72)) {
+                                        if selectedTab == 1 && translation > threshold {
+                                            selectedTab = 3
+                                            Haptics.selection()
+                                        } else if selectedTab == 3 && translation < -threshold {
+                                            selectedTab = 1
+                                            Haptics.selection()
+                                        }
+                                        tabDragOffset = 0
+                                    }
+                                }
+                        )
                 }
             }
+            .contentShape(Capsule())
         }
         .buttonStyle(.plain)
+    }
+
+    private var logButton: some View {
+        Button {
+            Haptics.impact()
+            logDate = nil
+            showLog = true
+        } label: {
+            Image(systemName: "plus")
+                .font(.title2.weight(.semibold))
+                .foregroundStyle(.primary)
+                .frame(width: 52, height: 52)
+        }
+        .buttonStyle(.plain)
+        .glassEffect(.regular.interactive(), in: Circle())
+        .glassEffectID("logButton", in: tabNamespace)
+        .accessibilityLabel("Log")
+    }
+
+    private var widgetSnapshotSignature: Int {
+        var hasher = Hasher()
+        hasher.combine(entries.count)
+        hasher.combine(entries.first?.timestamp.timeIntervalSinceReferenceDate ?? 0)
+        hasher.combine(entries.first?.weight ?? 0)
+        return hasher.finalize()
     }
 }
 

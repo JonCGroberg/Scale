@@ -310,10 +310,9 @@ struct JournalView: View {
     }
 
     var body: some View {
-        NavigationStack {
-            ZStack {
-                backgroundColor
-                    .ignoresSafeArea()
+        ZStack {
+            backgroundColor
+                .ignoresSafeArea()
 
                 ScrollViewReader { proxy in
                     ScrollView(showsIndicators: false) {
@@ -358,8 +357,6 @@ struct JournalView: View {
                             }
                         }
                         .padding(.horizontal, 16)
-                        .padding(.top, 56)
-                        .padding(.bottom, 120)
 
                         Color.clear
                             .frame(height: 1)
@@ -401,8 +398,7 @@ struct JournalView: View {
                         rebuildMonthRenderData(forceAll: true)
                     }
                 }
-            }
-            .toolbar(.hidden, for: .navigationBar)
+
             .sheet(item: $presentedSheet) { presentedSheet in
                 LogDayDetailSheet(
                     initialDate: calendar.startOfDay(for: presentedSheet.date),

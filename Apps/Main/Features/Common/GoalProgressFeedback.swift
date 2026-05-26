@@ -71,6 +71,31 @@ enum GoalProgressFeedback {
         )
     }
 
+    static func progressTextShort(_ progress: WeightCalculations.GoalProgress) -> String {
+        let arrow = progress.totalChange < 0 ? "↓" : "↑"
+        return String(
+            format: "%@ %.1f/%.1f lbs",
+            arrow,
+            abs(progress.completedChange),
+            abs(progress.totalChange)
+        )
+    }
+
+    /// Like `progressTextShort` but uses the actual (un-clamped) change for the
+    /// numerator so overshooting the target is visible instead of pinned at 100%.
+    static func progressTextShort(
+        _ progress: WeightCalculations.GoalProgress,
+        actualChange: Double
+    ) -> String {
+        let arrow = actualChange < 0 ? "↓" : "↑"
+        return String(
+            format: "%@ %.1f/%.1f lbs",
+            arrow,
+            abs(actualChange),
+            abs(progress.totalChange)
+        )
+    }
+
     static func distanceCloserToGoal(
         goal: WeightGoal,
         previousWeight: Double?,

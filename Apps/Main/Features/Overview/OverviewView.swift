@@ -393,18 +393,13 @@ struct OverviewView: View {
     }
 
     var body: some View {
-        NavigationStack {
-            ScrollView {
-                VStack(spacing: 16) {
-                    chartCard
-                }
-                .padding(.horizontal, 20)
-                .padding(.top, 56)
-                .padding(.bottom, 80)
+        ScrollView {
+            VStack(spacing: 16) {
+                chartCard
             }
-            .background(Color(.systemGroupedBackground))
-            .toolbar(.hidden, for: .navigationBar)
+            .padding(.horizontal, 20)
         }
+        .background(Color(.systemGroupedBackground))
         .onAppear {
             updateSnapshot()
             updateMiniGoals()

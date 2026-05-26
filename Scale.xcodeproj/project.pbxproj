@@ -51,7 +51,7 @@
 /* End PBXCopyFilesBuildPhase section */
 
 /* Begin PBXFileReference section */
-		D45A9EFC2F66BC7B0014B7BA /* Scale.xctestplan */ = {isa = PBXFileReference; lastKnownFileType = text; path = Scale.xctestplan; sourceTree = "<group>"; };
+		D45A9EFC2F66BC7B0014B7BA /* Scale.xctestplan */ = {isa = PBXFileReference; lastKnownFileType = text; path = Apps/Tests/Scale.xctestplan; sourceTree = "<group>"; };
 		D45B3F152F669AF1008AB112 /* Scale.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = Scale.app; sourceTree = BUILT_PRODUCTS_DIR; };
 		D45B3F242F669AF2008AB112 /* ScaleTests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = ScaleTests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
 		D45B3F2E2F669AF2008AB112 /* ScaleUITests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = ScaleUITests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
@@ -61,18 +61,28 @@
 /* Begin PBXFileSystemSynchronizedRootGroup section */
 		D45B3F172F669AF1008AB112 /* Scale */ = {
 			isa = PBXFileSystemSynchronizedRootGroup;
-			path = Scale;
+			path = Apps/Main;
 			sourceTree = "<group>";
 		};
 		D45B3F272F669AF2008AB112 /* ScaleTests */ = {
 			isa = PBXFileSystemSynchronizedRootGroup;
-			path = ScaleTests;
+			path = Apps/Tests;
 			sourceTree = "<group>";
 		};
 		D46C100E2F66D10000A1B2C3 /* ScaleWidget */ = {
 			isa = PBXFileSystemSynchronizedRootGroup;
-			path = ScaleWidget;
+			exceptions = (
+				D46C10202F66D10000A1B2C3 /* PBXFileSystemSynchronizedBuildFileExceptionSet */,
+			);
+			path = Apps/Widget;
 			sourceTree = "<group>";
+		};
+		D46C10202F66D10000A1B2C3 /* PBXFileSystemSynchronizedBuildFileExceptionSet */ = {
+			isa = PBXFileSystemSynchronizedBuildFileExceptionSet;
+			membershipExceptions = (
+				ScaleWidgetExtension/Info.plist,
+			);
+			target = D46C10102F66D10000A1B2C3 /* ScaleWidget */;
 		};
 /* End PBXFileSystemSynchronizedRootGroup section */
 
@@ -487,7 +497,7 @@
 			buildSettings = {
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
-				CODE_SIGN_ENTITLEMENTS = Scale/Scale.entitlements;
+				CODE_SIGN_ENTITLEMENTS = Apps/Main/Scale.entitlements;
 				CODE_SIGN_STYLE = Automatic;
 				CURRENT_PROJECT_VERSION = 1;
 				DEVELOPMENT_TEAM = N493N5JRGD;
@@ -525,7 +535,7 @@
 			buildSettings = {
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
-				CODE_SIGN_ENTITLEMENTS = Scale/ScaleRelease.entitlements;
+				CODE_SIGN_ENTITLEMENTS = Apps/Main/ScaleRelease.entitlements;
 				CODE_SIGN_STYLE = Automatic;
 				CURRENT_PROJECT_VERSION = 1;
 				DEVELOPMENT_TEAM = N493N5JRGD;
@@ -646,12 +656,12 @@
 			isa = XCBuildConfiguration;
 			buildSettings = {
 				APPLICATION_EXTENSION_API_ONLY = YES;
-				CODE_SIGN_ENTITLEMENTS = ScaleWidget/ScaleWidget.entitlements;
+				CODE_SIGN_ENTITLEMENTS = Apps/Widget/ScaleWidget/ScaleWidget.entitlements;
 				CODE_SIGN_STYLE = Automatic;
 				CURRENT_PROJECT_VERSION = 1;
 				DEVELOPMENT_TEAM = N493N5JRGD;
 				GENERATE_INFOPLIST_FILE = NO;
-				INFOPLIST_FILE = ScaleWidgetInfo.plist;
+				INFOPLIST_FILE = Apps/Widget/ScaleWidgetExtension/Info.plist;
 				IPHONEOS_DEPLOYMENT_TARGET = 26.0;
 				LD_RUNPATH_SEARCH_PATHS = (
 					"$(inherited)",
@@ -675,12 +685,12 @@
 			isa = XCBuildConfiguration;
 			buildSettings = {
 				APPLICATION_EXTENSION_API_ONLY = YES;
-				CODE_SIGN_ENTITLEMENTS = ScaleWidget/ScaleWidget.entitlements;
+				CODE_SIGN_ENTITLEMENTS = Apps/Widget/ScaleWidget/ScaleWidget.entitlements;
 				CODE_SIGN_STYLE = Automatic;
 				CURRENT_PROJECT_VERSION = 1;
 				DEVELOPMENT_TEAM = N493N5JRGD;
 				GENERATE_INFOPLIST_FILE = NO;
-				INFOPLIST_FILE = ScaleWidgetInfo.plist;
+				INFOPLIST_FILE = Apps/Widget/ScaleWidgetExtension/Info.plist;
 				IPHONEOS_DEPLOYMENT_TARGET = 26.0;
 				LD_RUNPATH_SEARCH_PATHS = (
 					"$(inherited)",
