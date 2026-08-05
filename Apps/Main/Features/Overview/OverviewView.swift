@@ -8,6 +8,75 @@
 import SwiftUI
 import SwiftData
 import Charts
+import Foundation
+import UniformTypeIdentifiers
+
+/// The set of chart cards shown on the Overview screen, in user-configurable order.
+private enum ChartKind: String, CaseIterable, Identifiable {
+    case weight, steps, sleep, workouts
+
+    var id: String { rawValue }
+
+    var title: String {
+        switch self {
+        case .weight: return "Weight"
+        case .steps: return "Steps"
+        case .sleep: return "Sleep"
+        case .workouts: return "Workouts"
+        }
+    }
+
+    var systemImage: String {
+        switch self {
+        case .weight: return "scalemass.fill"
+        case .steps: return "shoeprints.fill"
+        case .sleep: return "bed.double.fill"
+        case .workouts: return "figure.run"
+        }
+    }
+
+    var height: CGFloat {
+        switch self {
+        case .weight: return 130
+        case .steps, .sleep, .workouts: return 80
+        }
+    }
+}
+
+/// Handles a chart card being dragged over another card's drop zone, live-reordering as it crosses.
+private struct ChartCardDropDelegate: DropDelegate {
+    let target: ChartKind
+    @Binding var chartOrder: [ChartKind]
+    @Binding var draggedKind: ChartKind?
+    let onDropCompleted: () -> Void
+
+    func dropEntered(info: DropInfo) {
+        guard let draggedKind, draggedKind != target,
+              let fromIndex = chartOrder.firstIndex(of: draggedKind),
+              let toIndex = chartOrder.firstIndex(of: target),
+              chartOrder[toIndex] != draggedKind else { return }
+
+        withAnimation(.spring(response: 0.35, dampingFraction: 0.82)) {
+            chartOrder.move(
+                fromOffsets: IndexSet(integer: fromIndex),
+                toOffset: toIndex > fromIndex ? toIndex + 1 : toIndex
+            )
+        }
+        Haptics.selection()
+    }
+
+    func dropUpdated(info: DropInfo) -> DropProposal? {
+        DropProposal(operation: .move)
+    }
+
+    func performDrop(info: DropInfo) -> Bool {
+        withAnimation(.spring(response: 0.35, dampingFraction: 0.82)) {
+            draggedKind = nil
+        }
+        onDropCompleted()
+        return true
+    }
+}
 
 struct OverviewView: View {
     private struct StepChartPoint: Equatable, Identifiable {
@@ -207,13 +276,26 @@ struct OverviewView: View {
     private var chartPeriod: TimePeriod {
         TimePeriod.allCases[badgePeriodIndex]
     }
+    @AppStorage("overviewChartOrder") private var chartOrderRaw = ChartKind.allCases.map(\.rawValue).joined(separator: ",")
     @State private var snapshot: Snapshot = .empty
     @State private var miniGoals: [MiniGoal] = []
     @State private var chartScrollPosition = Date()
     @State private var selectedDate: Date? = nil
+    @State private var chartOrder: [ChartKind] = ChartKind.allCases
+    @State private var draggedKind: ChartKind? = nil
 
     private var hasSleepData: Bool { snapshot.hasSleepData }
     private var hasWorkoutData: Bool { snapshot.hasWorkoutData }
+
+    private var visibleChartOrder: [ChartKind] {
+        chartOrder.filter { kind in
+            switch kind {
+            case .weight, .steps: return true
+            case .sleep: return hasSleepData
+            case .workouts: return hasWorkoutData
+            }
+        }
+    }
 
     private var selectedGoal: WeightGoal {
         WeightGoal(rawValue: weightGoal) ?? .defaultValue
@@ -406,6 +488,7 @@ struct OverviewView: View {
             updateSnapshot()
             updateMiniGoals()
             resetChartScrollPosition()
+            loadChartOrder()
         }
         .onChange(of: dataVersion) { _, _ in
             updateSnapshot()
@@ -452,23 +535,59 @@ struct OverviewView: View {
                     .foregroundStyle(.secondary)
                     .frame(maxWidth: .infinity, minHeight: 180)
             } else {
-                VStack(alignment: .leading, spacing: 16) {
-                    labeledChart(title: "Weight", systemImage: "scalemass.fill", height: 130) { weightChart }
-
-                    labeledChart(title: "Steps", systemImage: "shoeprints.fill", height: 80) { stepsChart }
-
-                    if hasSleepData {
-                        labeledChart(title: "Sleep", systemImage: "bed.double.fill", height: 80) { sleepChart }
+                VStack(alignment: .leading, spacing: 12) {
+                    ForEach(visibleChartOrder) { kind in
+                        chartCardView(for: kind)
                     }
-
-                    if hasWorkoutData {
-                        labeledChart(title: "Workouts", systemImage: "figure.run", height: 80) { workoutChart }
-                    }
+                }
+                // Fallback: resets drag state if a card is released in the gap between cards.
+                .onDrop(of: [.plainText], isTargeted: nil) { _ in
+                    draggedKind = nil
+                    persistChartOrder()
+                    return true
                 }
             }
 
         }
         .padding(.vertical, 14)
+    }
+
+    /// A single reorderable chart card: long-press to lift, drag to reorder, release to drop.
+    @ViewBuilder
+    private func chartCardView(for kind: ChartKind) -> some View {
+        let isDragging = draggedKind == kind
+
+        labeledChart(title: kind.title, systemImage: kind.systemImage, height: kind.height) {
+            chartView(for: kind)
+        }
+        .padding(14)
+        .background {
+            RoundedRectangle(cornerRadius: 20, style: .continuous)
+                .fill(Color(.secondarySystemGroupedBackground))
+        }
+        .scaleEffect(isDragging ? 0.97 : 1)
+        .opacity(isDragging ? 0.5 : 1)
+        .animation(.spring(response: 0.3, dampingFraction: 0.8), value: isDragging)
+        .onDrag {
+            draggedKind = kind
+            return NSItemProvider(object: kind.rawValue as NSString)
+        }
+        .onDrop(of: [.plainText], delegate: ChartCardDropDelegate(
+            target: kind,
+            chartOrder: $chartOrder,
+            draggedKind: $draggedKind,
+            onDropCompleted: persistChartOrder
+        ))
+    }
+
+    @ViewBuilder
+    private func chartView(for kind: ChartKind) -> some View {
+        switch kind {
+        case .weight: weightChart
+        case .steps: stepsChart
+        case .sleep: sleepChart
+        case .workouts: workoutChart
+        }
     }
 
     // MARK: - Weight Chart
@@ -1178,6 +1297,16 @@ struct OverviewView: View {
 
     private func updateMiniGoals() {
         miniGoals = MiniGoalStore.load(for: selectedGoal)
+    }
+
+    private func loadChartOrder() {
+        let saved = chartOrderRaw.split(separator: ",").compactMap { ChartKind(rawValue: String($0)) }
+        let missing = ChartKind.allCases.filter { !saved.contains($0) }
+        chartOrder = saved + missing
+    }
+
+    private func persistChartOrder() {
+        chartOrderRaw = chartOrder.map(\.rawValue).joined(separator: ",")
     }
 
     private func goalCompletionText(_ progress: WeightCalculations.GoalProgress) -> String {
