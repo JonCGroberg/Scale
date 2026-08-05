@@ -95,6 +95,8 @@ struct JournalView: View {
         let workoutCount: Int
         let sleepCount: Int
         let stepText: String?
+        let activeCalorieText: String?
+        let sleepText: String?
         /// Cache key for lazy thumbnail loading – nil when the day has no photo.
         let photoCacheKey: String?
         /// Position within a consecutive logging streak (0 = isolated day, 1+ = day N of a run).
@@ -108,6 +110,21 @@ struct JournalView: View {
 
         var hasPhoto: Bool {
             photoCacheKey != nil
+        }
+
+        func statText(for stat: CalendarDayStat) -> String? {
+            switch stat {
+            case .weight:
+                return weightText
+            case .steps:
+                return stepText
+            case .activeCalories:
+                return activeCalorieText
+            case .sleep:
+                return sleepText
+            case .workouts:
+                return workoutCount > 0 ? "\(workoutCount)" : nil
+            }
         }
     }
 
@@ -173,6 +190,7 @@ struct JournalView: View {
     @Query(sort: \DailyActivitySummary.date, order: .reverse) private var dailyActivitySummaries: [DailyActivitySummary]
     @Query(sort: \SleepEntry.endDate, order: .reverse) private var sleepEntries: [SleepEntry]
     @AppStorage("appTint") private var appTint = AppTint.defaultValue.rawValue
+    @AppStorage("calendarDayStat") private var calendarDayStat = CalendarDayStat.defaultValue.rawValue
 
     let scrollToEntryTrigger: Int
     let focusedEntry: WeightEntry?
@@ -270,6 +288,10 @@ struct JournalView: View {
         (AppTint(rawValue: appTint) ?? .defaultValue).color
     }
 
+    private var dayStat: CalendarDayStat {
+        CalendarDayStat(rawValue: calendarDayStat) ?? .defaultValue
+    }
+
     private var backgroundColor: Color {
         Color(.systemGroupedBackground)
     }
@@ -324,6 +346,7 @@ struct JournalView: View {
                                         title: section.title,
                                         renderData: renderData,
                                         tintColor: tintColor,
+                                        dayStat: dayStat,
                                         calendar: calendar,
                                         dayRowSpacing: dayRowSpacing,
                                         dayColumnSpacing: dayColumnSpacing,
@@ -659,6 +682,8 @@ struct JournalView: View {
                 workoutCount: workoutsByDay[day]?.count ?? 0,
                 sleepCount: sleepByDay[day]?.count ?? 0,
                 stepText: stepText(for: dailyActivityByDay[day]?.stepCount ?? 0),
+                activeCalorieText: activeCalorieText(for: dailyActivityByDay[day]?.activeEnergyBurnedKilocalories ?? 0),
+                sleepText: sleepDurationText(for: sleepByDay[day] ?? []),
                 photoCacheKey: photoCacheKey(for: dayEntries),
                 streakDay: streakValue,
                 isStreakPotential: isPotential
@@ -676,6 +701,25 @@ struct JournalView: View {
             return String(format: "%.1fk", value)
         }
         return steps.formatted()
+    }
+
+    private func activeCalorieText(for kilocalories: Double) -> String? {
+        guard kilocalories > 0 else { return nil }
+        return Int(kilocalories.rounded()).formatted()
+    }
+
+    private func sleepDurationText(for entries: [SleepEntry]) -> String? {
+        let totalDuration = entries.reduce(0) { $0 + $1.duration }
+        guard totalDuration > 0 else { return nil }
+
+        let totalMinutes = max(Int(totalDuration / 60), 0)
+        let hours = totalMinutes / 60
+        let minutes = totalMinutes % 60
+
+        if hours > 0 {
+            return "\(hours)h"
+        }
+        return "\(minutes)m"
     }
 
     private func rebuildMonthRenderData(forceAll: Bool = false) {
@@ -3320,6 +3364,7 @@ fileprivate struct MonthSectionView: View {
     let title: String
     let renderData: JournalView.MonthRenderData
     let tintColor: Color
+    let dayStat: CalendarDayStat
     let calendar: Calendar
     let dayRowSpacing: CGFloat
     let dayColumnSpacing: CGFloat
@@ -3438,11 +3483,11 @@ fileprivate struct MonthSectionView: View {
 
                         Spacer(minLength: 0)
 
-                        if let weightText = dayData?.weightText {
+                        if let statText = dayData?.statText(for: dayStat) {
                             HStack {
                                 Spacer(minLength: 0)
 
-                                Text(weightText)
+                                Text(statText)
                                     .font(.system(size: 9.5, weight: .bold, design: .rounded))
                                     .foregroundStyle(
                                         hasVisiblePhoto
