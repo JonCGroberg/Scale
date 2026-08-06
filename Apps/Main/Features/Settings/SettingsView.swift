@@ -92,6 +92,63 @@ struct SettingsView: View {
         NavigationStack {
             List {
                 Section {
+                    Picker(selection: selectedTint) {
+                        ForEach(AppTint.presets) { tint in
+                            HStack(spacing: 10) {
+                                Circle()
+                                    .fill(tint.color)
+                                    .frame(width: 12, height: 12)
+
+                                Text(tint.title)
+                                    .foregroundStyle(tint.color)
+                            }
+                            .tag(tint)
+                        }
+
+                        HStack(spacing: 10) {
+                            Circle()
+                                .fill(selectedTint.wrappedValue == .custom ? tintColor : .gray.opacity(0.3))
+                                .frame(width: 12, height: 12)
+
+                            Text("Custom")
+                                .foregroundStyle(selectedTint.wrappedValue == .custom ? tintColor : .primary)
+                        }
+                        .tag(AppTint.custom)
+                    }
+                    label: {
+                        Text("Tint Color")
+                            .foregroundStyle(tintColor)
+                    }
+
+                    if selectedTint.wrappedValue == .custom {
+                        HStack {
+                            ColorPicker("Custom Color",
+                                        selection: customColor,
+                                        supportsOpacity: false)
+                        }
+                    }
+
+                    Picker(selection: selectedCalendarDayStat) {
+                        ForEach(CalendarDayStat.allCases) { stat in
+                            Label {
+                                Text(stat.title)
+                            } icon: {
+                                Image(systemName: stat.systemImage)
+                                    .padding(.trailing, 4)
+                            }
+                            .tag(stat)
+                        }
+                    }
+                    label: {
+                        Text("Calendar Day Stat")
+                    }
+                } header: {
+                    Text("Display")
+                } footer: {
+                    Text("Choose the stat shown on logged days in the calendar view.")
+                }
+
+                Section {
                     GoalPicker(
                         selection: selectedWeightGoal,
                         tintColor: tintColor
@@ -172,59 +229,6 @@ struct SettingsView: View {
                     } else {
                         Text("Cut and bulk keep separate goal weights. Maintain does not use a goal weight.")
                     }
-                }
-
-                Section {
-                    Picker(selection: selectedTint) {
-                        ForEach(AppTint.presets) { tint in
-                            HStack(spacing: 10) {
-                                Circle()
-                                    .fill(tint.color)
-                                    .frame(width: 12, height: 12)
-
-                                Text(tint.title)
-                                    .foregroundStyle(tint.color)
-                            }
-                            .tag(tint)
-                        }
-
-                        HStack(spacing: 10) {
-                            Circle()
-                                .fill(selectedTint.wrappedValue == .custom ? tintColor : .gray.opacity(0.3))
-                                .frame(width: 12, height: 12)
-
-                            Text("Custom")
-                                .foregroundStyle(selectedTint.wrappedValue == .custom ? tintColor : .primary)
-                        }
-                        .tag(AppTint.custom)
-                    }
-                    label: {
-                        Text("Tint Color")
-                            .foregroundStyle(tintColor)
-                    }
-
-                    if selectedTint.wrappedValue == .custom {
-                        HStack {
-                            ColorPicker("Custom Color",
-                                        selection: customColor,
-                                        supportsOpacity: false)
-                        }
-                    }
-
-                    Picker(selection: selectedCalendarDayStat) {
-                        ForEach(CalendarDayStat.allCases) { stat in
-                            Label(stat.title, systemImage: stat.systemImage)
-                                .labelStyle(.spacedIcon)
-                                .tag(stat)
-                        }
-                    }
-                    label: {
-                        Text("Calendar Stat")
-                    }
-                } header: {
-                    Text("Display")
-                } footer: {
-                    Text("Choose the stat shown on logged days in the calendar view.")
                 }
 
                 Section {
@@ -513,19 +517,6 @@ struct GoalPicker: View {
                 .fill(.ultraThinMaterial.opacity(0.55))
         }
     }
-}
-
-private struct SpacedIconLabelStyle: LabelStyle {
-    func makeBody(configuration: Configuration) -> some View {
-        HStack(spacing: 8) {
-            configuration.icon
-            configuration.title
-        }
-    }
-}
-
-private extension LabelStyle where Self == SpacedIconLabelStyle {
-    static var spacedIcon: SpacedIconLabelStyle { SpacedIconLabelStyle() }
 }
 
 private struct GoalSectionDivider: View {
