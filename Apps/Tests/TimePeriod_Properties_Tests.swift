@@ -13,6 +13,10 @@ struct TimePeriodPropertiesTests {
 
     // MARK: - calendarComponent
 
+    @Test func todayCalendarComponentIsDay() {
+        #expect(TimePeriod.today.calendarComponent == .day)
+    }
+
     @Test func weekCalendarComponentIsWeekOfYear() {
         #expect(TimePeriod.week.calendarComponent == .weekOfYear)
     }
@@ -35,6 +39,10 @@ struct TimePeriodPropertiesTests {
 
     // MARK: - componentValue
 
+    @Test func todayComponentValueIsOne() {
+        #expect(TimePeriod.today.componentValue == 1)
+    }
+
     @Test func weekComponentValueIsOne() {
         #expect(TimePeriod.week.componentValue == 1)
     }
@@ -56,6 +64,10 @@ struct TimePeriodPropertiesTests {
     }
 
     // MARK: - label
+
+    @Test func todayLabelIsToday() {
+        #expect(TimePeriod.today.label == "Today")
+    }
 
     @Test func weekLabelIsWeek() {
         #expect(TimePeriod.week.label == "Week")

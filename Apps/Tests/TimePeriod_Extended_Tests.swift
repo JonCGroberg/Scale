@@ -29,7 +29,7 @@ struct TimePeriodExtendedTests {
     }
 
     @Test func allCasesContainsAllExpectedValues() {
-        let expected: [TimePeriod] = [.week, .month, .threeMonths, .sixMonths, .year]
+        let expected: [TimePeriod] = [.today, .week, .month, .threeMonths, .sixMonths, .year]
         #expect(TimePeriod.allCases == expected)
     }
 }

@@ -18,10 +18,11 @@ import XCTest
 struct TimePeriodTests {
 
     @Test func allCasesCount() {
-        #expect(TimePeriod.allCases.count == 5)
+        #expect(TimePeriod.allCases.count == 6)
     }
 
     @Test func rawValues() {
+        #expect(TimePeriod.today.rawValue == "1D")
         #expect(TimePeriod.week.rawValue == "1W")
         #expect(TimePeriod.month.rawValue == "1M")
         #expect(TimePeriod.threeMonths.rawValue == "3M")
@@ -30,6 +31,7 @@ struct TimePeriodTests {
     }
 
     @Test func labels() {
+        #expect(TimePeriod.today.label == "Today")
         #expect(TimePeriod.week.label == "Week")
         #expect(TimePeriod.month.label == "Month")
         #expect(TimePeriod.threeMonths.label == "3 Months")
@@ -38,6 +40,7 @@ struct TimePeriodTests {
     }
 
     @Test func componentValues() {
+        #expect(TimePeriod.today.componentValue == 1)
         #expect(TimePeriod.week.componentValue == 1)
         #expect(TimePeriod.month.componentValue == 1)
         #expect(TimePeriod.threeMonths.componentValue == 3)
@@ -46,11 +49,19 @@ struct TimePeriodTests {
     }
 
     @Test func calendarComponents() {
+        #expect(TimePeriod.today.calendarComponent == .day)
         #expect(TimePeriod.week.calendarComponent == .weekOfYear)
         #expect(TimePeriod.month.calendarComponent == .month)
         #expect(TimePeriod.threeMonths.calendarComponent == .month)
         #expect(TimePeriod.sixMonths.calendarComponent == .month)
         #expect(TimePeriod.year.calendarComponent == .year)
+    }
+
+    @Test func todayStartDateIsStartOfDay() {
+        let calendar = Calendar.current
+        let now = Date()
+        let start = TimePeriod.today.startDate(endingAt: now, calendar: calendar)
+        #expect(start == calendar.startOfDay(for: now))
     }
 }
 
