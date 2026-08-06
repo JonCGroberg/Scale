@@ -17,6 +17,7 @@ struct OnboardingView: View {
     @AppStorage("weightGoal") private var weightGoal = WeightGoal.defaultValue.rawValue
     @AppStorage("cutTargetWeight") private var cutTargetWeight = 180.0
     @AppStorage("bulkTargetWeight") private var bulkTargetWeight = 180.0
+    @AppStorage("calendarDayStat") private var calendarDayStat = CalendarDayStat.defaultValue.rawValue
     @Environment(NotificationManager.self) private var notificationManager
     @Environment(HealthKitManager.self) private var healthManager
     @State private var currentPage = 0
@@ -37,6 +38,13 @@ struct OnboardingView: View {
         Binding(
             get: { WeightGoal(rawValue: weightGoal) ?? .defaultValue },
             set: { weightGoal = $0.rawValue }
+        )
+    }
+
+    private var selectedCalendarDayStat: Binding<CalendarDayStat> {
+        Binding(
+            get: { CalendarDayStat(rawValue: calendarDayStat) ?? .defaultValue },
+            set: { calendarDayStat = $0.rawValue }
         )
     }
 
@@ -86,6 +94,11 @@ struct OnboardingView: View {
             icon: "chart.xyaxis.line",
             title: "See Your Progress",
             subtitle: "View trends over time in your journal with charts and streaks."
+        ),
+        OnboardingPage(
+            icon: "calendar",
+            title: "Choose Your Main Stat",
+            subtitle: "Pick the metric shown on each day in your calendar. You can change it anytime."
         ),
         OnboardingPage(
             icon: "target",
@@ -175,14 +188,18 @@ struct OnboardingView: View {
                         .padding(.top, index == 0 ? 40 : 8)
                         .padding(.horizontal, 28)
                 } else if index == 2 {
-                    goalSetupCard
+                    primaryStatSetupCard
                         .padding(.top, 12)
                         .padding(.horizontal, 24)
                 } else if index == 3 {
-                    themeSetupCard
+                    goalSetupCard
                         .padding(.top, 12)
                         .padding(.horizontal, 24)
                 } else if index == 4 {
+                    themeSetupCard
+                        .padding(.top, 12)
+                        .padding(.horizontal, 24)
+                } else if index == 5 {
                     healthSetupCard
                         .padding(.top, 12)
                         .padding(.horizontal, 24)
@@ -318,6 +335,58 @@ struct OnboardingView: View {
         .onAppear {
             miniGoals = MiniGoalStore.load(for: selectedGoal.wrappedValue)
         }
+    }
+
+    private var primaryStatSetupCard: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            Label("This controls the value shown on each calendar day.", systemImage: "calendar")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+
+            ForEach(CalendarDayStat.allCases) { stat in
+                Button {
+                    selectedCalendarDayStat.wrappedValue = stat
+                    Haptics.selection()
+                } label: {
+                    HStack(spacing: 14) {
+                        Image(systemName: stat.systemImage)
+                            .font(.title3)
+                            .frame(width: 28)
+                            .foregroundStyle(selectedCalendarDayStat.wrappedValue == stat ? tintColor : .secondary)
+
+                        Text(stat.title)
+                            .font(.body.weight(.semibold))
+                            .foregroundStyle(.primary)
+
+                        Spacer()
+
+                        if selectedCalendarDayStat.wrappedValue == stat {
+                            Image(systemName: "checkmark.circle.fill")
+                                .font(.title3)
+                                .foregroundStyle(tintColor)
+                        }
+                    }
+                    .padding(.horizontal, 14)
+                    .frame(height: 54)
+                    .background(
+                        selectedCalendarDayStat.wrappedValue == stat ? tintColor.opacity(0.14) : Color.primary.opacity(0.035),
+                        in: RoundedRectangle(cornerRadius: 16, style: .continuous)
+                    )
+                    .overlay {
+                        RoundedRectangle(cornerRadius: 16, style: .continuous)
+                            .stroke(
+                                selectedCalendarDayStat.wrappedValue == stat ? tintColor.opacity(0.65) : Color.secondary.opacity(0.14),
+                                lineWidth: 1
+                            )
+                    }
+                }
+                .buttonStyle(.plain)
+                .accessibilityLabel("Primary stat: \(stat.title)")
+                .accessibilityAddTraits(selectedCalendarDayStat.wrappedValue == stat ? .isSelected : [])
+            }
+        }
+        .padding(20)
+        .background(Color(.secondarySystemGroupedBackground), in: RoundedRectangle(cornerRadius: 24, style: .continuous))
     }
 
     private var remindersSetupCard: some View {
