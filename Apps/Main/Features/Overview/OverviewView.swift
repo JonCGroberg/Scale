@@ -13,12 +13,13 @@ import UniformTypeIdentifiers
 
 /// The set of chart cards shown on the Overview screen, in user-configurable order.
 private enum ChartKind: String, CaseIterable, Identifiable {
-    case weight, steps, sleep, workouts
+    case goal, weight, steps, sleep, workouts
 
     var id: String { rawValue }
 
     var title: String {
         switch self {
+        case .goal: return "Goal"
         case .weight: return "Weight"
         case .steps: return "Steps"
         case .sleep: return "Sleep"
@@ -28,6 +29,7 @@ private enum ChartKind: String, CaseIterable, Identifiable {
 
     var systemImage: String {
         switch self {
+        case .goal: return "target"
         case .weight: return "scalemass.fill"
         case .steps: return "shoeprints.fill"
         case .sleep: return "bed.double.fill"
@@ -37,6 +39,7 @@ private enum ChartKind: String, CaseIterable, Identifiable {
 
     var height: CGFloat {
         switch self {
+        case .goal: return 0
         case .weight: return 130
         case .sleep: return 120
         case .steps, .workouts: return 80
@@ -270,6 +273,7 @@ struct OverviewView: View {
     @Query(sort: \SleepEntry.endDate, order: .reverse) private var allSleepEntries: [SleepEntry]
     @Query(sort: \WorkoutEntry.timestamp, order: .reverse) private var allWorkouts: [WorkoutEntry]
     @AppStorage("appTint") private var appTint = AppTint.defaultValue.rawValue
+    @AppStorage("calendarDayStat") private var calendarDayStat = CalendarDayStat.defaultValue.rawValue
     @AppStorage("weightGoal") private var weightGoal = WeightGoal.defaultValue.rawValue
     @AppStorage("cutTargetWeight") private var cutTargetWeight = 180.0
     @AppStorage("bulkTargetWeight") private var bulkTargetWeight = 180.0
@@ -291,6 +295,7 @@ struct OverviewView: View {
     private var visibleChartOrder: [ChartKind] {
         chartOrder.filter { kind in
             switch kind {
+            case .goal: return snapshot.goalProgress != nil
             case .weight, .steps: return true
             case .sleep: return hasSleepData
             case .workouts: return hasWorkoutData
@@ -300,6 +305,10 @@ struct OverviewView: View {
 
     private var selectedGoal: WeightGoal {
         WeightGoal(rawValue: weightGoal) ?? .defaultValue
+    }
+
+    private var primaryStat: CalendarDayStat {
+        CalendarDayStat(rawValue: calendarDayStat) ?? .defaultValue
     }
 
     private var activeTargetWeight: Double? {
@@ -352,6 +361,52 @@ struct OverviewView: View {
         let workouts = workoutChartPoints.first(where: { calendar.isDate($0.date, inSameDayAs: snappedDate) })?.totalHours
 
         return (weight, steps, workouts, snappedDate)
+    }
+
+    private var primaryStatDisplay: (value: String, label: String) {
+        let calendar = Calendar.current
+        let selectedDay = selectedDate.map { calendar.startOfDay(for: $0) }
+        let dateLabel: String = selectedDay.map {
+            $0.formatted(.dateTime.month(.abbreviated).day().year())
+        } ?? "today"
+
+        switch primaryStat {
+        case .weight:
+            let weight = selectedDay.flatMap { day in
+                entries.first { calendar.isDate($0.timestamp, inSameDayAs: day) }?.weight
+            } ?? (selectedDay == nil ? entries.first?.weight : nil)
+            return (weight.map { String(format: "%.1f", $0) } ?? "--", selectedDay == nil ? "lbs today" : dateLabel)
+
+        case .steps:
+            let summary = selectedDay.flatMap { day in
+                dailyActivitySummaries.first { calendar.isDate($0.date, inSameDayAs: day) }
+            } ?? (selectedDay == nil ? dailyActivitySummaries.first : nil)
+            return (summary.map { $0.stepCount.formatted() } ?? "--", selectedDay == nil ? "steps today" : dateLabel)
+
+        case .activeCalories:
+            let summary = selectedDay.flatMap { day in
+                dailyActivitySummaries.first { calendar.isDate($0.date, inSameDayAs: day) }
+            } ?? (selectedDay == nil ? dailyActivitySummaries.first : nil)
+            return (summary.map { Int($0.activeEnergyBurnedKilocalories.rounded()).formatted() } ?? "--", selectedDay == nil ? "active cal today" : dateLabel)
+
+        case .sleep:
+            let day = selectedDay ?? allSleepEntries.first.map { calendar.startOfDay(for: $0.endDate) }
+            let hours = day.map { target in
+                allSleepEntries
+                    .filter { calendar.isDate($0.endDate, inSameDayAs: target) }
+                    .reduce(0) { $0 + $1.duration / 3_600 }
+            }
+            return (hours.map { String(format: "%.1f", $0) } ?? "--", selectedDay == nil ? "hours slept" : dateLabel)
+
+        case .workouts:
+            let day = selectedDay ?? allWorkouts.first.map { calendar.startOfDay(for: $0.timestamp) }
+            let hours = day.map { target in
+                allWorkouts
+                    .filter { calendar.isDate($0.timestamp, inSameDayAs: target) }
+                    .reduce(0) { $0 + $1.duration / 3_600 }
+            }
+            return (hours.map { String(format: "%.1f", $0) } ?? "--", selectedDay == nil ? "workout hours" : dateLabel)
+        }
     }
 
     private var tintColor: Color {
@@ -482,6 +537,16 @@ struct OverviewView: View {
             .padding(.horizontal, 20)
         }
         .background(Color(.systemGroupedBackground))
+        // Catch drops outside a card (including empty scroll space) so a
+        // cancelled-looking reorder never leaves its source card dimmed.
+        .onDrop(of: [.plainText], isTargeted: nil) { _ in
+            draggedKind = nil
+            persistChartOrder()
+            return true
+        }
+        .onDisappear {
+            draggedKind = nil
+        }
         .onAppear {
             updateSnapshot()
             updateMiniGoals()
@@ -518,14 +583,17 @@ struct OverviewView: View {
         VStack(alignment: .leading, spacing: 0) {
             centeredWeightDisplay
 
-            Picker("Period", selection: $badgePeriodIndex) {
-                ForEach(Array(TimePeriod.allCases.enumerated()), id: \.offset) { index, period in
-                    Text(period.rawValue).tag(index)
-                }
+            HStack(alignment: .firstTextBaseline) {
+                Text("Charts")
+                    .font(.title3.weight(.bold))
+
+                Spacer()
+
+                Text("drag to reorder")
+                    .font(.caption.weight(.medium))
+                    .foregroundStyle(.secondary)
             }
-            .pickerStyle(.segmented)
-            .padding(.top, 12)
-            .padding(.bottom, 18)
+            .padding(.vertical, 16)
 
             if snapshot.chart.smoothedEntries.isEmpty {
                 Text("Not enough data for this period")
@@ -550,37 +618,110 @@ struct OverviewView: View {
         .padding(.vertical, 14)
     }
 
-    /// A single reorderable chart card: long-press to lift, drag to reorder, release to drop.
-    @ViewBuilder
-    private func chartCardView(for kind: ChartKind) -> some View {
-        let isDragging = draggedKind == kind
+    private func goalProgressCard(_ progress: WeightCalculations.GoalProgress) -> some View {
+        let startingWeight = progress.targetWeight - progress.totalChange
+        let completion = progress.totalDistance > 0
+            ? min(max(progress.completedDistance / progress.totalDistance, 0), 1)
+            : 0
+        let percentage = Int((completion * 100).rounded())
+        let paceText: String = {
+            guard let days = progress.daysRemaining, days > 0 else { return "Goal reached" }
+            if days < 30 { return "on pace · \(Int(days.rounded())) days at this rate" }
+            return String(format: "on pace · %.1f mo at this rate", days / 30.4)
+        }()
 
-        labeledChart(title: kind.title, systemImage: kind.systemImage, height: kind.height) {
-            chartView(for: kind)
+        return VStack(alignment: .leading, spacing: 10) {
+            HStack(spacing: 8) {
+                Image(systemName: selectedGoal.systemImage)
+                    .font(.headline)
+                    .foregroundStyle(tintColor)
+
+                Text("Goal")
+                    .font(.headline.weight(.bold))
+
+                Spacer()
+
+                Text("\(percentage)%")
+                    .font(.title3.weight(.bold))
+                    .monospacedDigit()
+                    .foregroundStyle(.primary)
+
+                dragHandle
+            }
+
+            ProgressView(value: completion)
+                .tint(tintColor)
+                .scaleEffect(x: 1, y: 1.45, anchor: .center)
+                .padding(.vertical, 1)
+
+            HStack(alignment: .firstTextBaseline) {
+                Text("\(startingWeight.formatted(.number.precision(.fractionLength(1)))) → \(progress.targetWeight.formatted(.number.precision(.fractionLength(1)))) lbs")
+                    .font(.system(size: 16, weight: .bold, design: .rounded))
+                    .foregroundStyle(tintColor)
+                    .lineLimit(1)
+                    .minimumScaleFactor(0.8)
+
+                Spacer(minLength: 12)
+
+                Text(paceText)
+                    .font(.caption.weight(.medium))
+                    .foregroundStyle(.secondary)
+                    .multilineTextAlignment(.trailing)
+                    .lineLimit(1)
+                    .minimumScaleFactor(0.7)
+            }
         }
         .padding(14)
         .background {
             RoundedRectangle(cornerRadius: 20, style: .continuous)
                 .fill(Color(.secondarySystemGroupedBackground))
         }
-        .scaleEffect(isDragging ? 0.97 : 1)
-        .opacity(isDragging ? 0.5 : 1)
-        .animation(.spring(response: 0.3, dampingFraction: 0.8), value: isDragging)
-        .onDrag {
-            draggedKind = kind
-            return NSItemProvider(object: kind.rawValue as NSString)
+        .accessibilityElement(children: .combine)
+        .accessibilityLabel("Goal progress, \(percentage) percent complete")
+    }
+
+    /// A single reorderable chart card: long-press to lift, drag to reorder, release to drop.
+    @ViewBuilder
+    private func chartCardView(for kind: ChartKind) -> some View {
+        if kind == .goal, let progress = snapshot.goalProgress {
+            reorderableCard(for: kind) {
+                goalProgressCard(progress)
+            }
+        } else {
+            reorderableCard(for: kind) {
+                labeledChart(title: kind.title, systemImage: kind.systemImage, height: kind.height) {
+                    chartView(for: kind)
+                }
+                .padding(14)
+                .background {
+                    RoundedRectangle(cornerRadius: 20, style: .continuous)
+                        .fill(Color(.secondarySystemGroupedBackground))
+                }
+            }
         }
-        .onDrop(of: [.plainText], delegate: ChartCardDropDelegate(
-            target: kind,
-            chartOrder: $chartOrder,
-            draggedKind: $draggedKind,
-            onDropCompleted: persistChartOrder
-        ))
+    }
+
+    private func reorderableCard<Content: View>(
+        for kind: ChartKind,
+        @ViewBuilder content: () -> Content
+    ) -> some View {
+        return content()
+            .onDrag {
+                draggedKind = kind
+                return NSItemProvider(object: kind.rawValue as NSString)
+            }
+            .onDrop(of: [.plainText], delegate: ChartCardDropDelegate(
+                target: kind,
+                chartOrder: $chartOrder,
+                draggedKind: $draggedKind,
+                onDropCompleted: persistChartOrder
+            ))
     }
 
     @ViewBuilder
     private func chartView(for kind: ChartKind) -> some View {
         switch kind {
+        case .goal: EmptyView()
         case .weight: weightChart
         case .steps: stepsChart
         case .sleep: sleepChart
@@ -599,7 +740,7 @@ struct OverviewView: View {
                     series: .value("Series", "actual")
                 )
                 .foregroundStyle(tintColor.opacity(selectedDate == nil ? 1.0 : 0.35))
-                .lineStyle(StrokeStyle(lineWidth: 1.5))
+                .lineStyle(StrokeStyle(lineWidth: 2))
                 .interpolationMethod(.catmullRom)
             }
 
@@ -620,7 +761,7 @@ struct OverviewView: View {
                     y: .value("Weight", entry.weight)
                 )
                 .foregroundStyle(tintColor.opacity(selectedDate == nil ? 1.0 : 0.25))
-                .symbolSize(14)
+                .symbolSize(20)
             }
 
             if let target = filteredActiveTargetWeight {
@@ -669,12 +810,14 @@ struct OverviewView: View {
         .chartYAxis {
             AxisMarks(position: .trailing) { value in
                 AxisGridLine()
+                    .foregroundStyle(.primary.opacity(0.16))
                 AxisTick()
+                    .foregroundStyle(.primary.opacity(0.32))
                 AxisValueLabel {
                     if let weight = value.as(Double.self) {
                         Text(String(format: "%.0f", weight))
                             .font(.system(size: 10, design: .rounded))
-                            .foregroundStyle(.secondary)
+                            .foregroundStyle(.primary.opacity(0.58))
                             .lineLimit(1)
                             .frame(width: 32, alignment: .leading)
                     }
@@ -718,7 +861,7 @@ struct OverviewView: View {
                     yEnd: .value("Steps", point.steps),
                     width: stepBarWidth
                 )
-                .foregroundStyle(tintColor.opacity(isSelected ? 0.85 : (selectedDate == nil ? 0.60 : 0.30)))
+                .foregroundStyle(tintColor.opacity(isSelected ? 0.90 : (selectedDate == nil ? 0.76 : 0.30)))
             }
 
             ForEach(stepTrendPoints) { point in
@@ -726,7 +869,7 @@ struct OverviewView: View {
                     x: .value("Date", point.date),
                     y: .value("Trend", point.steps)
                 )
-                .foregroundStyle(tintColor.opacity(selectedDate == nil ? 0.38 : 0.14))
+                .foregroundStyle(tintColor.opacity(selectedDate == nil ? 0.50 : 0.14))
                 .lineStyle(StrokeStyle(lineWidth: 1.4, dash: [5, 3]))
                 .interpolationMethod(.catmullRom)
             }
@@ -753,15 +896,15 @@ struct OverviewView: View {
         .chartYAxis {
             AxisMarks(position: .trailing) { value in
                 AxisGridLine()
-                    .foregroundStyle(.primary.opacity(0.10))
+                    .foregroundStyle(.primary.opacity(0.16))
                 AxisTick()
-                    .foregroundStyle(.primary.opacity(0.28))
+                    .foregroundStyle(.primary.opacity(0.32))
                 AxisValueLabel {
                     let raw = value.as(Double.self) ?? 0
                     let steps = Int(raw)
                     Text(steps >= 1_000 ? "\(steps / 1_000)k" : "\(steps)")
                         .font(.system(size: 10, design: .rounded))
-                        .foregroundStyle(.secondary)
+                        .foregroundStyle(.primary.opacity(0.58))
                         .lineLimit(1)
                         .frame(width: 32, alignment: .leading)
                 }
@@ -803,48 +946,20 @@ struct OverviewView: View {
 
     private var centeredWeightDisplay: some View {
         VStack(spacing: 4) {
-            if let selectedData = selectedDataPoint {
-                if let weight = selectedData.weight {
-                    Text(String(format: "%.1f", weight))
-                        .font(.system(size: 64, weight: .semibold, design: .rounded))
-                        .contentTransition(.numericText())
-                        .lineLimit(1)
-                } else {
-                    Text("No weight")
-                        .font(.system(size: 22, weight: .regular, design: .rounded))
-                        .foregroundStyle(.secondary)
-                        .lineLimit(1)
-                }
+            Text(primaryStatDisplay.value)
+                .font(.system(size: 64, weight: .semibold, design: .rounded))
+                .foregroundStyle(primaryStatDisplay.value == "--" ? .secondary : .primary)
+                .contentTransition(.numericText())
+                .lineLimit(1)
 
-                Text(selectedData.date, format: .dateTime.month(.abbreviated).day().year())
-                    .font(.subheadline.weight(.semibold))
-                    .foregroundStyle(.secondary)
-                    .lineLimit(1)
-            } else if let weight = snapshot.currentWeight {
-                Text(String(format: "%.1f", weight))
-                    .font(.system(size: 64, weight: .semibold, design: .rounded))
-                    .contentTransition(.numericText())
-                    .lineLimit(1)
-
-                Text("lbs today")
-                    .font(.subheadline.weight(.semibold))
-                    .foregroundStyle(.secondary)
-                    .lineLimit(1)
-            } else {
-                Text("--")
-                    .font(.system(size: 64, weight: .semibold, design: .rounded))
-                    .foregroundStyle(.secondary)
-                    .lineLimit(1)
-
-                Text("No entries yet")
-                    .font(.subheadline.weight(.semibold))
-                    .foregroundStyle(.secondary)
-                    .lineLimit(1)
-            }
+            Text(primaryStatDisplay.label)
+                .font(.subheadline.weight(.semibold))
+                .foregroundStyle(.secondary)
+                .lineLimit(1)
         }
         .frame(maxWidth: .infinity)
-        .padding(.top, 8)
-        .padding(.bottom, 16)
+        .padding(.top, 128)
+        .padding(.bottom, 56)
     }
 
     // MARK: - Bottom Stats Footer
@@ -973,13 +1088,28 @@ struct OverviewView: View {
 
     private func labeledChart<V: View>(title: String, systemImage: String, height: CGFloat, @ViewBuilder chart: () -> V) -> some View {
         VStack(alignment: .leading, spacing: 2) {
-            Label(title, systemImage: systemImage)
-                .font(.caption.weight(.semibold))
-                .foregroundStyle(.secondary)
-                .padding(.leading, 2)
+            HStack {
+                Image(systemName: systemImage)
+                    .font(.headline)
+                    .foregroundStyle(tintColor)
+
+                Text(title)
+                    .font(.headline.weight(.bold))
+
+                Spacer()
+
+                dragHandle
+            }
 
             chart()
         }
+    }
+
+    private var dragHandle: some View {
+        Image(systemName: "line.3.horizontal")
+            .font(.caption.weight(.semibold))
+            .foregroundStyle(.tertiary)
+            .accessibilityHidden(true)
     }
 
     // MARK: - Sleep Chart
@@ -1064,7 +1194,7 @@ struct OverviewView: View {
                     .foregroundStyle(Self.unspecifiedSleepColor)
                 } else {
                     // Unselected days just show total hours in the app tint.
-                    let dimmedOpacity: Double = selectedDate == nil ? 0.80 : 0.28
+                    let dimmedOpacity: Double = selectedDate == nil ? 0.88 : 0.28
                     BarMark(
                         x: .value("Date", point.date),
                         yStart: .value("Sleep start", 0),
@@ -1080,7 +1210,7 @@ struct OverviewView: View {
                     x: .value("Date", point.date),
                     y: .value("Trend", point.totalHours)
                 )
-                .foregroundStyle(tintColor.opacity(selectedDate == nil ? 0.38 : 0.14))
+                .foregroundStyle(tintColor.opacity(selectedDate == nil ? 0.50 : 0.14))
                 .lineStyle(StrokeStyle(lineWidth: 1.4, dash: [5, 3]))
                 .interpolationMethod(.catmullRom)
             }
@@ -1098,12 +1228,12 @@ struct OverviewView: View {
         .chartYAxis {
             AxisMarks(position: .trailing) { value in
                 AxisGridLine()
-                    .foregroundStyle(.primary.opacity(0.10))
+                    .foregroundStyle(.primary.opacity(0.16))
                 AxisValueLabel {
                     if let h = value.as(Double.self) {
                         Text("\(Int(h))h")
                             .font(.system(size: 10, design: .rounded))
-                            .foregroundStyle(.secondary)
+                            .foregroundStyle(.primary.opacity(0.58))
                             .lineLimit(1)
                             .frame(width: 32, alignment: .leading)
                     }
@@ -1122,10 +1252,10 @@ struct OverviewView: View {
                         geometry: geometry,
                         date: selectedData.date,
                         value: point.totalHours,
-                        estimatedWidth: 200,
-                        estimatedHeight: 26,
+                        estimatedWidth: 88,
+                        estimatedHeight: 96,
                         xOffset: 0,
-                        yOffset: -18
+                        yOffset: -12
                     ) {
                         sleepBreakdownCard(for: point)
                     }
@@ -1178,7 +1308,7 @@ struct OverviewView: View {
         return Chart {
             ForEach(workoutChartPoints) { point in
                 let isSelected = selectedDay == point.date
-                let opacity: Double = isSelected ? 0.95 : (selectedDate == nil ? 0.80 : 0.32)
+                let opacity: Double = isSelected ? 0.95 : (selectedDate == nil ? 0.88 : 0.32)
 
                 BarMark(
                     x: .value("Date", point.date),
@@ -1210,7 +1340,7 @@ struct OverviewView: View {
                     x: .value("Date", point.date),
                     y: .value("Trend", point.totalHours)
                 )
-                .foregroundStyle(tintColor.opacity(selectedDate == nil ? 0.38 : 0.14))
+                .foregroundStyle(tintColor.opacity(selectedDate == nil ? 0.50 : 0.14))
                 .lineStyle(StrokeStyle(lineWidth: 1.4, dash: [5, 3]))
                 .interpolationMethod(.catmullRom)
             }
@@ -1237,12 +1367,12 @@ struct OverviewView: View {
         .chartYAxis {
             AxisMarks(position: .trailing) { value in
                 AxisGridLine()
-                    .foregroundStyle(.primary.opacity(0.10))
+                    .foregroundStyle(.primary.opacity(0.16))
                 AxisValueLabel {
                     if let h = value.as(Double.self) {
                         Text(h == 0.5 ? "0.5h" : "\(Int(h))h")
                             .font(.system(size: 10, design: .rounded))
-                            .foregroundStyle(.secondary)
+                            .foregroundStyle(.primary.opacity(0.58))
                             .lineLimit(1)
                             .frame(width: 32, alignment: .leading)
                     }
@@ -1252,9 +1382,9 @@ struct OverviewView: View {
         .chartXAxis {
             AxisMarks(values: .stride(by: chartXAxisStride.component, count: chartXAxisStride.count)) { _ in
                 AxisGridLine()
-                    .foregroundStyle(.primary.opacity(0.10))
+                    .foregroundStyle(.primary.opacity(0.16))
                 AxisTick()
-                    .foregroundStyle(.primary.opacity(0.28))
+                    .foregroundStyle(.primary.opacity(0.32))
                 AxisValueLabel(format: chartXAxisLabelFormat)
             }
         }
@@ -1308,7 +1438,9 @@ struct OverviewView: View {
     private func loadChartOrder() {
         let saved = chartOrderRaw.split(separator: ",").compactMap { ChartKind(rawValue: String($0)) }
         let missing = ChartKind.allCases.filter { !saved.contains($0) }
-        chartOrder = saved + missing
+        chartOrder = saved.contains(.goal)
+            ? saved + missing
+            : [.goal] + saved + missing.filter { $0 != .goal }
     }
 
     private func persistChartOrder() {
@@ -1382,19 +1514,16 @@ struct OverviewView: View {
     private func selectedValuePill(_ text: String) -> some View {
         Text(text)
             .font(.system(size: 9.5, weight: .bold, design: .rounded))
-            .foregroundStyle(.white)
+            .foregroundStyle(.primary)
             .monospacedDigit()
             .padding(.horizontal, 8)
             .padding(.vertical, 5)
-            .background {
-                RoundedRectangle(cornerRadius: 8, style: .continuous)
-                    .fill(tintColor)
-            }
+            .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 10, style: .continuous))
             .overlay {
-                RoundedRectangle(cornerRadius: 8, style: .continuous)
-                    .stroke(.white.opacity(0.20), lineWidth: 0.5)
+                RoundedRectangle(cornerRadius: 10, style: .continuous)
+                    .stroke(.white.opacity(0.5), lineWidth: 0.5)
             }
-            .shadow(color: tintColor.opacity(0.25), radius: 4, x: 0, y: 2)
+            .shadow(color: .black.opacity(0.22), radius: 4, x: 0, y: 2)
             .fixedSize(horizontal: true, vertical: true)
     }
 
@@ -1404,19 +1533,52 @@ struct OverviewView: View {
         VStack(alignment: .leading, spacing: 4) {
             content()
         }
-        .shadow(color: .black.opacity(0.35), radius: 4, x: 0, y: 2)
+        .padding(7)
+        .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 10, style: .continuous))
+        .overlay {
+            RoundedRectangle(cornerRadius: 10, style: .continuous)
+                .stroke(.white.opacity(0.5), lineWidth: 0.5)
+        }
+        .shadow(color: .black.opacity(0.22), radius: 4, x: 0, y: 2)
         .fixedSize(horizontal: true, vertical: true)
     }
 
     private func sleepBreakdownCard(for point: SleepChartPoint) -> some View {
-        selectedBreakdownCard {
-            segmentedBreakdownBar(items: [
-                (point.deepHours, "Deep", nil, Self.deepSleepColor),
-                (point.coreHours, "Core", nil, Self.coreSleepColor),
-                (point.remHours, "REM", nil, Self.remSleepColor),
-                (point.unspecifiedHours, "Sleep", nil, Self.unspecifiedSleepColor)
-            ])
+        let items: [(value: Double, label: String, color: Color)] = [
+            (point.deepHours, "Deep", Self.deepSleepColor),
+            (point.coreHours, "Core", Self.coreSleepColor),
+            (point.remHours, "REM", Self.remSleepColor),
+            (point.unspecifiedHours, "Sleep", Self.unspecifiedSleepColor)
+        ]
+
+        return VStack(alignment: .leading, spacing: 5) {
+            ForEach(Array(items.filter { $0.value > 0 }.enumerated()), id: \.offset) { _, item in
+                HStack(spacing: 5) {
+                    Circle()
+                        .fill(item.color)
+                        .frame(width: 7, height: 7)
+
+                    Text(item.label)
+                        .font(.system(size: 9, weight: .semibold, design: .rounded))
+                        .foregroundStyle(.primary)
+
+                    Spacer(minLength: 4)
+
+                    Text(String(format: "%.1fh", item.value))
+                        .font(.system(size: 9, weight: .bold, design: .rounded))
+                        .foregroundStyle(.primary)
+                        .monospacedDigit()
+                }
+            }
         }
+        .padding(7)
+        .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 10, style: .continuous))
+        .overlay {
+            RoundedRectangle(cornerRadius: 10, style: .continuous)
+                .stroke(.white.opacity(0.5), lineWidth: 0.5)
+        }
+        .shadow(color: .black.opacity(0.22), radius: 4, x: 0, y: 2)
+        .fixedSize(horizontal: true, vertical: true)
     }
 
     private func workoutBreakdownCard(for point: WorkoutChartPoint) -> some View {

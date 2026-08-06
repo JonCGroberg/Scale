@@ -9,12 +9,18 @@ import SwiftUI
 
 struct ChangeBadge: View {
     let entries: [WeightEntry]
+    let showsRange: Bool
 
     @AppStorage("appTint") private var appTint = AppTint.defaultValue.rawValue
     @AppStorage("badgePeriodIndex") private var currentIndex: Int = 1
     @AppStorage("weightGoal") private var weightGoal = WeightGoal.defaultValue.rawValue
     @AppStorage("cutTargetWeight") private var cutTargetWeight = 180.0
     @AppStorage("bulkTargetWeight") private var bulkTargetWeight = 180.0
+
+    init(entries: [WeightEntry], showsRange: Bool = false) {
+        self.entries = entries
+        self.showsRange = showsRange
+    }
 
     private var period: TimePeriod {
         TimePeriod.allCases[currentIndex]
@@ -79,10 +85,62 @@ struct ChangeBadge: View {
     }
 
     var body: some View {
+        // Keep one glass host alive across tabs. The overview-only range control
+        // expands inside this badge instead of replacing it with a second pill.
+        badgeContent
+            .frame(width: showsRange ? 244 : nil)
+            .padding(.bottom, showsRange ? 8 : 0)
+            .background(.black.opacity(0.18), in: RoundedRectangle(cornerRadius: 17, style: .continuous))
+            .glassEffect(.regular, in: RoundedRectangle(cornerRadius: 17, style: .continuous))
+        .animation(.spring(response: 0.36, dampingFraction: 0.86), value: showsRange)
+        .animation(.snappy, value: goalFillFraction)
+        .animation(.snappy, value: currentIndex)
+        .sensoryFeedback(.selection, trigger: currentIndex)
+    }
+
+    private var periodSwipeGesture: some Gesture {
+        DragGesture(minimumDistance: 20)
+            .onEnded { value in
+                let threshold: CGFloat = 30
+                if value.translation.width < -threshold {
+                    withAnimation(.snappy) {
+                        currentIndex = min(currentIndex + 1, TimePeriod.allCases.count - 1)
+                    }
+                } else if value.translation.width > threshold {
+                    withAnimation(.snappy) {
+                        currentIndex = max(currentIndex - 1, 0)
+                    }
+                }
+            }
+    }
+
+    private var badgeContent: some View {
+        VStack(spacing: 4) {
+            summaryRow
+                .simultaneousGesture(periodSwipeGesture)
+
+            if showsRange {
+                Divider()
+
+                Picker("Chart range", selection: $currentIndex) {
+                    ForEach(Array(TimePeriod.allCases.enumerated()), id: \.offset) { index, period in
+                        Text(period.rawValue).tag(index)
+                    }
+                }
+                .labelsHidden()
+                .pickerStyle(.segmented)
+                .controlSize(.small)
+                .frame(width: 216)
+                .transition(.identity)
+            }
+        }
+    }
+
+    private var summaryRow: some View {
         HStack(spacing: 4) {
             HStack(spacing: 2) {
                 Image(systemName: "flame.fill")
-                    .font(.caption2)
+                    .font(.system(size: 11, weight: .semibold))
                     .foregroundStyle(.orange)
 
                 Text("\(summary.streak)")
@@ -140,7 +198,6 @@ struct ChangeBadge: View {
         .fixedSize(horizontal: true, vertical: false)
         .padding(.horizontal, 14)
         .frame(height: 34)
-        .glassEffect(in: Capsule(style: .continuous))
         .overlay(alignment: .bottom) {
             if let fraction = goalFillFraction {
                 GeometryReader { proxy in
@@ -183,23 +240,5 @@ struct ChangeBadge: View {
             }
         }
         .clipShape(Capsule(style: .continuous))
-        .animation(.snappy, value: goalFillFraction)
-        .animation(.snappy, value: currentIndex)
-        .gesture(
-            DragGesture(minimumDistance: 20)
-                .onEnded { value in
-                    let threshold: CGFloat = 30
-                    if value.translation.width < -threshold {
-                        withAnimation(.snappy) {
-                            currentIndex = min(currentIndex + 1, TimePeriod.allCases.count - 1)
-                        }
-                    } else if value.translation.width > threshold {
-                        withAnimation(.snappy) {
-                            currentIndex = max(currentIndex - 1, 0)
-                        }
-                    }
-                }
-        )
-        .sensoryFeedback(.selection, trigger: currentIndex)
     }
 }

@@ -82,37 +82,37 @@ struct RootView: View {
     }
 
     var body: some View {
-        NavigationStack {
-            ZStack {
-                if selectedTab == 1 {
-                    JournalView(
-                        scrollToEntryTrigger: historyScrollRequest,
-                        focusedEntry: historySelectedEntry,
-                        scrollToBottomTrigger: journalScrollToBottomRequest,
-                        showLog: $showLog,
-                        logDate: $logDate
-                    )
-                    .transition(.asymmetric(insertion: .move(edge: .leading), removal: .move(edge: .trailing)))
-                } else if selectedTab == 3 {
-                    OverviewView()
-                        .transition(.asymmetric(insertion: .move(edge: .trailing), removal: .move(edge: .leading)))
+        ZStack {
+            NavigationStack {
+                ZStack {
+                    if selectedTab == 1 {
+                        JournalView(
+                            scrollToEntryTrigger: historyScrollRequest,
+                            focusedEntry: historySelectedEntry,
+                            scrollToBottomTrigger: journalScrollToBottomRequest,
+                            showLog: $showLog,
+                            logDate: $logDate
+                        )
+                        .transition(.asymmetric(insertion: .move(edge: .leading), removal: .move(edge: .trailing)))
+                    } else if selectedTab == 3 {
+                        OverviewView()
+                            .transition(.asymmetric(insertion: .move(edge: .trailing), removal: .move(edge: .leading)))
+                    }
                 }
-            }
-            .gesture(
-                DragGesture(minimumDistance: 25)
-                    .onEnded { value in
-                        let horizontal = value.translation.width
-                        let vertical = value.translation.height
-                        if abs(horizontal) > abs(vertical) && abs(horizontal) > 45 {
-                            if horizontal < 0 {
-                                if selectedTab == 1 {
-                                    Haptics.selection()
-                                    withAnimation(.spring(response: 0.35, dampingFraction: 0.8)) {
-                                        selectedTab = 3
+                .gesture(
+                    DragGesture(minimumDistance: 25)
+                        .onEnded { value in
+                            let horizontal = value.translation.width
+                            let vertical = value.translation.height
+                            if abs(horizontal) > abs(vertical) && abs(horizontal) > 45 {
+                                if horizontal < 0 {
+                                    if selectedTab == 1 {
+                                        Haptics.selection()
+                                        withAnimation(.spring(response: 0.35, dampingFraction: 0.8)) {
+                                            selectedTab = 3
+                                        }
                                     }
-                                }
-                            } else {
-                                if selectedTab == 3 {
+                                } else if selectedTab == 3 {
                                     Haptics.selection()
                                     withAnimation(.spring(response: 0.35, dampingFraction: 0.8)) {
                                         selectedTab = 1
@@ -120,44 +120,26 @@ struct RootView: View {
                                 }
                             }
                         }
-                    }
-            )
-            .navigationTitle("")
-            .navigationBarTitleDisplayMode(.inline)
-            .toolbar {
-                ToolbarItem(placement: .topBarTrailing) {
-                    Button {
-                        Haptics.selection()
-                        showSettings = true
-                    } label: {
-                        Image(systemName: "gearshape.fill")
-                            .font(.callout)
-                            .foregroundStyle(.secondary)
-                    }
-                    .buttonStyle(.plain)
-                    .accessibilityLabel("Settings")
-                }
-                ToolbarItem(placement: .principal) {
-                    Button {
-                        Haptics.selection()
-                        selectedTab = 3
-                    } label: {
-                        ChangeBadge(entries: entries)
-                    }
-                    .buttonStyle(.plain)
-                    .tint(.primary)
+                )
+                .navigationTitle("")
+                .navigationBarTitleDisplayMode(.inline)
+                .toolbarBackground(.visible, for: .navigationBar)
+                .safeAreaInset(edge: .bottom) {
+                    Color.clear.frame(height: 76)
                 }
             }
-            .safeAreaInset(edge: .bottom) {
-                GlassEffectContainer(spacing: 40) {
-                    HStack(spacing: 10) {
-                        tabPill
-                        Spacer()
-                        logButton
-                    }
-                }
-                .padding(.horizontal, 16)
-                .padding(.bottom, 8)
+
+            edgeFadeLayer
+                .allowsHitTesting(false)
+
+            VStack(spacing: 0) {
+                topAccessoryRow
+                    .padding(.horizontal, 16)
+                    .padding(.top, 8)
+
+                Spacer()
+
+                floatingBottomBar
             }
         }
         .tint(selectedTint.color)
@@ -234,6 +216,71 @@ struct RootView: View {
             enqueueCelebration(message: message, systemImage: "flame.fill")
         }
         .sensoryFeedback(.success, trigger: goalCelebrationID)
+    }
+
+    private var edgeFadeLayer: some View {
+        VStack(spacing: 0) {
+            LinearGradient(
+                colors: [Color(uiColor: .systemBackground).opacity(0.88), .clear],
+                startPoint: .top,
+                endPoint: .bottom
+            )
+            .frame(height: 180)
+
+            Spacer(minLength: 0)
+
+            LinearGradient(
+                colors: [.clear, Color(uiColor: .systemBackground).opacity(0.88)],
+                startPoint: .top,
+                endPoint: .bottom
+            )
+            .frame(height: 180)
+        }
+        .ignoresSafeArea()
+    }
+
+    private var floatingBottomBar: some View {
+        GlassEffectContainer(spacing: 40) {
+            HStack(spacing: 10) {
+                tabPill
+                Spacer()
+                logButton
+            }
+        }
+        .padding(.horizontal, 16)
+        .padding(.bottom, 8)
+    }
+
+    private var topAccessoryRow: some View {
+        ZStack(alignment: .top) {
+            ChangeBadge(entries: entries, showsRange: selectedTab == 3)
+                .frame(width: 260, height: 94, alignment: .top)
+                .onTapGesture {
+                    guard selectedTab != 3 else { return }
+                    Haptics.selection()
+                    withAnimation(.spring(response: 0.32, dampingFraction: 0.78)) {
+                        selectedTab = 3
+                    }
+                }
+
+            HStack {
+                Spacer()
+
+                Button {
+                    Haptics.selection()
+                    showSettings = true
+                } label: {
+                    Image(systemName: "gearshape.fill")
+                        .font(.callout)
+                        .foregroundStyle(.secondary)
+                        .frame(width: 44, height: 44)
+                }
+                .buttonStyle(.plain)
+                .glassEffect(.regular.interactive(), in: Circle())
+                .accessibilityLabel("Settings")
+            }
+        }
+        .frame(height: 94, alignment: .top)
     }
 
     private func enqueueCelebration(message: Text, systemImage: String, type: CelebrationType = .confetti) {
