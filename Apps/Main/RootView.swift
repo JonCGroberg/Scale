@@ -249,6 +249,8 @@ struct RootView: View {
         }
         .padding(.horizontal, 16)
         .padding(.bottom, 8)
+        .contentShape(Rectangle())
+        .onTapGesture {}
     }
 
     private var topAccessoryRow: some View {
@@ -281,6 +283,8 @@ struct RootView: View {
             }
         }
         .frame(height: 94, alignment: .top)
+        .contentShape(Rectangle())
+        .onTapGesture {}
     }
 
     private func enqueueCelebration(message: Text, systemImage: String, type: CelebrationType = .confetti) {
