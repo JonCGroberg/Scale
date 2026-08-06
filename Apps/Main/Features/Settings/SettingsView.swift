@@ -134,13 +134,14 @@ struct SettingsView: View {
                                 Text(stat.title)
                             } icon: {
                                 Image(systemName: stat.systemImage)
-                                    .padding(.trailing, 4)
+                                    .imageScale(.small)
+                                    .padding(.trailing, 6)
                             }
                             .tag(stat)
                         }
                     }
                     label: {
-                        Text("Calendar Day Stat")
+                        Text("Primary Calendar Statistic")
                     }
                 } header: {
                     Text("Display")
