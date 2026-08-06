@@ -128,20 +128,33 @@ struct SettingsView: View {
                         }
                     }
 
-                    Picker(selection: selectedCalendarDayStat) {
-                        ForEach(CalendarDayStat.allCases) { stat in
-                            Label {
-                                Text(stat.title)
-                            } icon: {
-                                Image(systemName: stat.systemImage)
-                                    .imageScale(.small)
-                                    .padding(.trailing, 6)
+                    Menu {
+                        Picker(selection: selectedCalendarDayStat) {
+                            ForEach(CalendarDayStat.allCases) { stat in
+                                Label(stat.title, systemImage: stat.systemImage)
+                                    .tag(stat)
                             }
-                            .tag(stat)
+                        } label: {
+                            EmptyView()
                         }
-                    }
-                    label: {
-                        Text("Primary Calendar Statistic")
+                    } label: {
+                        HStack {
+                            Text("Primary Stat")
+                                .foregroundStyle(.primary)
+
+                            Spacer()
+
+                            HStack(spacing: 6) {
+                                Image(systemName: selectedCalendarDayStat.wrappedValue.systemImage)
+                                    .font(.system(size: 13))
+
+                                Text(selectedCalendarDayStat.wrappedValue.title)
+
+                                Image(systemName: "chevron.up.chevron.down")
+                                    .font(.system(size: 12).weight(.semibold))
+                            }
+                            .foregroundStyle(tintColor)
+                        }
                     }
                 } header: {
                     Text("Display")
