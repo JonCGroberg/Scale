@@ -8,6 +8,76 @@
 import SwiftUI
 import SwiftData
 import Charts
+import Foundation
+import UniformTypeIdentifiers
+
+/// The set of chart cards shown on the Overview screen, in user-configurable order.
+private enum ChartKind: String, CaseIterable, Identifiable {
+    case weight, steps, sleep, workouts
+
+    var id: String { rawValue }
+
+    var title: String {
+        switch self {
+        case .weight: return "Weight"
+        case .steps: return "Steps"
+        case .sleep: return "Sleep"
+        case .workouts: return "Workouts"
+        }
+    }
+
+    var systemImage: String {
+        switch self {
+        case .weight: return "scalemass.fill"
+        case .steps: return "shoeprints.fill"
+        case .sleep: return "bed.double.fill"
+        case .workouts: return "figure.run"
+        }
+    }
+
+    var height: CGFloat {
+        switch self {
+        case .weight: return 130
+        case .sleep: return 120
+        case .steps, .workouts: return 80
+        }
+    }
+}
+
+/// Handles a chart card being dragged over another card's drop zone, live-reordering as it crosses.
+private struct ChartCardDropDelegate: DropDelegate {
+    let target: ChartKind
+    @Binding var chartOrder: [ChartKind]
+    @Binding var draggedKind: ChartKind?
+    let onDropCompleted: () -> Void
+
+    func dropEntered(info: DropInfo) {
+        guard let draggedKind, draggedKind != target,
+              let fromIndex = chartOrder.firstIndex(of: draggedKind),
+              let toIndex = chartOrder.firstIndex(of: target),
+              chartOrder[toIndex] != draggedKind else { return }
+
+        withAnimation(.spring(response: 0.35, dampingFraction: 0.82)) {
+            chartOrder.move(
+                fromOffsets: IndexSet(integer: fromIndex),
+                toOffset: toIndex > fromIndex ? toIndex + 1 : toIndex
+            )
+        }
+        Haptics.selection()
+    }
+
+    func dropUpdated(info: DropInfo) -> DropProposal? {
+        DropProposal(operation: .move)
+    }
+
+    func performDrop(info: DropInfo) -> Bool {
+        withAnimation(.spring(response: 0.35, dampingFraction: 0.82)) {
+            draggedKind = nil
+        }
+        onDropCompleted()
+        return true
+    }
+}
 
 struct OverviewView: View {
     private struct StepChartPoint: Equatable, Identifiable {
@@ -207,13 +277,26 @@ struct OverviewView: View {
     private var chartPeriod: TimePeriod {
         TimePeriod.allCases[badgePeriodIndex]
     }
+    @AppStorage("overviewChartOrder") private var chartOrderRaw = ChartKind.allCases.map(\.rawValue).joined(separator: ",")
     @State private var snapshot: Snapshot = .empty
     @State private var miniGoals: [MiniGoal] = []
     @State private var chartScrollPosition = Date()
     @State private var selectedDate: Date? = nil
+    @State private var chartOrder: [ChartKind] = ChartKind.allCases
+    @State private var draggedKind: ChartKind? = nil
 
     private var hasSleepData: Bool { snapshot.hasSleepData }
     private var hasWorkoutData: Bool { snapshot.hasWorkoutData }
+
+    private var visibleChartOrder: [ChartKind] {
+        chartOrder.filter { kind in
+            switch kind {
+            case .weight, .steps: return true
+            case .sleep: return hasSleepData
+            case .workouts: return hasWorkoutData
+            }
+        }
+    }
 
     private var selectedGoal: WeightGoal {
         WeightGoal(rawValue: weightGoal) ?? .defaultValue
@@ -246,7 +329,7 @@ struct OverviewView: View {
         return miniGoals.filter { $0.targetWeight >= range.min - buffer && $0.targetWeight <= range.max + buffer }
     }
 
-    private var selectedDataPoint: (weight: Double?, steps: Int?, sleepHours: Double?, workoutHours: Double?, date: Date)? {
+    private var selectedDataPoint: (weight: Double?, steps: Int?, workoutHours: Double?, date: Date)? {
         guard let selectedDate else { return nil }
         let calendar = Calendar.current
         let snappedDate = calendar.startOfDay(for: selectedDate)
@@ -258,20 +341,17 @@ struct OverviewView: View {
 
         // Get the weight logged on this specific day, or fallback to the closest available entry
         let dayEntries = entries.filter { $0.timestamp >= dayStart && $0.timestamp < dayEnd }
-        let weight = dayEntries.first?.weight ?? entries.min(by: { 
-            abs($0.timestamp.timeIntervalSince(snappedDate)) < abs($1.timestamp.timeIntervalSince(snappedDate)) 
+        let weight = dayEntries.first?.weight ?? entries.min(by: {
+            abs($0.timestamp.timeIntervalSince(snappedDate)) < abs($1.timestamp.timeIntervalSince(snappedDate))
         })?.weight
 
         // Find the steps on this day
         let steps = stepChartPoints.first(where: { calendar.isDate($0.date, inSameDayAs: snappedDate) })?.steps
 
-        // Find the sleep hours on this day
-        let sleep = sleepChartPoints.first(where: { calendar.isDate($0.date, inSameDayAs: snappedDate) })?.totalHours
-
         // Find the workout hours on this day
         let workouts = workoutChartPoints.first(where: { calendar.isDate($0.date, inSameDayAs: snappedDate) })?.totalHours
 
-        return (weight, steps, sleep, workouts, snappedDate)
+        return (weight, steps, workouts, snappedDate)
     }
 
     private var tintColor: Color {
@@ -406,6 +486,7 @@ struct OverviewView: View {
             updateSnapshot()
             updateMiniGoals()
             resetChartScrollPosition()
+            loadChartOrder()
         }
         .onChange(of: dataVersion) { _, _ in
             updateSnapshot()
@@ -452,23 +533,59 @@ struct OverviewView: View {
                     .foregroundStyle(.secondary)
                     .frame(maxWidth: .infinity, minHeight: 180)
             } else {
-                VStack(alignment: .leading, spacing: 16) {
-                    labeledChart(title: "Weight", systemImage: "scalemass.fill", height: 130) { weightChart }
-
-                    labeledChart(title: "Steps", systemImage: "shoeprints.fill", height: 80) { stepsChart }
-
-                    if hasSleepData {
-                        labeledChart(title: "Sleep", systemImage: "bed.double.fill", height: 80) { sleepChart }
+                VStack(alignment: .leading, spacing: 12) {
+                    ForEach(visibleChartOrder) { kind in
+                        chartCardView(for: kind)
                     }
-
-                    if hasWorkoutData {
-                        labeledChart(title: "Workouts", systemImage: "figure.run", height: 80) { workoutChart }
-                    }
+                }
+                // Fallback: resets drag state if a card is released in the gap between cards.
+                .onDrop(of: [.plainText], isTargeted: nil) { _ in
+                    draggedKind = nil
+                    persistChartOrder()
+                    return true
                 }
             }
 
         }
         .padding(.vertical, 14)
+    }
+
+    /// A single reorderable chart card: long-press to lift, drag to reorder, release to drop.
+    @ViewBuilder
+    private func chartCardView(for kind: ChartKind) -> some View {
+        let isDragging = draggedKind == kind
+
+        labeledChart(title: kind.title, systemImage: kind.systemImage, height: kind.height) {
+            chartView(for: kind)
+        }
+        .padding(14)
+        .background {
+            RoundedRectangle(cornerRadius: 20, style: .continuous)
+                .fill(Color(.secondarySystemGroupedBackground))
+        }
+        .scaleEffect(isDragging ? 0.97 : 1)
+        .opacity(isDragging ? 0.5 : 1)
+        .animation(.spring(response: 0.3, dampingFraction: 0.8), value: isDragging)
+        .onDrag {
+            draggedKind = kind
+            return NSItemProvider(object: kind.rawValue as NSString)
+        }
+        .onDrop(of: [.plainText], delegate: ChartCardDropDelegate(
+            target: kind,
+            chartOrder: $chartOrder,
+            draggedKind: $draggedKind,
+            onDropCompleted: persistChartOrder
+        ))
+    }
+
+    @ViewBuilder
+    private func chartView(for kind: ChartKind) -> some View {
+        switch kind {
+        case .weight: weightChart
+        case .steps: stepsChart
+        case .sleep: sleepChart
+        case .workouts: workoutChart
+        }
     }
 
     // MARK: - Weight Chart
@@ -905,40 +1022,57 @@ struct OverviewView: View {
         return smoothed
     }
 
+    private static let deepSleepColor = Color.indigo
+    private static let coreSleepColor = Color.blue
+    private static let remSleepColor = Color.purple
+    private static let unspecifiedSleepColor = Color.orange
+
     private var sleepChart: some View {
         let selectedDay = selectedDate.map { Calendar.current.startOfDay(for: $0) }
         return Chart {
             ForEach(sleepChartPoints) { point in
                 let isSelected = selectedDay == point.date
-                let opacity: Double = isSelected ? 0.95 : (selectedDate == nil ? 0.80 : 0.32)
-                BarMark(
-                    x: .value("Date", point.date),
-                    yStart: .value("Deep start", 0),
-                    yEnd: .value("Deep end", point.deepHours),
-                    width: stepBarWidth
-                )
-                .foregroundStyle(tintColor.opacity(0.95 * opacity))
-                BarMark(
-                    x: .value("Date", point.date),
-                    yStart: .value("Core start", point.deepHours),
-                    yEnd: .value("Core end", point.deepHours + point.coreHours),
-                    width: stepBarWidth
-                )
-                .foregroundStyle(tintColor.opacity(0.65 * opacity))
-                BarMark(
-                    x: .value("Date", point.date),
-                    yStart: .value("REM start", point.deepHours + point.coreHours),
-                    yEnd: .value("REM end", point.deepHours + point.coreHours + point.remHours),
-                    width: stepBarWidth
-                )
-                .foregroundStyle(tintColor.opacity(0.45 * opacity))
-                BarMark(
-                    x: .value("Date", point.date),
-                    yStart: .value("Unspecified start", point.deepHours + point.coreHours + point.remHours),
-                    yEnd: .value("Unspecified end", point.totalHours),
-                    width: stepBarWidth
-                )
-                .foregroundStyle(tintColor.opacity(0.30 * opacity))
+                if isSelected {
+                    // Breakdown by stage, with distinct hues, only for the selected day.
+                    BarMark(
+                        x: .value("Date", point.date),
+                        yStart: .value("Deep start", 0),
+                        yEnd: .value("Deep end", point.deepHours),
+                        width: stepBarWidth
+                    )
+                    .foregroundStyle(Self.deepSleepColor)
+                    BarMark(
+                        x: .value("Date", point.date),
+                        yStart: .value("Core start", point.deepHours),
+                        yEnd: .value("Core end", point.deepHours + point.coreHours),
+                        width: stepBarWidth
+                    )
+                    .foregroundStyle(Self.coreSleepColor)
+                    BarMark(
+                        x: .value("Date", point.date),
+                        yStart: .value("REM start", point.deepHours + point.coreHours),
+                        yEnd: .value("REM end", point.deepHours + point.coreHours + point.remHours),
+                        width: stepBarWidth
+                    )
+                    .foregroundStyle(Self.remSleepColor)
+                    BarMark(
+                        x: .value("Date", point.date),
+                        yStart: .value("Unspecified start", point.deepHours + point.coreHours + point.remHours),
+                        yEnd: .value("Unspecified end", point.totalHours),
+                        width: stepBarWidth
+                    )
+                    .foregroundStyle(Self.unspecifiedSleepColor)
+                } else {
+                    // Unselected days just show total hours in the app tint.
+                    let dimmedOpacity: Double = selectedDate == nil ? 0.80 : 0.28
+                    BarMark(
+                        x: .value("Date", point.date),
+                        yStart: .value("Sleep start", 0),
+                        yEnd: .value("Sleep end", point.totalHours),
+                        width: stepBarWidth
+                    )
+                    .foregroundStyle(tintColor.opacity(dimmedOpacity))
+                }
             }
 
             ForEach(sleepTrendPoints) { point in
@@ -957,15 +1091,6 @@ struct OverviewView: View {
                 )
                 .foregroundStyle(.secondary.opacity(0.4))
                 .lineStyle(StrokeStyle(lineWidth: 1.5, dash: [4, 4]))
-
-                if let sleep = selectedData.sleepHours, sleep > 0 {
-                    PointMark(
-                        x: .value("Selected Date", selectedData.date),
-                        y: .value("Selected Sleep", sleep)
-                    )
-                    .foregroundStyle(tintColor)
-                    .symbolSize(50)
-                }
             }
         }
         .chartXScale(domain: chartVisibleStartDate()...Date())
@@ -1007,7 +1132,7 @@ struct OverviewView: View {
                 }
             }
         }
-        .frame(height: 80)
+        .frame(height: 120)
     }
 
     // MARK: - Workout Chart
@@ -1180,6 +1305,16 @@ struct OverviewView: View {
         miniGoals = MiniGoalStore.load(for: selectedGoal)
     }
 
+    private func loadChartOrder() {
+        let saved = chartOrderRaw.split(separator: ",").compactMap { ChartKind(rawValue: String($0)) }
+        let missing = ChartKind.allCases.filter { !saved.contains($0) }
+        chartOrder = saved + missing
+    }
+
+    private func persistChartOrder() {
+        chartOrderRaw = chartOrder.map(\.rawValue).joined(separator: ",")
+    }
+
     private func goalCompletionText(_ progress: WeightCalculations.GoalProgress) -> String {
         GoalProgressFeedback.progressText(progress)
     }
@@ -1276,10 +1411,10 @@ struct OverviewView: View {
     private func sleepBreakdownCard(for point: SleepChartPoint) -> some View {
         selectedBreakdownCard {
             segmentedBreakdownBar(items: [
-                (point.deepHours, "Deep", nil, tintColor.opacity(0.95)),
-                (point.coreHours, "Core", nil, tintColor.opacity(0.65)),
-                (point.remHours, "REM", nil, tintColor.opacity(0.45)),
-                (point.unspecifiedHours, "Sleep", nil, tintColor.opacity(0.30))
+                (point.deepHours, "Deep", nil, Self.deepSleepColor),
+                (point.coreHours, "Core", nil, Self.coreSleepColor),
+                (point.remHours, "REM", nil, Self.remSleepColor),
+                (point.unspecifiedHours, "Sleep", nil, Self.unspecifiedSleepColor)
             ])
         }
     }
