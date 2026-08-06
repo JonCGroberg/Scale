@@ -246,7 +246,7 @@ struct OverviewView: View {
         return miniGoals.filter { $0.targetWeight >= range.min - buffer && $0.targetWeight <= range.max + buffer }
     }
 
-    private var selectedDataPoint: (weight: Double?, steps: Int?, sleepHours: Double?, workoutHours: Double?, date: Date)? {
+    private var selectedDataPoint: (weight: Double?, steps: Int?, workoutHours: Double?, date: Date)? {
         guard let selectedDate else { return nil }
         let calendar = Calendar.current
         let snappedDate = calendar.startOfDay(for: selectedDate)
@@ -258,20 +258,17 @@ struct OverviewView: View {
 
         // Get the weight logged on this specific day, or fallback to the closest available entry
         let dayEntries = entries.filter { $0.timestamp >= dayStart && $0.timestamp < dayEnd }
-        let weight = dayEntries.first?.weight ?? entries.min(by: { 
-            abs($0.timestamp.timeIntervalSince(snappedDate)) < abs($1.timestamp.timeIntervalSince(snappedDate)) 
+        let weight = dayEntries.first?.weight ?? entries.min(by: {
+            abs($0.timestamp.timeIntervalSince(snappedDate)) < abs($1.timestamp.timeIntervalSince(snappedDate))
         })?.weight
 
         // Find the steps on this day
         let steps = stepChartPoints.first(where: { calendar.isDate($0.date, inSameDayAs: snappedDate) })?.steps
 
-        // Find the sleep hours on this day
-        let sleep = sleepChartPoints.first(where: { calendar.isDate($0.date, inSameDayAs: snappedDate) })?.totalHours
-
         // Find the workout hours on this day
         let workouts = workoutChartPoints.first(where: { calendar.isDate($0.date, inSameDayAs: snappedDate) })?.totalHours
 
-        return (weight, steps, sleep, workouts, snappedDate)
+        return (weight, steps, workouts, snappedDate)
     }
 
     private var tintColor: Color {
@@ -458,7 +455,7 @@ struct OverviewView: View {
                     labeledChart(title: "Steps", systemImage: "shoeprints.fill", height: 80) { stepsChart }
 
                     if hasSleepData {
-                        labeledChart(title: "Sleep", systemImage: "bed.double.fill", height: 80) { sleepChart }
+                        labeledChart(title: "Sleep", systemImage: "bed.double.fill", height: 120) { sleepChart }
                     }
 
                     if hasWorkoutData {
@@ -905,40 +902,57 @@ struct OverviewView: View {
         return smoothed
     }
 
+    private static let deepSleepColor = Color.indigo
+    private static let coreSleepColor = Color.blue
+    private static let remSleepColor = Color.purple
+    private static let unspecifiedSleepColor = Color.orange
+
     private var sleepChart: some View {
         let selectedDay = selectedDate.map { Calendar.current.startOfDay(for: $0) }
         return Chart {
             ForEach(sleepChartPoints) { point in
                 let isSelected = selectedDay == point.date
-                let opacity: Double = isSelected ? 0.95 : (selectedDate == nil ? 0.80 : 0.32)
-                BarMark(
-                    x: .value("Date", point.date),
-                    yStart: .value("Deep start", 0),
-                    yEnd: .value("Deep end", point.deepHours),
-                    width: stepBarWidth
-                )
-                .foregroundStyle(tintColor.opacity(0.95 * opacity))
-                BarMark(
-                    x: .value("Date", point.date),
-                    yStart: .value("Core start", point.deepHours),
-                    yEnd: .value("Core end", point.deepHours + point.coreHours),
-                    width: stepBarWidth
-                )
-                .foregroundStyle(tintColor.opacity(0.65 * opacity))
-                BarMark(
-                    x: .value("Date", point.date),
-                    yStart: .value("REM start", point.deepHours + point.coreHours),
-                    yEnd: .value("REM end", point.deepHours + point.coreHours + point.remHours),
-                    width: stepBarWidth
-                )
-                .foregroundStyle(tintColor.opacity(0.45 * opacity))
-                BarMark(
-                    x: .value("Date", point.date),
-                    yStart: .value("Unspecified start", point.deepHours + point.coreHours + point.remHours),
-                    yEnd: .value("Unspecified end", point.totalHours),
-                    width: stepBarWidth
-                )
-                .foregroundStyle(tintColor.opacity(0.30 * opacity))
+                if isSelected {
+                    // Breakdown by stage, with distinct hues, only for the selected day.
+                    BarMark(
+                        x: .value("Date", point.date),
+                        yStart: .value("Deep start", 0),
+                        yEnd: .value("Deep end", point.deepHours),
+                        width: stepBarWidth
+                    )
+                    .foregroundStyle(Self.deepSleepColor)
+                    BarMark(
+                        x: .value("Date", point.date),
+                        yStart: .value("Core start", point.deepHours),
+                        yEnd: .value("Core end", point.deepHours + point.coreHours),
+                        width: stepBarWidth
+                    )
+                    .foregroundStyle(Self.coreSleepColor)
+                    BarMark(
+                        x: .value("Date", point.date),
+                        yStart: .value("REM start", point.deepHours + point.coreHours),
+                        yEnd: .value("REM end", point.deepHours + point.coreHours + point.remHours),
+                        width: stepBarWidth
+                    )
+                    .foregroundStyle(Self.remSleepColor)
+                    BarMark(
+                        x: .value("Date", point.date),
+                        yStart: .value("Unspecified start", point.deepHours + point.coreHours + point.remHours),
+                        yEnd: .value("Unspecified end", point.totalHours),
+                        width: stepBarWidth
+                    )
+                    .foregroundStyle(Self.unspecifiedSleepColor)
+                } else {
+                    // Unselected days just show total hours in the app tint.
+                    let dimmedOpacity: Double = selectedDate == nil ? 0.80 : 0.28
+                    BarMark(
+                        x: .value("Date", point.date),
+                        yStart: .value("Sleep start", 0),
+                        yEnd: .value("Sleep end", point.totalHours),
+                        width: stepBarWidth
+                    )
+                    .foregroundStyle(tintColor.opacity(dimmedOpacity))
+                }
             }
 
             ForEach(sleepTrendPoints) { point in
@@ -957,15 +971,6 @@ struct OverviewView: View {
                 )
                 .foregroundStyle(.secondary.opacity(0.4))
                 .lineStyle(StrokeStyle(lineWidth: 1.5, dash: [4, 4]))
-
-                if let sleep = selectedData.sleepHours, sleep > 0 {
-                    PointMark(
-                        x: .value("Selected Date", selectedData.date),
-                        y: .value("Selected Sleep", sleep)
-                    )
-                    .foregroundStyle(tintColor)
-                    .symbolSize(50)
-                }
             }
         }
         .chartXScale(domain: chartVisibleStartDate()...Date())
@@ -1007,7 +1012,7 @@ struct OverviewView: View {
                 }
             }
         }
-        .frame(height: 80)
+        .frame(height: 120)
     }
 
     // MARK: - Workout Chart
@@ -1276,10 +1281,10 @@ struct OverviewView: View {
     private func sleepBreakdownCard(for point: SleepChartPoint) -> some View {
         selectedBreakdownCard {
             segmentedBreakdownBar(items: [
-                (point.deepHours, "Deep", nil, tintColor.opacity(0.95)),
-                (point.coreHours, "Core", nil, tintColor.opacity(0.65)),
-                (point.remHours, "REM", nil, tintColor.opacity(0.45)),
-                (point.unspecifiedHours, "Sleep", nil, tintColor.opacity(0.30))
+                (point.deepHours, "Deep", nil, Self.deepSleepColor),
+                (point.coreHours, "Core", nil, Self.coreSleepColor),
+                (point.remHours, "REM", nil, Self.remSleepColor),
+                (point.unspecifiedHours, "Sleep", nil, Self.unspecifiedSleepColor)
             ])
         }
     }
