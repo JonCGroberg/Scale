@@ -514,6 +514,20 @@ struct OverviewView: View {
         }
     }
 
+    /// Shared date-axis styling so any chart that ends up last in the visible
+    /// stack (and therefore owns the x-axis) matches the others instead of
+    /// falling back to SwiftUI Charts' default (mismatched) axis style.
+    @AxisContentBuilder
+    private var dateAxisMarks: some AxisContent {
+        AxisMarks(values: .stride(by: chartXAxisStride.component, count: chartXAxisStride.count)) { _ in
+            AxisGridLine()
+                .foregroundStyle(.primary.opacity(0.16))
+            AxisTick()
+                .foregroundStyle(.primary.opacity(0.32))
+            AxisValueLabel(format: chartXAxisLabelFormat)
+        }
+    }
+
     private var dataVersion: Int {
         var hasher = Hasher()
         hasher.combine(entries.count)
@@ -911,7 +925,11 @@ struct OverviewView: View {
             }
         }
         .chartXSelection(value: $selectedDate)
-        .chartXAxis(!hasSleepData && !hasWorkoutData ? .visible : .hidden)
+        .chartXAxis {
+            if !hasSleepData && !hasWorkoutData {
+                dateAxisMarks
+            }
+        }
         .chartOverlay { proxy in
             GeometryReader { geometry in
                 if let selectedData = selectedDataPoint, let steps = selectedData.steps {
@@ -1240,7 +1258,11 @@ struct OverviewView: View {
                 }
             }
         }
-        .chartXAxis(!hasWorkoutData ? .visible : .hidden)
+        .chartXAxis {
+            if !hasWorkoutData {
+                dateAxisMarks
+            }
+        }
         .chartXSelection(value: $selectedDate)
         .chartOverlay { proxy in
             GeometryReader { geometry in
@@ -1380,13 +1402,7 @@ struct OverviewView: View {
             }
         }
         .chartXAxis {
-            AxisMarks(values: .stride(by: chartXAxisStride.component, count: chartXAxisStride.count)) { _ in
-                AxisGridLine()
-                    .foregroundStyle(.primary.opacity(0.16))
-                AxisTick()
-                    .foregroundStyle(.primary.opacity(0.32))
-                AxisValueLabel(format: chartXAxisLabelFormat)
-            }
+            dateAxisMarks
         }
         .chartXSelection(value: $selectedDate)
         .chartOverlay { proxy in
