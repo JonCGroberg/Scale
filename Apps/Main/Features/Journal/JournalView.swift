@@ -3484,24 +3484,26 @@ fileprivate struct MonthSectionView: View {
                         Spacer(minLength: 0)
 
                         if let statText = dayData?.statText(for: dayStat) {
-                            HStack {
+                            let statColor: Color = hasVisiblePhoto
+                                ? .white.opacity(0.92)
+                                : (isLogged ? tintColor.opacity(0.82) : .primary.opacity(0.82))
+                            let statShadowColor: Color = hasVisiblePhoto ? .black.opacity(0.6) : .clear
+                            let statShadowRadius: CGFloat = hasVisiblePhoto ? 3 : 0
+
+                            HStack(spacing: 2) {
                                 Spacer(minLength: 0)
+
+                                Image(systemName: dayStat.systemImage)
+                                    .font(.system(size: 7, weight: .bold))
+                                    .foregroundStyle(statColor)
+                                    .shadow(color: statShadowColor, radius: statShadowRadius, x: 0, y: 1)
 
                                 Text(statText)
                                     .font(.system(size: 9.5, weight: .bold, design: .rounded))
-                                    .foregroundStyle(
-                                        hasVisiblePhoto
-                                            ? .white.opacity(0.92)
-                                            : (isLogged ? tintColor.opacity(0.82) : .primary.opacity(0.82))
-                                    )
+                                    .foregroundStyle(statColor)
                                     .lineLimit(1)
                                     .minimumScaleFactor(0.72)
-                                    .shadow(
-                                        color: hasVisiblePhoto ? .black.opacity(0.6) : .clear,
-                                        radius: hasVisiblePhoto ? 3 : 0,
-                                        x: 0,
-                                        y: 1
-                                    )
+                                    .shadow(color: statShadowColor, radius: statShadowRadius, x: 0, y: 1)
 
                                 Spacer(minLength: 0)
                             }
