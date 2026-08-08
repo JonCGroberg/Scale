@@ -8,6 +8,7 @@
 import Foundation
 
 enum TimePeriod: String, CaseIterable {
+    case today = "1D"
     case week = "1W"
     case month = "1M"
     case threeMonths = "3M"
@@ -16,6 +17,7 @@ enum TimePeriod: String, CaseIterable {
 
     var calendarComponent: Calendar.Component {
         switch self {
+        case .today: return .day
         case .week: return .weekOfYear
         case .month: return .month
         case .threeMonths: return .month
@@ -26,6 +28,7 @@ enum TimePeriod: String, CaseIterable {
 
     var componentValue: Int {
         switch self {
+        case .today: return 1
         case .week: return 1
         case .month: return 1
         case .threeMonths: return 3
@@ -36,12 +39,23 @@ enum TimePeriod: String, CaseIterable {
 
     var label: String {
         switch self {
+        case .today: return "Today"
         case .week: return "Week"
         case .month: return "Month"
         case .threeMonths: return "3 Months"
         case .sixMonths: return "6 Months"
         case .year: return "Year"
         }
+    }
+
+    /// The start of this period, ending at `date`. `.today` anchors to the
+    /// start of `date`'s calendar day rather than a rolling 24-hour window,
+    /// so "today" always means the current calendar day.
+    func startDate(endingAt date: Date, calendar: Calendar = .current) -> Date {
+        if self == .today {
+            return calendar.startOfDay(for: date)
+        }
+        return calendar.date(byAdding: calendarComponent, value: -componentValue, to: date) ?? date
     }
 }
 
@@ -503,18 +517,14 @@ enum WeightCalculations {
     }
 
     private static func entriesWithin(_ period: TimePeriod, from entries: [WeightEntry]) -> [WeightEntry] {
-        let calendar = Calendar.current
-        guard let cutoff = calendar.date(
-            byAdding: period.calendarComponent,
-            value: -period.componentValue,
-            to: Date()
-        ) else { return [] }
-
+        let cutoff = period.startDate(endingAt: Date())
         return entries.filter { $0.timestamp >= cutoff }
     }
 
     private static func smoothingAlpha(for period: TimePeriod) -> Double {
         switch period {
+        case .today:
+            1.0
         case .week:
             0.98
         case .month:
@@ -530,6 +540,8 @@ enum WeightCalculations {
 
     private static func trendAlpha(for period: TimePeriod) -> Double {
         switch period {
+        case .today:
+            1.0
         case .week:
             0.65
         case .month:

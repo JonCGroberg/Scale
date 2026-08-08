@@ -12,7 +12,7 @@ struct ChangeBadge: View {
     let showsRange: Bool
 
     @AppStorage("appTint") private var appTint = AppTint.defaultValue.rawValue
-    @AppStorage("badgePeriodIndex") private var currentIndex: Int = 1
+    @AppStorage("badgePeriodIndex") private var currentIndex: Int = 2
     @AppStorage("weightGoal") private var weightGoal = WeightGoal.defaultValue.rawValue
     @AppStorage("cutTargetWeight") private var cutTargetWeight = 180.0
     @AppStorage("bulkTargetWeight") private var bulkTargetWeight = 180.0
@@ -55,6 +55,16 @@ struct ChangeBadge: View {
 
     private var hasEntries: Bool {
         !entries.isEmpty
+    }
+
+    /// "this week" / "today" — reads naturally after "... lbs ".
+    private var thisPeriodPhrase: String {
+        period == .today ? "today" : "this \(period.label.lowercased())"
+    }
+
+    /// "in week" / "today" — reads naturally after "... lbs ".
+    private var inPeriodPhrase: String {
+        period == .today ? "today" : "in \(period.label.lowercased())"
     }
 
     /// Splits a string ending in " lbs" into the leading body and the "lbs" suffix.
@@ -164,7 +174,7 @@ struct ChangeBadge: View {
                     let arrow = lbs < 0 ? "↓" : "↑"
                     let numerator = String(format: "%.1f", abs(lbs))
                     let denominator = String(format: "%.1f", abs(goalProgress.totalChange))
-                    Text("\(Text(arrow).foregroundStyle(tintColor).fontWeight(.bold)) \(Text(numerator).foregroundStyle(tintColor).fontWeight(.bold))\(Text("/" + denominator).foregroundStyle(tintColor).fontWeight(.bold)) \(Text("lbs").foregroundStyle(tintColor).fontWeight(.bold))  this \(period.label.lowercased())")
+                    Text("\(Text(arrow).foregroundStyle(tintColor).fontWeight(.bold)) \(Text(numerator).foregroundStyle(tintColor).fontWeight(.bold))\(Text("/" + denominator).foregroundStyle(tintColor).fontWeight(.bold)) \(Text("lbs").foregroundStyle(tintColor).fontWeight(.bold))  \(thisPeriodPhrase)")
                         .font(.caption)
                         .fontWeight(.semibold)
                         .foregroundStyle(.secondary)
@@ -172,7 +182,7 @@ struct ChangeBadge: View {
                 } else {
                     let raw = String(format: "%+.1f lbs", lbs)
                     let (body, lbsText) = splitOffLbs(raw)
-                    Text("\(Text(body).fontWeight(.bold).foregroundStyle(.primary))\(Text(lbsText).foregroundStyle(tintColor).fontWeight(.bold))  this \(period.label.lowercased())")
+                    Text("\(Text(body).fontWeight(.bold).foregroundStyle(.primary))\(Text(lbsText).foregroundStyle(tintColor).fontWeight(.bold))  \(thisPeriodPhrase)")
                         .font(.caption)
                         .fontWeight(.semibold)
                         .foregroundStyle(.secondary)
@@ -181,13 +191,13 @@ struct ChangeBadge: View {
             } else if let goalProgress {
                 let raw = GoalProgressFeedback.progressText(goalProgress)
                 let (body, lbsText) = splitOffLbs(raw)
-                Text("\(Text(body).fontWeight(.bold).foregroundStyle(.primary))\(Text(lbsText).foregroundStyle(tintColor).fontWeight(.bold))  in \(period.label.lowercased())")
+                Text("\(Text(body).fontWeight(.bold).foregroundStyle(.primary))\(Text(lbsText).foregroundStyle(tintColor).fontWeight(.bold))  \(inPeriodPhrase)")
                     .font(.caption)
                     .fontWeight(.semibold)
                     .foregroundStyle(.secondary)
                     .contentTransition(.numericText())
             } else {
-                Text("-- lbs this \(period.label.lowercased())")
+                Text("-- lbs \(thisPeriodPhrase)")
                     .font(.caption)
                     .fontWeight(.semibold)
                     .foregroundStyle(.secondary)

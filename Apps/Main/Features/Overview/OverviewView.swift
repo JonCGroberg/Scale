@@ -137,11 +137,7 @@ struct OverviewView: View {
             }
 
             let calendar = Calendar.current
-            let cutoff = calendar.date(
-                byAdding: period.calendarComponent,
-                value: -period.componentValue,
-                to: Date()
-            ) ?? Date()
+            let cutoff = period.startDate(endingAt: Date(), calendar: calendar)
 
             // Calculate step chart points
             let daily: [StepChartPoint] = activitySummaries
@@ -277,7 +273,7 @@ struct OverviewView: View {
     @AppStorage("weightGoal") private var weightGoal = WeightGoal.defaultValue.rawValue
     @AppStorage("cutTargetWeight") private var cutTargetWeight = 180.0
     @AppStorage("bulkTargetWeight") private var bulkTargetWeight = 180.0
-    @AppStorage("badgePeriodIndex") private var badgePeriodIndex: Int = 1
+    @AppStorage("badgePeriodIndex") private var badgePeriodIndex: Int = 2
     private var chartPeriod: TimePeriod {
         TimePeriod.allCases[badgePeriodIndex]
     }
@@ -469,6 +465,8 @@ struct OverviewView: View {
 
     private var stepBarWidth: MarkDimension {
         switch chartPeriod {
+        case .today:
+            return .fixed(40)
         case .week:
             return .fixed(24)
         case .month:
@@ -484,6 +482,8 @@ struct OverviewView: View {
 
     private var chartXAxisStride: (component: Calendar.Component, count: Int) {
         switch chartPeriod {
+        case .today:
+            return (.hour, 6)
         case .week:
             return (.day, 1)
         case .month:
@@ -498,15 +498,13 @@ struct OverviewView: View {
     }
 
     private func chartVisibleStartDate(endingAt endDate: Date = Date()) -> Date {
-        Calendar.current.date(
-            byAdding: chartPeriod.calendarComponent,
-            value: -chartPeriod.componentValue,
-            to: endDate
-        ) ?? endDate
+        chartPeriod.startDate(endingAt: endDate)
     }
 
     private var chartXAxisLabelFormat: Date.FormatStyle {
         switch chartPeriod {
+        case .today:
+            return .dateTime.hour()
         case .year:
             return .dateTime.month(.abbreviated).year(.twoDigits)
         default:
