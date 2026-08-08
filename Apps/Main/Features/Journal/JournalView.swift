@@ -2486,6 +2486,12 @@ struct LogPhotoCarouselView: View {
                         .padding(.top, -2)
                 }
             }
+            .overlay(alignment: .bottom) {
+                if !photosState.isEmpty, dayPreviewDates.count > 1 {
+                    dayPreviewStrip
+                        .padding(.bottom, 8)
+                }
+            }
             .tint(tintColor)
             .toolbar {
                 ToolbarItem(placement: .principal) {
@@ -2501,15 +2507,8 @@ struct LogPhotoCarouselView: View {
             }
             .safeAreaInset(edge: .bottom, spacing: 0) {
                 if !photosState.isEmpty {
-                    VStack(spacing: 0) {
-                        if dayPreviewDates.count > 1 {
-                            dayPreviewStrip
-                                .padding(.bottom, 8)
-                        }
-
-                        carouselThumbnailStrip
-                            .background(.ultraThinMaterial)
-                    }
+                    carouselThumbnailStrip
+                        .background(.ultraThinMaterial)
                 }
             }
         }
