@@ -101,10 +101,14 @@ struct ScaleApp: App {
 
     private static var isMockDataSeedingEnabled: Bool {
         #if DEBUG
-        ProcessInfo.processInfo.arguments.contains("-seedMockData")
+        shouldSeedMockData(arguments: ProcessInfo.processInfo.arguments, isDebugBuild: true)
         #else
         false
         #endif
+    }
+
+    static func shouldSeedMockData(arguments: [String], isDebugBuild: Bool) -> Bool {
+        isDebugBuild && arguments.contains("-seedMockData")
     }
 
     private func populateMockDataIfNeeded() {

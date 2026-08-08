@@ -101,4 +101,15 @@ struct ScaleAppStoreEdgeTests {
         let container = try ScaleApp.makeModelContainer(schema: schema, configuration: config)
         #expect(container.schema.entities.count > 0)
     }
+
+    // MARK: - mock data launch gating
+
+    @Test func mockDataSeedingRequiresTheExplicitDebugLaunchArgument() {
+        #expect(!ScaleApp.shouldSeedMockData(arguments: ["Scale"], isDebugBuild: true))
+        #expect(ScaleApp.shouldSeedMockData(arguments: ["Scale", "-seedMockData"], isDebugBuild: true))
+    }
+
+    @Test func mockDataSeedingRemainsDisabledOutsideDebugBuilds() {
+        #expect(!ScaleApp.shouldSeedMockData(arguments: ["Scale", "-seedMockData"], isDebugBuild: false))
+    }
 }

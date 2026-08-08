@@ -77,4 +77,32 @@ struct MiniGoalTests {
         #expect(MiniGoalStore.clampedTarget(150, for: .lose, mainTarget: 160) == 160)
         #expect(MiniGoalStore.clampedTarget(200, for: .gain, mainTarget: 190) == 190)
     }
+
+    @Test func parentBigGoalRelationshipRoundTripsThroughCodable() throws {
+        let bigGoalID = UUID()
+        let goal = MiniGoal(
+            parentGoal: .lose,
+            parentBigGoalID: bigGoalID,
+            name: "First checkpoint",
+            targetWeight: 175
+        )
+
+        let decoded = try JSONDecoder().decode(MiniGoal.self, from: JSONEncoder().encode(goal))
+
+        #expect(decoded == goal)
+        #expect(decoded.parentBigGoalID == bigGoalID)
+    }
+
+    @Test func legacyMiniGoalWithoutBigGoalRelationshipStillDecodes() throws {
+        let id = UUID()
+        let json = """
+        {"id":"\(id.uuidString)","parentGoalRawValue":"lose","name":"Legacy","targetWeight":175}
+        """.data(using: .utf8)!
+
+        let goal = try JSONDecoder().decode(MiniGoal.self, from: json)
+
+        #expect(goal.id == id)
+        #expect(goal.parentGoal == .lose)
+        #expect(goal.parentBigGoalID == nil)
+    }
 }

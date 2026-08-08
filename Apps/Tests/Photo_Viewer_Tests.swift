@@ -99,6 +99,7 @@ struct QuickLookPreviewCoordinatorTests {
     }
 }
 
+@MainActor
 struct DayPreviewPopupRenderTests {
 
     @Test func dayPreviewPopupConstructsWithPhotos() {
