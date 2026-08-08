@@ -208,6 +208,7 @@ struct ChangeBadge: View {
         .fixedSize(horizontal: true, vertical: false)
         .padding(.horizontal, 14)
         .frame(height: 34)
+        .frame(width: showsRange ? 244 : nil)
         .overlay(alignment: .bottom) {
             if let fraction = goalFillFraction {
                 GeometryReader { proxy in

@@ -3490,23 +3490,13 @@ fileprivate struct MonthSectionView: View {
                             let statShadowColor: Color = hasVisiblePhoto ? .black.opacity(0.6) : .clear
                             let statShadowRadius: CGFloat = hasVisiblePhoto ? 3 : 0
 
-                            HStack(spacing: 2) {
-                                Spacer(minLength: 0)
-
-                                Image(systemName: dayStat.systemImage)
-                                    .font(.system(size: 7, weight: .bold))
-                                    .foregroundStyle(statColor)
-                                    .shadow(color: statShadowColor, radius: statShadowRadius, x: 0, y: 1)
-
-                                Text(statText)
-                                    .font(.system(size: 9.5, weight: .bold, design: .rounded))
-                                    .foregroundStyle(statColor)
-                                    .lineLimit(1)
-                                    .minimumScaleFactor(0.72)
-                                    .shadow(color: statShadowColor, radius: statShadowRadius, x: 0, y: 1)
-
-                                Spacer(minLength: 0)
-                            }
+                            Text(calendarStatValue(statText, for: dayStat))
+                                .font(.system(size: 11, weight: .bold, design: .rounded))
+                                .foregroundStyle(statColor)
+                                .lineLimit(1)
+                                .minimumScaleFactor(0.72)
+                                .shadow(color: statShadowColor, radius: statShadowRadius, x: 0, y: 1)
+                                .frame(maxWidth: .infinity)
                         }
                     }
                     .padding(6)
@@ -3571,6 +3561,13 @@ fileprivate struct MonthSectionView: View {
                 )
             }
         }
+    }
+
+    private func calendarStatValue(_ text: String, for stat: CalendarDayStat) -> String {
+        guard stat == .sleep, let suffix = text.last, suffix == "h" || suffix == "m" else {
+            return text
+        }
+        return String(text.dropLast())
     }
 
     @ViewBuilder
