@@ -33,7 +33,8 @@ struct WeightWidgetSnapshot: Codable, Equatable, Sendable {
         tintRawValue: String,
         now: Date = Date()
     ) -> WeightWidgetSnapshot {
-        let sortedEntries = entries.sorted { $0.timestamp > $1.timestamp }
+        let sortedEntries = WeightCalculations.weightEntries(entries)
+            .sorted { $0.timestamp > $1.timestamp }
         let summary = WeightCalculations.badgeSummary(from: sortedEntries, over: .month)
         let customTintHex: String? = tintRawValue == "custom"
             ? UserDefaults.standard.string(forKey: "customTintHex")

@@ -318,7 +318,7 @@ struct OnboardingView: View {
                     MiniGoalStore.save(miniGoals, for: selectedGoal.wrappedValue)
                     Haptics.selection()
                 } label: {
-                    Label("Add mini goal", systemImage: "plus.circle.fill")
+                    Label("Add small goal", systemImage: "plus.circle.fill")
                         .frame(maxWidth: .infinity, alignment: .leading)
                         .padding(.leading, 32)
                 }

@@ -14,6 +14,7 @@ struct SettingsView: View {
     @Environment(\.modelContext) private var modelContext
     @Environment(HealthKitManager.self) private var healthManager
     @Environment(NotificationManager.self) private var notificationManager
+    @Query(sort: \WeightEntry.timestamp, order: .reverse) private var entries: [WeightEntry]
     @AppStorage("autoSyncHealthKit") private var autoSyncHealthKit = false
     @AppStorage("appTint") private var appTint = AppTint.defaultValue.rawValue
     @AppStorage("remindersEnabled") private var remindersEnabled = false
@@ -23,8 +24,10 @@ struct SettingsView: View {
     @AppStorage("customTintHex") private var customTintHex = ""
     @AppStorage("calendarDayStat") private var calendarDayStat = CalendarDayStat.defaultValue.rawValue
     @State private var reminders: [Reminder] = []
+    @State private var bigGoals: [BigGoal] = []
     @State private var miniGoals: [MiniGoal] = []
     @State private var showDeveloperTools = false
+    @State private var hasLoadedDeferredContent = false
 
     private var selectedTint: Binding<AppTint> {
         Binding(
@@ -49,6 +52,10 @@ struct SettingsView: View {
 
     private var tintColor: Color {
         (AppTint(rawValue: appTint) ?? .defaultValue).color
+    }
+
+    private var weightEntries: [WeightEntry] {
+        entries.filter(\.includesWeight)
     }
 
     private var customColor: Binding<Color> {
@@ -86,6 +93,33 @@ struct SettingsView: View {
                 }
             }
         )
+    }
+
+    private var goalProgress: WeightCalculations.GoalProgress? {
+        guard selectedWeightGoal.wrappedValue.showsTarget else { return nil }
+        return WeightCalculations.goalProgress(
+            from: entries,
+            goal: selectedWeightGoal.wrappedValue,
+            targetWeight: selectedTargetWeight.wrappedValue,
+            over: .year
+        )
+    }
+
+    private var goalTrackTargets: [Double] {
+        let targets = Set(bigGoals.map(\.targetWeight) + miniGoals.map(\.targetWeight) + [selectedTargetWeight.wrappedValue])
+
+        switch selectedWeightGoal.wrappedValue {
+        case .lose:
+            return targets.sorted(by: >)
+        case .gain:
+            return targets.sorted()
+        case .maintain:
+            return []
+        }
+    }
+
+    private var bigGoalTrackTargets: Set<Double> {
+        Set(bigGoals.map(\.targetWeight))
     }
 
     var body: some View {
@@ -162,88 +196,8 @@ struct SettingsView: View {
                     Text("Choose the stat shown on logged days in the calendar view.")
                 }
 
-                Section {
-                    GoalPicker(
-                        selection: selectedWeightGoal,
-                        tintColor: tintColor
-                    )
-                    .listRowInsets(EdgeInsets(top: 12, leading: 16, bottom: 6, trailing: 16))
-                    .listRowSeparator(.hidden)
-
-                    if selectedWeightGoal.wrappedValue.showsTarget {
-                        VStack(spacing: 12) {
-                            GoalSectionDivider()
-
-                            TargetWeightRow(
-                                goal: selectedWeightGoal.wrappedValue,
-                                targetWeight: selectedTargetWeight,
-                                tintColor: tintColor
-                            )
-                        }
-                        .listRowInsets(EdgeInsets(top: 0, leading: 16, bottom: 12, trailing: 16))
-                        .listRowSeparator(.hidden)
-                        .transition(.opacity.combined(with: .move(edge: .top)))
-
-                        ForEach($miniGoals) { $miniGoal in
-                            VStack(spacing: 12) {
-                                GoalSectionDivider()
-
-                                MiniGoalRow(
-                                    miniGoal: $miniGoal,
-                                    goal: selectedWeightGoal.wrappedValue,
-                                    mainTarget: selectedTargetWeight.wrappedValue,
-                                    tintColor: tintColor
-                                ) {
-                                    saveMiniGoals()
-                                }
-                                .padding(.leading, 32)
-                            }
-                            .listRowInsets(EdgeInsets(top: 0, leading: 16, bottom: 12, trailing: 16))
-                            .listRowSeparator(.hidden)
-                        }
-                        .onDelete { offsets in
-                            withAnimation {
-                                miniGoals.remove(atOffsets: offsets)
-                            }
-                            saveMiniGoals()
-                        }
-
-                        Button {
-                            withAnimation {
-                                miniGoals.append(
-                                    MiniGoal(
-                                        parentGoal: selectedWeightGoal.wrappedValue,
-                                        targetWeight: MiniGoalStore.defaultTarget(
-                                            for: selectedWeightGoal.wrappedValue,
-                                            mainTarget: selectedTargetWeight.wrappedValue,
-                                            existingGoals: miniGoals
-                                        )
-                                    )
-                                )
-                            }
-                            saveMiniGoals()
-                            Haptics.selection()
-                        } label: {
-                            VStack(spacing: 12) {
-                                GoalSectionDivider()
-
-                                Label("Add mini goal", systemImage: "plus.circle.fill")
-                                    .frame(maxWidth: .infinity, alignment: .leading)
-                                    .padding(.leading, 32)
-                            }
-                        }
-                        .listRowInsets(EdgeInsets(top: 0, leading: 16, bottom: 12, trailing: 16))
-                        .listRowSeparator(.hidden)
-                    }
-                } header: {
-                    Text("Goal")
-                } footer: {
-                    if selectedWeightGoal.wrappedValue.showsTarget {
-                        Text("Mini goals stay attached to this \(selectedWeightGoal.wrappedValue.targetTitle).")
-                    } else {
-                        Text("Cut and bulk keep separate goal weights. Maintain does not use a goal weight.")
-                    }
-                }
+                if hasLoadedDeferredContent {
+                    goalSettingsSection
 
                 Section {
                     if healthManager.isAvailable {
@@ -337,6 +291,15 @@ struct SettingsView: View {
                 } footer: {
                     Text("Warning: These options are for developer testing only.")
                 }
+                } else {
+                    Section {
+                        HStack(spacing: 10) {
+                            ProgressView()
+                            Text("Loading settings…")
+                                .foregroundStyle(.secondary)
+                        }
+                    }
+                }
             }
             .navigationTitle("Settings")
             .toolbar {
@@ -348,12 +311,22 @@ struct SettingsView: View {
                     .fontWeight(.semibold)
                 }
             }
-            .onAppear {
+            .task {
+                guard !hasLoadedDeferredContent else { return }
+
+                // Let the sheet commit its first frame before loading and rendering
+                // the less immediately useful settings sections.
+                await Task.yield()
+                guard !Task.isCancelled else { return }
+
                 reminders = notificationManager.loadReminders()
-                miniGoals = MiniGoalStore.load(for: selectedWeightGoal.wrappedValue)
+                loadGoals()
+                withAnimation(.easeInOut(duration: 0.2)) {
+                    hasLoadedDeferredContent = true
+                }
             }
             .onChange(of: weightGoal) { _, _ in
-                miniGoals = MiniGoalStore.load(for: selectedWeightGoal.wrappedValue)
+                loadGoals()
             }
             .onChange(of: cutTargetWeight) { _, _ in
                 normalizeMiniGoalsForSelectedTarget()
@@ -373,6 +346,227 @@ struct SettingsView: View {
             DeveloperView()
                 .liquidGlassSheetPresentation()
         }
+    }
+
+    @ViewBuilder
+    private var goalSettingsSection: some View {
+        Section {
+            GoalPicker(selection: selectedWeightGoal, tintColor: tintColor)
+                .listRowInsets(EdgeInsets(top: 12, leading: 16, bottom: 6, trailing: 16))
+                .listRowSeparator(.hidden)
+
+            if selectedWeightGoal.wrappedValue.showsTarget {
+                goalProgressBreakdown
+                    .listRowInsets(EdgeInsets(top: 6, leading: 16, bottom: 8, trailing: 16))
+                    .listRowSeparator(.hidden)
+
+                ForEach(bigGoals.indices, id: \.self) { bigIndex in
+                    TargetWeightRow(
+                            goal: selectedWeightGoal.wrappedValue,
+                            targetWeight: $bigGoals[bigIndex].targetWeight,
+                            tintColor: tintColor,
+                            currentWeight: weightEntries.first?.weight
+                        )
+                    .listRowInsets(EdgeInsets(top: 8, leading: 16, bottom: 8, trailing: 16))
+                    .onChange(of: bigGoals[bigIndex].targetWeight) { _, _ in
+                        saveBigGoals()
+                    }
+                    .swipeActions {
+                        Button(role: .destructive) {
+                            deleteBigGoal(bigGoals[bigIndex])
+                        } label: {
+                            Label("Delete", systemImage: "trash")
+                        }
+                    }
+
+                    ForEach(miniGoals.indices.filter { miniGoals[$0].parentBigGoalID == bigGoals[bigIndex].id }, id: \.self) { miniIndex in
+                        MiniGoalRow(
+                            miniGoal: $miniGoals[miniIndex],
+                            goal: selectedWeightGoal.wrappedValue,
+                            mainTarget: bigGoals[bigIndex].targetWeight,
+                            tintColor: tintColor,
+                            currentWeight: weightEntries.first?.weight,
+                            onChanged: saveMiniGoals
+                        )
+                        .padding(.leading, 32)
+                        .listRowInsets(EdgeInsets(top: 8, leading: 16, bottom: 8, trailing: 16))
+                        .listRowSeparator(.hidden)
+                        .swipeActions {
+                            Button(role: .destructive) {
+                                deleteSmallGoal(miniGoals[miniIndex])
+                            } label: {
+                                Label("Delete", systemImage: "trash")
+                            }
+                        }
+                    }
+
+                    Button(action: { addSmallGoal(to: bigGoals[bigIndex]) }) {
+                        Label("Add small goal", systemImage: "plus.circle.fill")
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                            .padding(.leading, 32)
+                    }
+                    .listRowInsets(EdgeInsets(top: 8, leading: 16, bottom: 8, trailing: 16))
+                    .listRowSeparator(.hidden)
+                }
+
+                Button(action: addBigGoal) {
+                    Label("Add big goal", systemImage: "plus.circle.fill")
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                }
+                .listRowInsets(EdgeInsets(top: 8, leading: 16, bottom: 12, trailing: 16))
+            } else {
+                Menu {
+                    Button("Lose weight", systemImage: WeightGoal.lose.systemImage) {
+                        startGoal(.lose)
+                    }
+                    Button("Gain weight", systemImage: WeightGoal.gain.systemImage) {
+                        startGoal(.gain)
+                    }
+                } label: {
+                    Label("Add goal", systemImage: "plus.circle.fill")
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                }
+                .listRowInsets(EdgeInsets(top: 10, leading: 16, bottom: 12, trailing: 16))
+                .listRowSeparator(.hidden)
+            }
+        } header: {
+            Text("Goals")
+        } footer: {
+            Text(selectedWeightGoal.wrappedValue.showsTarget
+                 ? "Small goals support your big goals and are checked off when you reach their weight."
+                 : "Add a lose or gain goal anytime.")
+        }
+    }
+
+    private var goalProgressBreakdown: some View {
+        let progress = goalProgress
+        let completion = progress.map { progress in
+            guard progress.totalDistance > 0 else { return 0 }
+            return min(max(progress.completedDistance / progress.totalDistance, 0), 1)
+        } ?? 0
+        let percentage = Int((completion * 100).rounded())
+
+        return VStack(alignment: .leading, spacing: 10) {
+            HStack {
+                Label("Progress", systemImage: selectedWeightGoal.wrappedValue.systemImage)
+                    .font(.subheadline.weight(.semibold))
+                    .foregroundStyle(tintColor)
+
+                Spacer()
+
+                Text("\(percentage)%")
+                    .font(.subheadline.weight(.bold).monospacedDigit())
+            }
+
+            GoalProgressTrack(
+                goal: selectedWeightGoal.wrappedValue,
+                targets: goalTrackTargets,
+                bigGoalTargets: bigGoalTrackTargets,
+                currentWeight: weightEntries.first?.weight,
+                tintColor: tintColor
+            )
+
+            HStack {
+                Text("\(weightEntries.first?.weight.formatted(.number.precision(.fractionLength(1))) ?? "—") lbs now")
+                Spacer()
+                Text("Target \(selectedTargetWeight.wrappedValue.formatted(.number.precision(.fractionLength(1)))) lbs")
+            }
+            .font(.caption)
+            .foregroundStyle(.secondary)
+        }
+        .padding(12)
+        .background(Color(.secondarySystemGroupedBackground), in: RoundedRectangle(cornerRadius: 14, style: .continuous))
+        .accessibilityElement(children: .combine)
+        .accessibilityLabel("Goal progress, \(percentage) percent complete")
+    }
+
+    private func addSmallGoal(to bigGoal: BigGoal) {
+        withAnimation {
+            miniGoals.append(
+                MiniGoal(
+                    parentGoal: selectedWeightGoal.wrappedValue,
+                    parentBigGoalID: bigGoal.id,
+                    targetWeight: MiniGoalStore.defaultTarget(
+                        for: selectedWeightGoal.wrappedValue,
+                        mainTarget: bigGoal.targetWeight,
+                        existingGoals: miniGoals.filter { $0.parentBigGoalID == bigGoal.id }
+                    )
+                )
+            )
+        }
+        saveMiniGoals()
+        Haptics.selection()
+    }
+
+    private func addBigGoal() {
+        let goal = selectedWeightGoal.wrappedValue
+        withAnimation {
+            bigGoals.append(
+                BigGoal(
+                    parentGoal: goal,
+                    targetWeight: BigGoalStore.defaultTarget(
+                        for: goal,
+                        existingGoals: bigGoals,
+                        fallbackTarget: selectedTargetWeight.wrappedValue
+                    )
+                )
+            )
+        }
+        saveBigGoals()
+        Haptics.selection()
+    }
+
+    private func deleteBigGoal(_ bigGoal: BigGoal) {
+        withAnimation {
+            bigGoals.removeAll { $0.id == bigGoal.id }
+            miniGoals.removeAll { $0.parentBigGoalID == bigGoal.id }
+        }
+        saveBigGoals()
+        saveMiniGoals()
+    }
+
+    private func deleteSmallGoal(_ smallGoal: MiniGoal) {
+        withAnimation {
+            miniGoals.removeAll { $0.id == smallGoal.id }
+        }
+        saveMiniGoals()
+    }
+
+    private func startGoal(_ goal: WeightGoal) {
+        weightGoal = goal.rawValue
+        Haptics.selection()
+    }
+
+    private func loadGoals() {
+        let goal = selectedWeightGoal.wrappedValue
+        miniGoals = MiniGoalStore.load(for: goal)
+        bigGoals = BigGoalStore.load(for: goal, fallbackTarget: selectedTargetWeight.wrappedValue)
+        if let firstBigGoal = bigGoals.first, miniGoals.contains(where: { $0.parentBigGoalID == nil }) {
+            miniGoals = miniGoals.map { miniGoal in
+                var migrated = miniGoal
+                if migrated.parentBigGoalID == nil { migrated.parentBigGoalID = firstBigGoal.id }
+                return migrated
+            }
+            saveMiniGoals()
+        }
+        syncActiveBigGoal()
+    }
+
+    private func saveBigGoals() {
+        BigGoalStore.save(bigGoals, for: selectedWeightGoal.wrappedValue)
+        syncActiveBigGoal()
+    }
+
+    private func syncActiveBigGoal() {
+        let goal = selectedWeightGoal.wrappedValue
+        guard let target = BigGoalStore.activeTarget(
+            for: goal,
+            goals: bigGoals,
+            currentWeight: weightEntries.first?.weight
+        ) else { return }
+
+        selectedTargetWeight.wrappedValue = target
+        normalizeMiniGoalsForSelectedTarget()
     }
 
     private func saveMiniGoals() {
@@ -478,58 +672,17 @@ struct GoalPicker: View {
     @Binding var selection: WeightGoal
     let tintColor: Color
 
-    @Namespace private var selectionNamespace
-    private let cornerRadius: CGFloat = 14
-
     var body: some View {
-        HStack(spacing: 6) {
+        Picker("Goal", selection: $selection) {
             ForEach(WeightGoal.allCases) { goal in
-                Button {
-                    withAnimation(.spring(response: 0.35, dampingFraction: 0.82)) {
-                        selection = goal
-                    }
-                    Haptics.selection()
-                } label: {
-                    ZStack {
-                        if selection == goal {
-                            RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
-                                .fill(tintColor.opacity(0.18))
-                                .overlay {
-                                    RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
-                                        .stroke(.white.opacity(0.35), lineWidth: 1)
-                                }
-                                .matchedGeometryEffect(id: "selectedGoal", in: selectionNamespace)
-                        }
-
-                        VStack(spacing: 6) {
-                            Image(systemName: goal.systemImage)
-                                .font(.title3.weight(.semibold))
-
-                            VStack(spacing: 1) {
-                                Text(goal.title)
-                                    .font(.subheadline.weight(.semibold))
-                                Text(goal.subtitle)
-                                    .font(.caption2.weight(.medium))
-                                    .foregroundStyle(.secondary)
-                            }
-                        }
-                        .foregroundStyle(selection == goal ? tintColor : .primary)
-                        .frame(maxWidth: .infinity)
-                        .frame(height: 76)
-                    }
-                    .contentShape(RoundedRectangle(cornerRadius: cornerRadius, style: .continuous))
-                }
-                .buttonStyle(.plain)
-                .accessibilityLabel("\(goal.title) Weight")
-                .accessibilityValue(goal.subtitle)
-                .accessibilityAddTraits(selection == goal ? .isSelected : [])
+                Text(goal.title).tag(goal)
             }
         }
-        .padding(5)
-        .background {
-            RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
-                .fill(.ultraThinMaterial.opacity(0.55))
-        }
+        .pickerStyle(.segmented)
+        .tint(tintColor)
+        .labelsHidden()
+        .accessibilityLabel("Weight goal")
+        .onChange(of: selection) { _, _ in Haptics.selection() }
     }
 }
 
@@ -542,26 +695,139 @@ private struct GoalSectionDivider: View {
     }
 }
 
+private struct GoalProgressTrack: View {
+    let goal: WeightGoal
+    let targets: [Double]
+    let bigGoalTargets: Set<Double>
+    let currentWeight: Double?
+    let tintColor: Color
+
+    var body: some View {
+        GeometryReader { proxy in
+            let edgeInset: CGFloat = 0
+            let gapWidth: CGFloat = 4
+            let intervalCount = max(targets.count - 1, 0)
+            let availableWidth = max(
+                proxy.size.width - edgeInset * 2 - gapWidth * CGFloat(max(intervalCount - 1, 0)),
+                0
+            )
+
+            ZStack(alignment: .topLeading) {
+                HStack(spacing: gapWidth) {
+                    ForEach(Array(targets.indices.dropLast()), id: \.self) { index in
+                        Capsule()
+                            .fill(hasReached(targets[index + 1]) ? tintColor : Color.secondary.opacity(0.32))
+                            .frame(width: intervalWidth(at: index, availableWidth: availableWidth), height: 8)
+                    }
+                }
+                .offset(x: edgeInset, y: 21)
+
+                ForEach(targets.indices, id: \.self) { index in
+                    let target = targets[index]
+                    let position = markerPosition(
+                        at: index,
+                        availableWidth: availableWidth,
+                        edgeInset: edgeInset,
+                        gapWidth: gapWidth
+                    )
+
+                    if bigGoalTargets.contains(target) {
+                        Image(systemName: "flag.fill")
+                            .font(.caption2)
+                            .foregroundStyle(hasReached(target) ? tintColor : Color.secondary.opacity(0.75))
+                            .position(x: position, y: 8)
+                    }
+                }
+            }
+        }
+        .frame(height: 29)
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel(accessibilityDescription)
+    }
+
+    private func hasReached(_ target: Double) -> Bool {
+        guard let currentWeight else { return false }
+
+        switch goal {
+        case .lose:
+            return currentWeight <= target
+        case .gain:
+            return currentWeight >= target
+        case .maintain:
+            return false
+        }
+    }
+
+    private var totalDistance: Double {
+        zip(targets, targets.dropFirst()).reduce(0) { distance, pair in
+            distance + abs(pair.0 - pair.1)
+        }
+    }
+
+    private func intervalWidth(at index: Int, availableWidth: CGFloat) -> CGFloat {
+        guard totalDistance > 0 else { return 0 }
+        return availableWidth * CGFloat(abs(targets[index] - targets[index + 1])) / CGFloat(totalDistance)
+    }
+
+    private func markerPosition(
+        at index: Int,
+        availableWidth: CGFloat,
+        edgeInset: CGFloat,
+        gapWidth: CGFloat
+    ) -> CGFloat {
+        guard targets.count > 1 else { return edgeInset + availableWidth / 2 }
+        guard index > 0 else { return edgeInset }
+
+        let precedingWidth = (0..<index).reduce(CGFloat.zero) { width, intervalIndex in
+            width + intervalWidth(at: intervalIndex, availableWidth: availableWidth)
+        }
+
+        if index == targets.count - 1 {
+            return edgeInset + precedingWidth + gapWidth * CGFloat(index - 1)
+        }
+
+        return edgeInset + precedingWidth + gapWidth * (CGFloat(index) - 0.5)
+    }
+
+    private var accessibilityDescription: String {
+        let formattedTargets = targets.map { String(format: "%.1f", $0) }.joined(separator: ", ")
+        return "Proportional goal timeline with big-goal flags at \(formattedTargets) pounds"
+    }
+}
+
 struct TargetWeightRow: View {
     let goal: WeightGoal
     @Binding var targetWeight: Double
     let tintColor: Color
+    let currentWeight: Double?
 
     @State private var isEditingTarget = false
     @State private var targetText = ""
     @FocusState private var targetFieldFocused: Bool
 
+    init(
+        goal: WeightGoal,
+        targetWeight: Binding<Double>,
+        tintColor: Color,
+        currentWeight: Double? = nil
+    ) {
+        self.goal = goal
+        _targetWeight = targetWeight
+        self.tintColor = tintColor
+        self.currentWeight = currentWeight
+    }
+
     var body: some View {
         HStack(spacing: 12) {
             Label {
-                Text(goal.targetTitle)
+                Text("Big goal")
                     .font(.body)
                     .lineLimit(1)
                     .minimumScaleFactor(0.82)
             } icon: {
-                Image(systemName: "flag.checkered")
+                Image(systemName: isComplete ? "checkmark.circle.fill" : "circle")
                     .font(.title3)
-                    .foregroundStyle(tintColor)
+                    .foregroundStyle(isComplete ? tintColor : .secondary)
             }
 
             Spacer(minLength: 8)
@@ -572,10 +838,19 @@ struct TargetWeightRow: View {
                 targetValue
             }
             .buttonStyle(.plain)
-            .accessibilityLabel("\(goal.targetTitle) value")
+            .accessibilityLabel("Big goal value")
             .accessibilityHint("Double tap to edit with the keyboard")
         }
         .animation(.snappy, value: targetWeight)
+    }
+
+    private var isComplete: Bool {
+        guard let currentWeight else { return false }
+        switch goal {
+        case .lose: return currentWeight <= targetWeight
+        case .gain: return currentWeight >= targetWeight
+        case .maintain: return false
+        }
     }
 
     @ViewBuilder
@@ -662,19 +937,36 @@ struct MiniGoalRow: View {
     let goal: WeightGoal
     let mainTarget: Double
     let tintColor: Color
+    let currentWeight: Double?
     let onChanged: () -> Void
 
     @State private var targetText = ""
     @FocusState private var targetFieldFocused: Bool
 
+    init(
+        miniGoal: Binding<MiniGoal>,
+        goal: WeightGoal,
+        mainTarget: Double,
+        tintColor: Color,
+        currentWeight: Double? = nil,
+        onChanged: @escaping () -> Void
+    ) {
+        _miniGoal = miniGoal
+        self.goal = goal
+        self.mainTarget = mainTarget
+        self.tintColor = tintColor
+        self.currentWeight = currentWeight
+        self.onChanged = onChanged
+    }
+
     var body: some View {
         HStack(spacing: 12) {
-            Image(systemName: "flag.fill")
+            Image(systemName: isComplete ? "checkmark.circle.fill" : "circle")
                 .font(.body)
-                .foregroundStyle(tintColor)
+                .foregroundStyle(isComplete ? tintColor : .secondary)
                 .frame(width: 24)
 
-            TextField("Mini Goal", text: $miniGoal.name)
+            TextField("Small goal", text: $miniGoal.name)
                 .onChange(of: miniGoal.name) {
                     onChanged()
                 }
@@ -729,6 +1021,15 @@ struct MiniGoalRow: View {
         }
 
         targetFieldFocused = false
+    }
+
+    private var isComplete: Bool {
+        guard let currentWeight else { return false }
+        switch goal {
+        case .lose: return currentWeight <= miniGoal.targetWeight
+        case .gain: return currentWeight >= miniGoal.targetWeight
+        case .maintain: return false
+        }
     }
 }
 

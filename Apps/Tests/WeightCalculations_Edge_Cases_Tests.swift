@@ -47,7 +47,7 @@ struct WeightCalculationsEdgeCasesTests {
         #expect(progress != nil)
         #expect(progress?.completedDistance == progress?.totalDistance)
         if let progress {
-            #expect(progress.completedChange == -progress.totalChange)
+            #expect(progress.completedChange == progress.totalChange)
         }
     }
 
@@ -84,7 +84,7 @@ struct WeightCalculationsEdgeCasesTests {
         #expect(progress!.totalChange == -20)
     }
 
-    @Test func goalProgressWithSingleEntryInPeriod() {
+    @Test func goalProgressWithSingleEntryInPeriodStartsAtZeroProgress() {
         let entries = [
             WeightEntry(weight: 200, timestamp: daysAgo(1)),
         ]
@@ -94,7 +94,9 @@ struct WeightCalculationsEdgeCasesTests {
             targetWeight: 180,
             over: .week
         )
-        #expect(progress == nil)
+        #expect(progress?.completedDistance == 0)
+        #expect(progress?.completedChange == 0)
+        #expect(progress?.totalDistance == 20)
     }
 
     @Test func goalProgressEntriesOutsidePeriodReturnsNil() {

@@ -153,6 +153,7 @@ final class HealthKitManager {
                 sortDescriptors: []
             )
             let samples = try await descriptor.result(for: healthStore)
+            await Task.yield()
             
             for sample in samples {
                 try await healthStore.delete(sample)
@@ -185,6 +186,7 @@ final class HealthKitManager {
             let samples = try await descriptor.result(for: healthStore)
             
             let existingEntries = try modelContext.fetch(FetchDescriptor<WeightEntry>())
+            await Task.yield()
             let poundUnit = HKUnit.pound()
             let ourBundleID = Bundle.main.bundleIdentifier ?? ""
 
@@ -217,6 +219,7 @@ final class HealthKitManager {
             }
             
             try modelContext.save()
+            await Task.yield()
             let refreshedEntries = try modelContext.fetch(
                 FetchDescriptor<WeightEntry>(
                     sortBy: [SortDescriptor(\WeightEntry.timestamp, order: .reverse)]
@@ -252,8 +255,10 @@ final class HealthKitManager {
                 sortDescriptors: [SortDescriptor(\.startDate, order: .forward)]
             )
             let workouts = try await descriptor.result(for: healthStore)
+            await Task.yield()
 
             let existingEntries = try modelContext.fetch(FetchDescriptor<WorkoutEntry>())
+            await Task.yield()
             let calorieUnit = HKUnit.largeCalorie()
             let mileUnit = HKUnit.mile()
             let ourBundleID = Bundle.main.bundleIdentifier ?? ""
@@ -293,6 +298,7 @@ final class HealthKitManager {
             }
 
             try modelContext.save()
+            await Task.yield()
             workoutImportResult = .success(
                 imported: plan.importedCount,
                 skipped: plan.skippedCount,
@@ -330,8 +336,10 @@ final class HealthKitManager {
                 startDate: startDate,
                 endDate: endDate
             )
+            await Task.yield()
 
             let existingEntries = try modelContext.fetch(FetchDescriptor<DailyActivitySummary>())
+            await Task.yield()
             let importedEntries = mergeDailyActivitySummaries(
                 stepStats: stepStats,
                 activeEnergyStats: activeEnergyStats
@@ -367,6 +375,7 @@ final class HealthKitManager {
             }
 
             try modelContext.save()
+            await Task.yield()
             dailyActivityImportResult = .success(
                 imported: plan.importedCount + plan.updatedCount,
                 skipped: plan.skippedCount,
@@ -397,7 +406,9 @@ final class HealthKitManager {
                 sortDescriptors: [SortDescriptor(\.startDate, order: .forward)]
             )
             let samples = try await descriptor.result(for: healthStore)
+            await Task.yield()
             let existingEntries = try modelContext.fetch(FetchDescriptor<SleepEntry>())
+            await Task.yield()
             let asleepValues: Set<Int> = [
                 HKCategoryValueSleepAnalysis.asleepUnspecified.rawValue,
                 HKCategoryValueSleepAnalysis.asleepCore.rawValue,
@@ -446,6 +457,7 @@ final class HealthKitManager {
             }
 
             try modelContext.save()
+            await Task.yield()
             sleepImportResult = .success(
                 imported: plan.importedCount,
                 skipped: plan.skippedCount,
@@ -728,11 +740,12 @@ final class HealthKitManager {
         existingEntries: [WeightEntry],
         ourBundleID: String
     ) -> ImportPlan {
+        let existingWeightEntries = existingEntries.filter(\.includesWeight)
         let existingTimestamps = Set(
-            existingEntries.map { Int($0.timestamp.timeIntervalSinceReferenceDate.rounded()) }
+            existingWeightEntries.map { Int($0.timestamp.timeIntervalSinceReferenceDate.rounded()) }
         )
         let healthKitUUIDs = Set(samples.map(\.uuid))
-        let removableEntries = existingEntries.filter {
+        let removableEntries = existingWeightEntries.filter {
             guard $0.source == .appleHealth, let uuid = $0.healthKitUUID else {
                 return false
             }

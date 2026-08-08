@@ -51,38 +51,41 @@
 /* End PBXCopyFilesBuildPhase section */
 
 /* Begin PBXFileReference section */
-		D45A9EFC2F66BC7B0014B7BA /* Scale.xctestplan */ = {isa = PBXFileReference; lastKnownFileType = text; path = Apps/Tests/Scale.xctestplan; sourceTree = "<group>"; };
+		D45A9EFC2F66BC7B0014B7BA /* Apps/Tests/Scale.xctestplan */ = {isa = PBXFileReference; lastKnownFileType = text; path = Apps/Tests/Scale.xctestplan; sourceTree = "<group>"; };
 		D45B3F152F669AF1008AB112 /* Scale.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = Scale.app; sourceTree = BUILT_PRODUCTS_DIR; };
 		D45B3F242F669AF2008AB112 /* ScaleTests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = ScaleTests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
 		D45B3F2E2F669AF2008AB112 /* ScaleUITests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = ScaleUITests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
 		D46C100C2F66D10000A1B2C3 /* ScaleWidget.appex */ = {isa = PBXFileReference; explicitFileType = "wrapper.app-extension"; includeInIndex = 0; path = ScaleWidget.appex; sourceTree = BUILT_PRODUCTS_DIR; };
 /* End PBXFileReference section */
 
-/* Begin PBXFileSystemSynchronizedRootGroup section */
-		D45B3F172F669AF1008AB112 /* Scale */ = {
-			isa = PBXFileSystemSynchronizedRootGroup;
-			path = Apps/Main;
-			sourceTree = "<group>";
-		};
-		D45B3F272F669AF2008AB112 /* ScaleTests */ = {
-			isa = PBXFileSystemSynchronizedRootGroup;
-			path = Apps/Tests;
-			sourceTree = "<group>";
-		};
-		D46C100E2F66D10000A1B2C3 /* ScaleWidget */ = {
-			isa = PBXFileSystemSynchronizedRootGroup;
-			exceptions = (
-				D46C10202F66D10000A1B2C3 /* PBXFileSystemSynchronizedBuildFileExceptionSet */,
-			);
-			path = Apps/Widget;
-			sourceTree = "<group>";
-		};
-		D46C10202F66D10000A1B2C3 /* PBXFileSystemSynchronizedBuildFileExceptionSet */ = {
+/* Begin PBXFileSystemSynchronizedBuildFileExceptionSet section */
+		D46C10202F66D10000A1B2C3 /* Exceptions for "Apps/Widget" folder in "ScaleWidget" target */ = {
 			isa = PBXFileSystemSynchronizedBuildFileExceptionSet;
 			membershipExceptions = (
 				ScaleWidgetExtension/Info.plist,
 			);
 			target = D46C10102F66D10000A1B2C3 /* ScaleWidget */;
+		};
+/* End PBXFileSystemSynchronizedBuildFileExceptionSet section */
+
+/* Begin PBXFileSystemSynchronizedRootGroup section */
+		D45B3F172F669AF1008AB112 /* Apps/Main */ = {
+			isa = PBXFileSystemSynchronizedRootGroup;
+			path = Apps/Main;
+			sourceTree = "<group>";
+		};
+		D45B3F272F669AF2008AB112 /* Apps/Tests */ = {
+			isa = PBXFileSystemSynchronizedRootGroup;
+			path = Apps/Tests;
+			sourceTree = "<group>";
+		};
+		D46C100E2F66D10000A1B2C3 /* Apps/Widget */ = {
+			isa = PBXFileSystemSynchronizedRootGroup;
+			exceptions = (
+				D46C10202F66D10000A1B2C3 /* Exceptions for "Apps/Widget" folder in "ScaleWidget" target */,
+			);
+			path = Apps/Widget;
+			sourceTree = "<group>";
 		};
 /* End PBXFileSystemSynchronizedRootGroup section */
 
@@ -123,10 +126,10 @@
 		D45B3F0C2F669AF1008AB112 = {
 			isa = PBXGroup;
 			children = (
-				D45A9EFC2F66BC7B0014B7BA /* Scale.xctestplan */,
-				D45B3F172F669AF1008AB112 /* Scale */,
-				D45B3F272F669AF2008AB112 /* ScaleTests */,
-				D46C100E2F66D10000A1B2C3 /* ScaleWidget */,
+				D45A9EFC2F66BC7B0014B7BA /* Apps/Tests/Scale.xctestplan */,
+				D45B3F172F669AF1008AB112 /* Apps/Main */,
+				D45B3F272F669AF2008AB112 /* Apps/Tests */,
+				D46C100E2F66D10000A1B2C3 /* Apps/Widget */,
 				D45B3F162F669AF1008AB112 /* Products */,
 			);
 			sourceTree = "<group>";
@@ -160,7 +163,7 @@
 				D46C10172F66D10000A1B2C3 /* PBXTargetDependency */,
 			);
 			fileSystemSynchronizedGroups = (
-				D45B3F172F669AF1008AB112 /* Scale */,
+				D45B3F172F669AF1008AB112 /* Apps/Main */,
 			);
 			name = Scale;
 			packageProductDependencies = (
@@ -185,7 +188,7 @@
 				D45B3F262F669AF2008AB112 /* PBXTargetDependency */,
 			);
 			fileSystemSynchronizedGroups = (
-				D45B3F272F669AF2008AB112 /* ScaleTests */,
+				D45B3F272F669AF2008AB112 /* Apps/Tests */,
 			);
 			name = ScaleTests;
 			packageProductDependencies = (
@@ -227,7 +230,7 @@
 			dependencies = (
 			);
 			fileSystemSynchronizedGroups = (
-				D46C100E2F66D10000A1B2C3 /* ScaleWidget */,
+				D46C100E2F66D10000A1B2C3 /* Apps/Widget */,
 			);
 			name = ScaleWidget;
 			packageProductDependencies = (
@@ -506,6 +509,7 @@
 				INFOPLIST_KEY_NSCameraUsageDescription = "Scan the scale";
 				INFOPLIST_KEY_NSHealthShareUsageDescription = "Sync your weight with apple health";
 				INFOPLIST_KEY_NSHealthUpdateUsageDescription = "Scale uses ​Health​Kit to import your weight history";
+				INFOPLIST_KEY_NSPhotoLibraryAddUsageDescription = "Save your progress photos to your library";
 				INFOPLIST_KEY_UIApplicationSceneManifest_Generation = YES;
 				INFOPLIST_KEY_UIApplicationSupportsIndirectInputEvents = YES;
 				INFOPLIST_KEY_UILaunchScreen_Generation = YES;
@@ -544,6 +548,7 @@
 				INFOPLIST_KEY_NSCameraUsageDescription = "Scan the scale";
 				INFOPLIST_KEY_NSHealthShareUsageDescription = "Sync your weight with apple health";
 				INFOPLIST_KEY_NSHealthUpdateUsageDescription = "Scale uses ​Health​Kit to import your weight history";
+				INFOPLIST_KEY_NSPhotoLibraryAddUsageDescription = "Save your progress photos to your library";
 				INFOPLIST_KEY_UIApplicationSceneManifest_Generation = YES;
 				INFOPLIST_KEY_UIApplicationSupportsIndirectInputEvents = YES;
 				INFOPLIST_KEY_UILaunchScreen_Generation = YES;

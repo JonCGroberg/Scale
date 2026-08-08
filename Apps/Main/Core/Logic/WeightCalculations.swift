@@ -118,14 +118,16 @@ enum WeightCalculations {
     /// - Parameter entries: Weight entries sorted most-recent-first.
     /// - Returns: The difference in pounds (positive = gained), or nil if fewer than 2 entries.
     static func weightChange(from entries: [WeightEntry]) -> Double? {
-        guard entries.count >= 2 else { return nil }
-        return entries[0].weight - entries[1].weight
+        let weights = weightEntries(entries)
+        guard weights.count >= 2 else { return nil }
+        return weights[0].weight - weights[1].weight
     }
 
     /// The timestamp of the second-most-recent entry (the comparison baseline).
     static func changeDate(from entries: [WeightEntry]) -> Date? {
-        guard entries.count >= 2 else { return nil }
-        return entries[1].timestamp
+        let weights = weightEntries(entries)
+        guard weights.count >= 2 else { return nil }
+        return weights[1].timestamp
     }
 
     /// Average weight over a given time period.
@@ -164,7 +166,7 @@ enum WeightCalculations {
     }
 
     static func fullChartSnapshot(from entries: [WeightEntry], using period: TimePeriod) -> ChartSnapshot {
-        let sortedEntries = entries.sorted { $0.timestamp < $1.timestamp }
+        let sortedEntries = weightEntries(entries).sorted { $0.timestamp < $1.timestamp }
         return chartSnapshot(fromSortedEntries: sortedEntries, period: period)
     }
 
@@ -257,7 +259,7 @@ enum WeightCalculations {
             return .empty
         }
 
-        let countsByDay = Dictionary(grouping: entries) { entry in
+        let countsByDay = Dictionary(grouping: weightEntries(entries)) { entry in
             calendar.startOfDay(for: entry.timestamp)
         }
         .mapValues(\.count)
@@ -377,7 +379,7 @@ enum WeightCalculations {
 
         // Collect unique logged days
         var loggedDays = Set<Date>()
-        for entry in entries {
+        for entry in weightEntries(entries) {
             loggedDays.insert(calendar.startOfDay(for: entry.timestamp))
         }
         if includingToday {
@@ -406,7 +408,7 @@ enum WeightCalculations {
         let today = calendar.startOfDay(for: Date())
         guard let yesterday = calendar.date(byAdding: .day, value: -1, to: today) else { return 0 }
 
-        let loggedDays = Set(entries.map { calendar.startOfDay(for: $0.timestamp) })
+        let loggedDays = Set(weightEntries(entries).map { calendar.startOfDay(for: $0.timestamp) })
         let anchorDay: Date
         if loggedDays.contains(today) {
             anchorDay = today
@@ -431,7 +433,7 @@ enum WeightCalculations {
     /// Multiple entries on the same day count as one logged day.
     static func longestStreak(from entries: [WeightEntry]) -> Int {
         let calendar = Calendar.current
-        let loggedDays = Set(entries.map { calendar.startOfDay(for: $0.timestamp) })
+        let loggedDays = Set(weightEntries(entries).map { calendar.startOfDay(for: $0.timestamp) })
         guard !loggedDays.isEmpty else { return 0 }
 
         let sortedDays = loggedDays.sorted()
@@ -461,7 +463,7 @@ enum WeightCalculations {
     static func streaksByDay(from entries: [WeightEntry]) -> [Date: Int] {
         let calendar = Calendar.current
         var loggedDays = Set<Date>()
-        for entry in entries {
+        for entry in weightEntries(entries) {
             loggedDays.insert(calendar.startOfDay(for: entry.timestamp))
         }
 
@@ -505,7 +507,7 @@ enum WeightCalculations {
         let formatter = DateFormatter()
         formatter.dateFormat = "MMMM yyyy"
 
-        let grouped = Dictionary(grouping: entries) { entry in
+        let grouped = Dictionary(grouping: weightEntries(entries)) { entry in
             formatter.string(from: entry.timestamp)
         }
 
@@ -518,7 +520,13 @@ enum WeightCalculations {
 
     private static func entriesWithin(_ period: TimePeriod, from entries: [WeightEntry]) -> [WeightEntry] {
         let cutoff = period.startDate(endingAt: Date())
-        return entries.filter { $0.timestamp >= cutoff }
+        return weightEntries(entries).filter { $0.timestamp >= cutoff }
+    }
+
+    /// Weight-only projection used by every metric. Photo-only moments share
+    /// the timeline model but must never affect charts, goals, averages, or streaks.
+    static func weightEntries(_ entries: [WeightEntry]) -> [WeightEntry] {
+        entries.filter(\.includesWeight)
     }
 
     private static func smoothingAlpha(for period: TimePeriod) -> Double {

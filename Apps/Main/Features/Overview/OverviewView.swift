@@ -10,6 +10,7 @@ import SwiftData
 import Charts
 import Foundation
 import UniformTypeIdentifiers
+import UIKit
 
 /// The set of chart cards shown on the Overview screen, in user-configurable order.
 private enum ChartKind: String, CaseIterable, Identifiable {
@@ -83,6 +84,17 @@ private struct ChartCardDropDelegate: DropDelegate {
 }
 
 struct OverviewView: View {
+    @Environment(\.modelContext) private var modelContext
+    @Binding var chartSelection: ChartDaySelection?
+    let timelineFocusRequest: Int
+    let onOpenSettings: () -> Void
+    let onOpenHistory: () -> Void
+    let onAddMoment: () -> Void
+    private struct TimelinePhotoSelection: Identifiable {
+        let id = UUID()
+        let entry: WeightEntry
+        let photos: [UIImage]
+    }
     private struct StepChartPoint: Equatable, Identifiable {
         let date: Date
         let steps: Int
@@ -102,6 +114,7 @@ struct OverviewView: View {
         let stepChartPoints: [StepChartPoint]
         let sleepChartPoints: [SleepChartPoint]
         let workoutChartPoints: [WorkoutChartPoint]
+        let hasStepData: Bool
         let hasSleepData: Bool
         let hasWorkoutData: Bool
 
@@ -116,12 +129,13 @@ struct OverviewView: View {
             stepChartPoints: [],
             sleepChartPoints: [],
             workoutChartPoints: [],
+            hasStepData: false,
             hasSleepData: false,
             hasWorkoutData: false
         )
 
         init(entries: [WeightEntry], activitySummaries: [DailyActivitySummary], sleepEntries: [SleepEntry], workoutEntries: [WorkoutEntry], period: TimePeriod, goal: WeightGoal, targetWeight: Double?) {
-            currentWeight = entries.first?.weight
+            currentWeight = entries.first(where: \.includesWeight)?.weight
             longestStreak = WeightCalculations.longestStreak(from: entries)
             chart = WeightCalculations.chartSnapshot(from: entries, over: period)
             chartHistory = WeightCalculations.fullChartSnapshot(from: entries, using: period)
@@ -147,6 +161,7 @@ struct OverviewView: View {
                     StepChartPoint(date: calendar.startOfDay(for: summary.date), steps: summary.stepCount)
                 }
                 .sorted { $0.date < $1.date }
+            hasStepData = !daily.isEmpty
 
             let stepsByDate = Dictionary(uniqueKeysWithValues: daily.map { ($0.date, $0.steps) })
             let today = calendar.startOfDay(for: Date())
@@ -245,6 +260,7 @@ struct OverviewView: View {
             stepChartPoints: [StepChartPoint],
             sleepChartPoints: [SleepChartPoint],
             workoutChartPoints: [WorkoutChartPoint],
+            hasStepData: Bool,
             hasSleepData: Bool,
             hasWorkoutData: Bool
         ) {
@@ -258,16 +274,16 @@ struct OverviewView: View {
             self.stepChartPoints = stepChartPoints
             self.sleepChartPoints = sleepChartPoints
             self.workoutChartPoints = workoutChartPoints
+            self.hasStepData = hasStepData
             self.hasSleepData = hasSleepData
             self.hasWorkoutData = hasWorkoutData
         }
     }
 
     @Query(sort: \WeightEntry.timestamp, order: .reverse) private var entries: [WeightEntry]
-    // Step data loaded on demand — see stepSummaries computed property.
-    @Query(sort: \DailyActivitySummary.date, order: .reverse) private var dailyActivitySummaries: [DailyActivitySummary]
-    @Query(sort: \SleepEntry.endDate, order: .reverse) private var allSleepEntries: [SleepEntry]
-    @Query(sort: \WorkoutEntry.timestamp, order: .reverse) private var allWorkouts: [WorkoutEntry]
+    @State private var dailyActivitySummaries: [DailyActivitySummary] = []
+    @State private var allSleepEntries: [SleepEntry] = []
+    @State private var allWorkouts: [WorkoutEntry] = []
     @AppStorage("appTint") private var appTint = AppTint.defaultValue.rawValue
     @AppStorage("calendarDayStat") private var calendarDayStat = CalendarDayStat.defaultValue.rawValue
     @AppStorage("weightGoal") private var weightGoal = WeightGoal.defaultValue.rawValue
@@ -282,21 +298,87 @@ struct OverviewView: View {
     @State private var miniGoals: [MiniGoal] = []
     @State private var chartScrollPosition = Date()
     @State private var selectedDate: Date? = nil
+    @State private var selectedChartKind: ChartKind?
+    @State private var isInspectingChart = false
+    @State private var selectedGoalMilestoneID: UUID?
     @State private var chartOrder: [ChartKind] = ChartKind.allCases
     @State private var draggedKind: ChartKind? = nil
+    @State private var timelineFilter: TimelineContentFilter = .images
+    @State private var timelinePhotoSelection: TimelinePhotoSelection?
 
+    private enum TimelineContentFilter: String, CaseIterable, Identifiable {
+        case all
+        case weight
+        case steps
+        case activeCalories
+        case sleep
+        case workouts
+        case images
+
+        var id: String { rawValue }
+
+        var title: String {
+            switch self {
+            case .all: return "All entries"
+            case .weight: return "Has weight"
+            case .steps: return "Has steps"
+            case .activeCalories: return "Has active calories"
+            case .sleep: return "Has sleep"
+            case .workouts: return "Has workouts"
+            case .images: return "Has images"
+            }
+        }
+    }
+
+    private var hasStepData: Bool { snapshot.hasStepData }
     private var hasSleepData: Bool { snapshot.hasSleepData }
     private var hasWorkoutData: Bool { snapshot.hasWorkoutData }
+
+    private var weightEntries: [WeightEntry] {
+        entries.filter(\.includesWeight)
+    }
 
     private var visibleChartOrder: [ChartKind] {
         chartOrder.filter { kind in
             switch kind {
-            case .goal: return snapshot.goalProgress != nil
-            case .weight, .steps: return true
+            case .goal: return false
+            case .weight: return !snapshot.chart.smoothedEntries.isEmpty
+            case .steps: return hasStepData
             case .sleep: return hasSleepData
             case .workouts: return hasWorkoutData
             }
         }
+    }
+
+    private var timelineEntries: [WeightEntry] {
+        let cutoff = chartPeriod.startDate(endingAt: Date(), calendar: .current)
+        return entries
+            .filter { $0.timestamp >= cutoff }
+            .filter { entry in
+                switch timelineFilter {
+                case .all: return true
+                case .weight: return entry.includesWeight
+                case .steps:
+                    return dailyActivitySummaries.contains {
+                        Calendar.current.isDate($0.date, inSameDayAs: entry.timestamp) && $0.stepCount > 0
+                    }
+                case .activeCalories:
+                    return dailyActivitySummaries.contains {
+                        Calendar.current.isDate($0.date, inSameDayAs: entry.timestamp)
+                            && $0.activeEnergyBurnedKilocalories > 0
+                    }
+                case .sleep:
+                    return allSleepEntries.contains {
+                        Calendar.current.isDate($0.endDate, inSameDayAs: entry.timestamp)
+                    }
+                case .workouts:
+                    return allWorkouts.contains {
+                        Calendar.current.isDate($0.timestamp, inSameDayAs: entry.timestamp)
+                    }
+                case .images: return entry.hasPhotos
+                }
+            }
+            .sorted { $0.timestamp < $1.timestamp }
     }
 
     private var selectedGoal: WeightGoal {
@@ -312,6 +394,23 @@ struct OverviewView: View {
             for: selectedGoal,
             cutTarget: cutTargetWeight,
             bulkTarget: bulkTargetWeight
+        )
+    }
+
+    /// Goals are configuration, not chart-range data. Keeping their progress
+    /// independent of the selected time period prevents the card from moving
+    /// or disappearing as the user switches chart ranges.
+    private var hasConfiguredGoal: Bool {
+        selectedGoal != .maintain && activeTargetWeight != nil
+    }
+
+    private var overallGoalProgress: WeightCalculations.GoalProgress? {
+        guard let targetWeight = activeTargetWeight else { return nil }
+        return WeightCalculations.goalProgress(
+            from: entries,
+            goal: selectedGoal,
+            targetWeight: targetWeight,
+            over: .year
         )
     }
 
@@ -345,8 +444,8 @@ struct OverviewView: View {
         }
 
         // Get the weight logged on this specific day, or fallback to the closest available entry
-        let dayEntries = entries.filter { $0.timestamp >= dayStart && $0.timestamp < dayEnd }
-        let weight = dayEntries.first?.weight ?? entries.min(by: {
+        let dayEntries = weightEntries.filter { $0.timestamp >= dayStart && $0.timestamp < dayEnd }
+        let weight = dayEntries.first?.weight ?? weightEntries.min(by: {
             abs($0.timestamp.timeIntervalSince(snappedDate)) < abs($1.timestamp.timeIntervalSince(snappedDate))
         })?.weight
 
@@ -359,6 +458,64 @@ struct OverviewView: View {
         return (weight, steps, workouts, snappedDate)
     }
 
+    private var chartSelectionValue: String? {
+        guard let selectedData = selectedDataPoint, let selectedChartKind else { return nil }
+
+        switch selectedChartKind {
+        case .weight:
+            return selectedData.weight.map { String(format: "%.1f lbs", $0) }
+        case .steps:
+            return selectedData.steps.map { "\($0.formatted()) steps" }
+        case .sleep:
+            let hours = sleepChartPoints.first { Calendar.current.isDate($0.date, inSameDayAs: selectedData.date) }?.totalHours
+            return hours.map { String(format: "%.1fh sleep", $0) }
+        case .workouts:
+            return selectedData.workoutHours.map { String(format: "%.1fh workout", $0) }
+        case .goal:
+            return nil
+        }
+    }
+
+    private func chartSelectionBinding(for kind: ChartKind) -> Binding<Date?> {
+        Binding(
+            get: { selectedDate },
+            set: { newValue in
+                selectedDate = newValue
+                selectedChartKind = newValue == nil ? nil : kind
+                if let date = newValue, let value = chartSelectionValue {
+                    chartSelection = ChartDaySelection(date: date, value: value)
+                } else {
+                    chartSelection = nil
+                }
+            }
+        )
+    }
+
+    private func chartInspectionGesture(
+        proxy: ChartProxy,
+        geometry: GeometryProxy,
+        kind: ChartKind
+    ) -> some Gesture {
+        LongPressGesture(minimumDuration: 0.05, maximumDistance: 10)
+            .sequenced(before: DragGesture(minimumDistance: 0, coordinateSpace: .local))
+            .onChanged { value in
+                guard case .second(true, let drag?) = value else { return }
+                guard let plotFrame = proxy.plotFrame else { return }
+
+                let plotRect = geometry[plotFrame]
+                let x = drag.location.x - plotRect.minX
+                guard x >= 0, x <= plotRect.width,
+                      let date: Date = proxy.value(atX: x) else { return }
+
+                isInspectingChart = true
+                chartSelectionBinding(for: kind).wrappedValue = date
+            }
+            .onEnded { _ in
+                isInspectingChart = false
+                chartSelectionBinding(for: kind).wrappedValue = nil
+            }
+    }
+
     private var primaryStatDisplay: (value: String, label: String) {
         let calendar = Calendar.current
         let selectedDay = selectedDate.map { calendar.startOfDay(for: $0) }
@@ -369,8 +526,8 @@ struct OverviewView: View {
         switch primaryStat {
         case .weight:
             let weight = selectedDay.flatMap { day in
-                entries.first { calendar.isDate($0.timestamp, inSameDayAs: day) }?.weight
-            } ?? (selectedDay == nil ? entries.first?.weight : nil)
+                weightEntries.first { calendar.isDate($0.timestamp, inSameDayAs: day) }?.weight
+            } ?? (selectedDay == nil ? weightEntries.first?.weight : nil)
             return (weight.map { String(format: "%.1f", $0) } ?? "--", selectedDay == nil ? "lbs today" : dateLabel)
 
         case .steps:
@@ -405,8 +562,48 @@ struct OverviewView: View {
         }
     }
 
+    private func timelinePrimaryStat(for date: Date, entry: WeightEntry) -> (value: String, label: String) {
+        let calendar = Calendar.current
+
+        switch primaryStat {
+        case .weight:
+            guard entry.includesWeight else { return ("Photo", "moment") }
+            return (String(format: "%.1f", entry.weight), "lbs")
+        case .steps:
+            let steps = dailyActivitySummaries.first {
+                calendar.isDate($0.date, inSameDayAs: date)
+            }?.stepCount
+            return (steps.map { $0.formatted() } ?? "—", "steps")
+        case .activeCalories:
+            let calories = dailyActivitySummaries.first {
+                calendar.isDate($0.date, inSameDayAs: date)
+            }?.activeEnergyBurnedKilocalories
+            return (calories.map { Int($0.rounded()).formatted() } ?? "—", "cal")
+        case .sleep:
+            let hours = allSleepEntries
+                .filter { calendar.isDate($0.endDate, inSameDayAs: date) }
+                .reduce(0) { $0 + $1.duration / 3_600 }
+            return (hours > 0 ? String(format: "%.1f", hours) : "—", "hrs sleep")
+        case .workouts:
+            let hours = allWorkouts
+                .filter { calendar.isDate($0.timestamp, inSameDayAs: date) }
+                .reduce(0) { $0 + $1.duration / 3_600 }
+            return (hours > 0 ? String(format: "%.1f", hours) : "—", "hrs workout")
+        }
+    }
+
     private var tintColor: Color {
         (AppTint(rawValue: appTint) ?? .defaultValue).color
+    }
+
+    private var emptyPrimaryStatMessage: String {
+        switch primaryStat {
+        case .weight: "No weight yet"
+        case .steps: "No steps yet"
+        case .activeCalories: "No activity yet"
+        case .sleep: "No sleep yet"
+        case .workouts: "No workout yet"
+        }
     }
 
     private var weightYDomain: ClosedRange<Double> {
@@ -463,10 +660,24 @@ struct OverviewView: View {
         Date().timeIntervalSince(chartVisibleStartDate())
     }
 
+    /// A one-day range contains one aggregate value per chart. Center that value
+    /// in the plot instead of anchoring it at midnight on the leading edge.
+    private var chartDisplayXDomain: ClosedRange<Date> {
+        let endDate = Date()
+        guard chartPeriod == .today else {
+            return chartVisibleStartDate(endingAt: endDate)...endDate
+        }
+
+        let calendar = Calendar.current
+        let dayStart = calendar.startOfDay(for: endDate)
+        let halfDay: TimeInterval = 12 * 60 * 60
+        return dayStart.addingTimeInterval(-halfDay)...dayStart.addingTimeInterval(halfDay)
+    }
+
     private var stepBarWidth: MarkDimension {
         switch chartPeriod {
         case .today:
-            return .fixed(40)
+            return .fixed(64)
         case .week:
             return .fixed(24)
         case .month:
@@ -540,15 +751,34 @@ struct OverviewView: View {
     }
 
     var body: some View {
-        ScrollView {
-            VStack(spacing: 16) {
-                chartCard
-                
-                statsFooter
+        ScrollViewReader { proxy in
+            ScrollView {
+                VStack(spacing: 16) {
+                    chartCard
+                    timelineSection
+                }
+                .padding(.top, -16)
+                .padding(.horizontal, 20)
             }
-            .padding(.horizontal, 20)
+            .scrollDisabled(isInspectingChart)
+            .onChange(of: timelineFocusRequest) {
+                DispatchQueue.main.async {
+                    proxy.scrollTo("overview-timeline", anchor: .top)
+                }
+            }
         }
         .background(Color(.systemGroupedBackground))
+        .fullScreenCover(item: $timelinePhotoSelection) { selection in
+            LogPhotoCarouselView(
+                photos: selection.photos,
+                initialIndex: 0,
+                canEditCurrentPhoto: false,
+                onEditCurrentPhoto: { _ in },
+                weightEntry: selection.entry.includesWeight ? selection.entry : nil,
+                tintColor: tintColor,
+                date: selection.entry.timestamp
+            )
+        }
         // Catch drops outside a card (including empty scroll space) so a
         // cancelled-looking reorder never leaves its source card dimmed.
         .onDrop(of: [.plainText], isTargeted: nil) { _ in
@@ -558,18 +788,22 @@ struct OverviewView: View {
         }
         .onDisappear {
             draggedKind = nil
+            chartSelection = nil
         }
         .onAppear {
-            updateSnapshot()
             updateMiniGoals()
             resetChartScrollPosition()
             loadChartOrder()
+        }
+        .task(id: badgePeriodIndex) {
+            await Task.yield()
+            reloadChartHealthData()
+            updateSnapshot()
         }
         .onChange(of: dataVersion) { _, _ in
             updateSnapshot()
         }
         .onChange(of: badgePeriodIndex) { _, _ in
-            updateSnapshot()
             resetChartScrollPosition()
         }
         .onChange(of: weightGoal) { _, _ in
@@ -591,29 +825,205 @@ struct OverviewView: View {
 
     // MARK: - Chart
 
+    // MARK: - Timeline
+
+    private var timelineSection: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            HStack(alignment: .firstTextBaseline, spacing: 8) {
+                Button("Moments", action: onOpenHistory)
+                    .font(.title3.weight(.bold))
+                    .foregroundStyle(.primary)
+                    .buttonStyle(.plain)
+                    .accessibilityHint("Opens full history")
+
+                Spacer(minLength: 8)
+
+                Button(action: openTimelinePhotoCarousel) {
+                    Label("View All", systemImage: "photo.on.rectangle.angled")
+                }
+                    .font(.subheadline.weight(.semibold))
+                    .foregroundStyle(tintColor)
+                    .buttonStyle(.plain)
+                    .accessibilityHint("Opens the photo carousel")
+
+                Menu {
+                    Picker("Show", selection: $timelineFilter) {
+                        ForEach(TimelineContentFilter.allCases) { filter in
+                            Text(filter.title).tag(filter)
+                        }
+                    }
+                } label: {
+                    Image(systemName: "line.3.horizontal.decrease")
+                        .font(.subheadline.weight(.semibold))
+                        .foregroundStyle(.secondary)
+                        .frame(width: 28, height: 28)
+                        .contentShape(Rectangle())
+                }
+                .accessibilityLabel("History filter")
+            }
+
+            if timelineEntries.isEmpty {
+                ContentUnavailableView {
+                    Label("No moments today yet", systemImage: "photo.on.rectangle.angled")
+                } description: {
+                    Text("Add a photo to a weight entry to capture this day.")
+                } actions: {
+                    Button("Add a moment", systemImage: "photo.badge.plus", action: onAddMoment)
+                        .buttonStyle(.borderedProminent)
+                        .tint(tintColor)
+                }
+                .frame(maxWidth: .infinity, minHeight: 180)
+            } else {
+                ScrollViewReader { proxy in
+                    ScrollView(.horizontal, showsIndicators: false) {
+                        LazyHStack(spacing: 12) {
+                            ForEach(timelineEntries, id: \.persistentModelID) { entry in
+                                timelineCard(for: entry)
+                                    .id(entry.persistentModelID)
+                            }
+                        }
+                        .scrollTargetLayout()
+                        .padding(.horizontal, 20)
+                    }
+                    .scrollTargetBehavior(.viewAligned)
+                    .contentMargins(.horizontal, 0, for: .scrollContent)
+                    .padding(.horizontal, -20)
+                    .onAppear {
+                        scrollTimelineToLatest(using: proxy)
+                    }
+                    .onChange(of: badgePeriodIndex) {
+                        scrollTimelineToLatest(using: proxy)
+                    }
+                    .onChange(of: timelineFilter) {
+                        scrollTimelineToLatest(using: proxy)
+                    }
+                }
+            }
+        }
+        .padding(.vertical, 8)
+    }
+
+    private func scrollTimelineToLatest(using proxy: ScrollViewProxy) {
+        guard let latestEntry = timelineEntries.last else { return }
+        DispatchQueue.main.async {
+            proxy.scrollTo(latestEntry.persistentModelID, anchor: .trailing)
+        }
+    }
+
+    private func timelineCard(for entry: WeightEntry) -> some View {
+        let stat = timelinePrimaryStat(for: entry.timestamp, entry: entry)
+        let hasPhoto = entry.hasPhotos
+
+        return ZStack(alignment: .bottomLeading) {
+            if let photoData = entry.photoData {
+                TimelineThumbnail(data: photoData)
+                    .frame(width: 158, height: 210)
+                    .clipped()
+
+                LinearGradient(
+                    colors: [.clear, .black.opacity(0.72)],
+                    startPoint: .top,
+                    endPoint: .bottom
+                )
+                .frame(width: 158, height: 210)
+            } else {
+                Color(.secondarySystemGroupedBackground)
+
+                Image(systemName: "photo")
+                    .font(.title2)
+                    .foregroundStyle(tintColor.opacity(0.6))
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+            }
+
+            VStack(alignment: .leading, spacing: 2) {
+                Text(entry.timestamp.formatted(.dateTime.month(.abbreviated).day().year()))
+                    .font(.caption.weight(.medium))
+                    .foregroundStyle(hasPhoto ? .white.opacity(0.8) : .secondary)
+
+                HStack(alignment: .lastTextBaseline, spacing: 5) {
+                    Text(stat.value)
+                        .font(.title3.weight(.bold).monospacedDigit())
+
+                    Text(stat.label)
+                        .font(.caption.weight(.semibold))
+                        .foregroundStyle(hasPhoto ? .white.opacity(0.78) : .secondary)
+                }
+
+                if let note = entry.note?.trimmingCharacters(in: .whitespacesAndNewlines), !note.isEmpty {
+                    Text(note)
+                        .font(.caption)
+                        .foregroundStyle(hasPhoto ? .white.opacity(0.88) : .secondary)
+                        .lineLimit(1)
+                }
+            }
+            .foregroundStyle(hasPhoto ? .white : .primary)
+            .padding(12)
+            .zIndex(1)
+        }
+        .frame(width: 158, height: 210)
+        .clipShape(RoundedRectangle(cornerRadius: 22, style: .continuous))
+        .overlay(RoundedRectangle(cornerRadius: 22, style: .continuous).strokeBorder(.white.opacity(0.18), lineWidth: 1))
+        .contentShape(RoundedRectangle(cornerRadius: 22, style: .continuous))
+        .onTapGesture {
+            openPhotoCarousel(for: entry)
+        }
+        .accessibilityElement(children: .combine)
+        .accessibilityLabel("\(hasPhoto ? "Progress photo" : "Entry") from \(entry.timestamp.formatted(.dateTime.month(.wide).day()))")
+    }
+
+    private func openPhotoCarousel(for entry: WeightEntry) {
+        let photos = entry.photosData.compactMap(UIImage.init(data:))
+        guard !photos.isEmpty else { return }
+        Haptics.selection()
+        timelinePhotoSelection = TimelinePhotoSelection(entry: entry, photos: photos)
+    }
+
+    private func openTimelinePhotoCarousel() {
+        guard let latestEntry = entries.first(where: \.hasPhotos) else { return }
+        openPhotoCarousel(for: latestEntry)
+    }
+
+    private struct TimelineThumbnail: View {
+        let data: Data
+        @State private var image: UIImage?
+
+        var body: some View {
+            Group {
+                if let image {
+                    Image(uiImage: image)
+                        .resizable()
+                        .scaledToFill()
+                } else {
+                    ProgressView()
+                }
+            }
+            .task(id: data.hashValue) {
+                let decodedImage = await Task.detached(priority: .utility) {
+                    UIImage(data: data)
+                }.value
+                guard !Task.isCancelled else { return }
+                image = decodedImage
+            }
+        }
+    }
+
     private var chartCard: some View {
         VStack(alignment: .leading, spacing: 0) {
-            centeredWeightDisplay
-
             HStack(alignment: .firstTextBaseline) {
-                Text("Charts")
+                Text("Health")
                     .font(.title3.weight(.bold))
-
-                Spacer()
-
-                Text("drag to reorder")
-                    .font(.caption.weight(.medium))
-                    .foregroundStyle(.secondary)
             }
             .padding(.vertical, 16)
 
-            if snapshot.chart.smoothedEntries.isEmpty {
-                Text("Not enough data for this period")
-                    .font(.subheadline)
-                    .foregroundStyle(.secondary)
+            if visibleChartOrder.isEmpty {
+                ContentUnavailableView {
+                    Label(chartEmptyStateTitle, systemImage: "chart.line.downtrend.xyaxis")
+                } description: {
+                    Text(chartEmptyStateDescription)
+                }
                     .frame(maxWidth: .infinity, minHeight: 180)
             } else {
-                VStack(alignment: .leading, spacing: 12) {
+                VStack(alignment: .leading, spacing: 10) {
                     ForEach(visibleChartOrder) { kind in
                         chartCardView(for: kind)
                     }
@@ -630,25 +1040,49 @@ struct OverviewView: View {
         .padding(.vertical, 14)
     }
 
-    private func goalProgressCard(_ progress: WeightCalculations.GoalProgress) -> some View {
-        let startingWeight = progress.targetWeight - progress.totalChange
-        let completion = progress.totalDistance > 0
-            ? min(max(progress.completedDistance / progress.totalDistance, 0), 1)
-            : 0
-        let percentage = Int((completion * 100).rounded())
-        let paceText: String = {
-            guard let days = progress.daysRemaining, days > 0 else { return "Goal reached" }
-            if days < 30 { return "on pace · \(Int(days.rounded())) days at this rate" }
-            return String(format: "on pace · %.1f mo at this rate", days / 30.4)
-        }()
+    @ViewBuilder
+    private var goalSection: some View {
+        if hasConfiguredGoal {
+            goalSummaryCard
+        } else {
+            goalEmptyStateCard
+        }
+    }
 
-        return VStack(alignment: .leading, spacing: 10) {
+    private var chartEmptyStateTitle: String {
+        switch chartPeriod {
+        case .today: return "No charts for today"
+        case .week: return "No charts this week"
+        case .month: return "No charts this month"
+        case .threeMonths: return "No charts in the past 3 months"
+        case .sixMonths: return "No charts in the past 6 months"
+        case .year: return "No charts in the past year"
+        }
+    }
+
+    private var chartEmptyStateDescription: String {
+        if chartPeriod == .today {
+            return "Try a longer time range."
+        }
+
+        return "Try a longer time range or add an entry."
+    }
+
+    private var goalSummaryCard: some View {
+        let progress = overallGoalProgress
+        let completion = progress.map { goalProgress in
+            guard goalProgress.totalDistance > 0 else { return 0 }
+            return min(max(goalProgress.completedDistance / goalProgress.totalDistance, 0), 1)
+        } ?? 0
+        let percentage = Int((completion * 100).rounded())
+        let targetWeight = activeTargetWeight ?? 0
+        return VStack(alignment: .leading, spacing: 12) {
             HStack(spacing: 8) {
                 Image(systemName: selectedGoal.systemImage)
                     .font(.headline)
                     .foregroundStyle(tintColor)
 
-                Text("Goal")
+                Text("Goals")
                     .font(.headline.weight(.bold))
 
                 Spacer()
@@ -658,16 +1092,12 @@ struct OverviewView: View {
                     .monospacedDigit()
                     .foregroundStyle(.primary)
 
-                dragHandle
             }
 
-            ProgressView(value: completion)
-                .tint(tintColor)
-                .scaleEffect(x: 1, y: 1.45, anchor: .center)
-                .padding(.vertical, 1)
+            goalProgressBar(completion: completion, progress: progress)
 
             HStack(alignment: .firstTextBaseline) {
-                Text("\(startingWeight.formatted(.number.precision(.fractionLength(1)))) → \(progress.targetWeight.formatted(.number.precision(.fractionLength(1)))) lbs")
+                Text("\(weightEntries.first?.weight.formatted(.number.precision(.fractionLength(1))) ?? "—") lbs now")
                     .font(.system(size: 16, weight: .bold, design: .rounded))
                     .foregroundStyle(tintColor)
                     .lineLimit(1)
@@ -675,13 +1105,14 @@ struct OverviewView: View {
 
                 Spacer(minLength: 12)
 
-                Text(paceText)
+                Text("Target \(targetWeight.formatted(.number.precision(.fractionLength(1)))) lbs")
                     .font(.caption.weight(.medium))
                     .foregroundStyle(.secondary)
                     .multilineTextAlignment(.trailing)
                     .lineLimit(1)
                     .minimumScaleFactor(0.7)
             }
+
         }
         .padding(14)
         .background {
@@ -689,28 +1120,161 @@ struct OverviewView: View {
                 .fill(Color(.secondarySystemGroupedBackground))
         }
         .accessibilityElement(children: .combine)
-        .accessibilityLabel("Goal progress, \(percentage) percent complete")
+        .accessibilityLabel("Goals, \(percentage) percent complete")
+    }
+
+    private func goalProgressBar(completion: Double, progress: WeightCalculations.GoalProgress?) -> some View {
+        GeometryReader { geometry in
+            ZStack(alignment: .leading) {
+                Capsule()
+                    .fill(.quaternary)
+                    .frame(height: 9)
+
+                Capsule()
+                    .fill(tintColor)
+                    .frame(width: geometry.size.width * completion, height: 9)
+
+                if let progress {
+                    ForEach(miniGoals) { miniGoal in
+                        if let fraction = goalMilestoneFraction(for: miniGoal, progress: progress) {
+                            Rectangle()
+                                .fill(selectedGoalMilestoneID == miniGoal.id ? tintColor : Color(.secondarySystemGroupedBackground))
+                                .overlay {
+                                    if selectedGoalMilestoneID == miniGoal.id {
+                                        // Keep the selected milestone in the app tint family, but lift it
+                                        // above the progress track so it reads as the active stop.
+                                        Color.white.opacity(0.32)
+                                    }
+                                }
+                                .frame(width: selectedGoalMilestoneID == miniGoal.id ? 4 : 3, height: 11)
+                                .position(x: geometry.size.width * fraction, y: 5.5)
+                                .accessibilityLabel("\(miniGoal.name), \(miniGoal.targetWeight.formatted(.number.precision(.fractionLength(1)))) pounds")
+                        }
+                    }
+
+                    if let selectedGoalMilestone,
+                       let fraction = goalMilestoneFraction(for: selectedGoalMilestone, progress: progress) {
+                        selectedValuePill("\(selectedGoalMilestone.name) · \(selectedGoalMilestone.targetWeight.formatted(.number.precision(.fractionLength(1)))) lbs")
+                            .position(
+                                x: min(max(geometry.size.width * fraction, 72), max(72, geometry.size.width - 72)),
+                                y: -18
+                            )
+                            .zIndex(1)
+                    }
+                }
+            }
+            .contentShape(Rectangle())
+            .gesture(
+                DragGesture(minimumDistance: 0)
+                    .onChanged { value in
+                        updateSelectedGoalMilestone(
+                            at: min(max(value.location.x / max(geometry.size.width, 1), 0), 1),
+                            progress: progress
+                        )
+                    }
+                    .onEnded { _ in
+                        selectedGoalMilestoneID = nil
+                    }
+            )
+        }
+        .frame(height: 11)
+        .padding(.vertical, 1)
+    }
+
+    private func goalMilestoneFraction(for miniGoal: MiniGoal, progress: WeightCalculations.GoalProgress) -> CGFloat? {
+        guard progress.totalDistance > 0 else { return nil }
+        let distanceFromTarget = abs(miniGoal.targetWeight - progress.targetWeight)
+        let fraction = 1 - (distanceFromTarget / progress.totalDistance)
+        guard fraction > 0, fraction < 1 else { return nil }
+        return CGFloat(fraction)
+    }
+
+    private var selectedGoalMilestone: MiniGoal? {
+        miniGoals.first { $0.id == selectedGoalMilestoneID }
+    }
+
+    private func updateSelectedGoalMilestone(at fraction: CGFloat, progress: WeightCalculations.GoalProgress?) {
+        guard let progress else { return }
+        let nearestMilestone = miniGoals.compactMap { miniGoal -> (MiniGoal, CGFloat)? in
+            guard let milestoneFraction = goalMilestoneFraction(for: miniGoal, progress: progress) else { return nil }
+            return (miniGoal, abs(milestoneFraction - fraction))
+        }
+        .min { $0.1 < $1.1 }?.0
+
+        guard selectedGoalMilestoneID != nearestMilestone?.id else { return }
+        selectedGoalMilestoneID = nearestMilestone?.id
+        Haptics.selection()
+    }
+
+    private func hasReachedGoal(targetWeight: Double) -> Bool {
+        guard let currentWeight = weightEntries.first?.weight else { return false }
+        switch selectedGoal {
+        case .lose: return currentWeight <= targetWeight
+        case .gain: return currentWeight >= targetWeight
+        case .maintain: return false
+        }
     }
 
     /// A single reorderable chart card: long-press to lift, drag to reorder, release to drop.
     @ViewBuilder
     private func chartCardView(for kind: ChartKind) -> some View {
-        if kind == .goal, let progress = snapshot.goalProgress {
+        if kind == .goal {
             reorderableCard(for: kind) {
-                goalProgressCard(progress)
+                if hasConfiguredGoal {
+                    goalSummaryCard
+                } else {
+                    goalEmptyStateCard
+                }
             }
         } else {
             reorderableCard(for: kind) {
-                labeledChart(title: kind.title, systemImage: kind.systemImage, height: kind.height) {
+                labeledChart(title: kind.title, systemImage: kind.systemImage, height: chartContentHeight(for: kind)) {
                     chartView(for: kind)
                 }
-                .padding(14)
+                .padding(.horizontal, 16)
+                .padding(.vertical, 14)
                 .background {
                     RoundedRectangle(cornerRadius: 20, style: .continuous)
                         .fill(Color(.secondarySystemGroupedBackground))
                 }
             }
         }
+    }
+
+    private var goalEmptyStateCard: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            HStack(spacing: 8) {
+                Image(systemName: ChartKind.goal.systemImage)
+                    .font(.headline)
+                    .foregroundStyle(tintColor)
+
+                Text("Goals")
+                    .font(.headline.weight(.bold))
+
+                Spacer()
+
+            }
+
+            Text("Add a goal to track your progress.")
+                .font(.subheadline)
+                .foregroundStyle(.secondary)
+
+            Button("Open Settings") {
+                onOpenSettings()
+            }
+            .font(.subheadline.weight(.semibold))
+            .buttonStyle(.plain)
+            .foregroundStyle(tintColor)
+            .accessibilityHint("Opens settings")
+        }
+        .padding(14)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background {
+            RoundedRectangle(cornerRadius: 20, style: .continuous)
+                .fill(Color(.secondarySystemGroupedBackground))
+        }
+        .accessibilityElement(children: .combine)
+        .accessibilityLabel("Goals. Add a goal to track your progress.")
     }
 
     private func reorderableCard<Content: View>(
@@ -732,12 +1296,305 @@ struct OverviewView: View {
 
     @ViewBuilder
     private func chartView(for kind: ChartKind) -> some View {
+        if chartPeriod == .today {
+            dailySummaryView(for: kind)
+        } else {
+            switch kind {
+            case .goal: EmptyView()
+            case .weight: weightChart
+            case .steps: stepsChart
+            case .sleep: sleepChart
+            case .workouts: workoutChart
+            }
+        }
+    }
+
+    @ViewBuilder
+    private func dailySummaryView(for kind: ChartKind) -> some View {
         switch kind {
-        case .goal: EmptyView()
-        case .weight: weightChart
-        case .steps: stepsChart
-        case .sleep: sleepChart
-        case .workouts: workoutChart
+        case .goal:
+            EmptyView()
+        case .weight:
+            dailyWeightSummary
+        case .steps:
+            dailyStepsSummary
+        case .sleep:
+            dailySleepSummary
+        case .workouts:
+            dailyWorkoutSummary
+        }
+    }
+
+    private func chartContentHeight(for kind: ChartKind) -> CGFloat {
+        kind.height
+    }
+
+    private var dailyWeightSummary: some View {
+        let todayWeight = weightEntries.first { Calendar.current.isDateInToday($0.timestamp) }?.weight
+        let weekAverage = WeightCalculations.averageWeight(from: entries, over: .week)
+
+        return HStack(alignment: .center, spacing: 16) {
+            VStack(alignment: .leading, spacing: 2) {
+                Text(todayWeight.map { String(format: "%.1f", $0) } ?? "—")
+                    .font(.system(size: 34, weight: .bold, design: .rounded))
+                    .foregroundStyle(tintColor)
+                Text("lbs today")
+                    .font(.caption.weight(.medium))
+                    .foregroundStyle(.secondary)
+            }
+
+            Spacer()
+
+            dailySummaryMetric(
+                value: weekAverage.map { String(format: "%.1f lbs", $0) } ?? "—",
+                label: "This week’s average",
+                alignment: .trailing
+            )
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+    }
+
+    private var dailyStepsSummary: some View {
+        let todaySteps = stepChartPoints.first?.steps ?? 0
+        let weekStart = TimePeriod.week.startDate(endingAt: Date())
+        let weeklySteps = dailyActivitySummaries.filter { $0.date >= weekStart && $0.stepCount > 0 }
+        let weeklyAverage = weeklySteps.isEmpty ? nil : weeklySteps.map(\.stepCount).reduce(0, +) / weeklySteps.count
+
+        return HStack(alignment: .center, spacing: 16) {
+            VStack(alignment: .leading, spacing: 2) {
+                Text(todaySteps.formatted())
+                    .font(.system(size: 30, weight: .bold, design: .rounded))
+                    .foregroundStyle(tintColor)
+                    .contentTransition(.numericText())
+                Text("steps today")
+                    .font(.caption.weight(.medium))
+                    .foregroundStyle(.secondary)
+            }
+
+            Spacer()
+
+            dailySummaryMetric(
+                value: weeklyAverage.map { $0.formatted() } ?? "—",
+                label: "Daily average this week",
+                alignment: .trailing
+            )
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+    }
+
+    private var dailySleepSummary: some View {
+        let daySleepEntries = allSleepEntries
+            .filter { Calendar.current.isDateInToday($0.startDate) }
+            .sorted { $0.startDate < $1.startDate }
+
+        return VStack(alignment: .leading, spacing: 12) {
+            if !daySleepEntries.isEmpty {
+                dailySleepBreakdownChart(for: daySleepEntries)
+            } else {
+                Text("No sleep today")
+                    .font(.subheadline.weight(.medium))
+                    .foregroundStyle(.secondary)
+            }
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .leading)
+    }
+
+    private func dailySleepBreakdownChart(for entries: [SleepEntry]) -> AnyView {
+        let totalDuration = entries.reduce(0) { $0 + $1.duration }
+        let visibleStages = Set(entries.map(\.stage))
+        guard let start = entries.first?.startDate,
+              let end = entries.map(\.endDate).max()
+        else {
+            return AnyView(EmptyView())
+        }
+
+        return AnyView(VStack(alignment: .leading, spacing: 7) {
+            HStack(alignment: .firstTextBaseline, spacing: 8) {
+                Text(String(format: "%.1fh", totalDuration / 3_600))
+                    .font(.system(size: 30, weight: .bold, design: .rounded))
+                    .foregroundStyle(tintColor)
+
+                Spacer(minLength: 8)
+
+                HStack(spacing: 6) {
+                    ForEach([SleepStage.deep, .core, .rem, .unspecified], id: \.self) { stage in
+                        if visibleStages.contains(stage) {
+                            HStack(spacing: 4) {
+                                Circle()
+                                    .fill(dailySleepStageColor(stage))
+                                    .frame(width: 7, height: 7)
+                                Text(dailySleepStageName(stage))
+                            }
+                                .font(.caption2.weight(.medium))
+                                .foregroundStyle(.secondary)
+                                .lineLimit(1)
+                        }
+                    }
+                }
+            }
+
+            GeometryReader { proxy in
+                let span = max(end.timeIntervalSince(start), 1)
+                ZStack(alignment: .leading) {
+                    RoundedRectangle(cornerRadius: 6, style: .continuous)
+                        .fill(tintColor.opacity(0.08))
+
+                    ForEach(entries, id: \.persistentModelID) { entry in
+                        let offset = entry.startDate.timeIntervalSince(start) / span
+                        let width = max(entry.duration / span * proxy.size.width, 4)
+
+                        RoundedRectangle(cornerRadius: 5, style: .continuous)
+                            .fill(dailySleepStageColor(entry.stage))
+                            .frame(width: width)
+                            .offset(x: offset * proxy.size.width)
+                    }
+                }
+            }
+            .frame(height: 28)
+
+            HStack {
+                Text(start, format: .dateTime.hour().minute())
+                Spacer()
+                Text(end, format: .dateTime.hour().minute())
+            }
+            .font(.caption2.weight(.medium))
+            .foregroundStyle(.secondary)
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .leading)
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel("Sleep timeline, \(String(format: "%.1f", totalDuration / 3_600)) hours total"))
+    }
+
+    private func dailySleepStageColor(_ stage: SleepStage) -> Color {
+        switch stage {
+        case .deep: Self.deepSleepColor
+        case .core: Self.coreSleepColor
+        case .rem: Self.remSleepColor
+        case .unspecified: .gray
+        }
+    }
+
+    private func dailySleepStageName(_ stage: SleepStage) -> String {
+        switch stage {
+        case .deep: "Deep"
+        case .core: "Core"
+        case .rem: "REM"
+        case .unspecified: "Other"
+        }
+    }
+
+    private func dailySleepStageDuration(_ stage: SleepStage, in entries: [SleepEntry]) -> TimeInterval {
+        entries
+            .filter { $0.stage == stage }
+            .reduce(0) { $0 + $1.duration }
+    }
+
+    private var dailyWorkoutSummary: some View {
+        let todayWorkouts = allWorkouts
+            .filter { Calendar.current.isDateInToday($0.timestamp) }
+            .sorted { $0.timestamp < $1.timestamp }
+        let totalHours = todayWorkouts.reduce(0) { $0 + $1.duration / 3_600 }
+
+        return VStack(alignment: .leading, spacing: 6) {
+            HStack(alignment: .firstTextBaseline, spacing: 10) {
+                Text(String(format: "%.0f min", totalHours * 60))
+                    .font(.system(size: 30, weight: .bold, design: .rounded))
+                    .foregroundStyle(tintColor)
+
+                Spacer(minLength: 8)
+
+                HStack(spacing: 6) {
+                    ForEach(Array(Set(todayWorkouts.map(\.activityTypeRawValue)).sorted().prefix(2)), id: \.self) { type in
+                        Circle()
+                            .fill(dailyWorkoutColor(for: type))
+                            .frame(width: 7, height: 7)
+                        Text(dailyWorkoutName(for: type))
+                            .font(.caption2.weight(.medium))
+                            .foregroundStyle(.secondary)
+                            .lineLimit(1)
+                    }
+                    if Set(todayWorkouts.map(\.activityTypeRawValue)).count > 2 {
+                        Text("+\(Set(todayWorkouts.map(\.activityTypeRawValue)).count - 2)")
+                            .font(.caption2.weight(.medium))
+                            .foregroundStyle(.secondary)
+                    }
+                }
+            }
+
+            if let start = todayWorkouts.first?.timestamp,
+               let end = todayWorkouts.map({ $0.timestamp.addingTimeInterval($0.duration) }).max() {
+                GeometryReader { proxy in
+                    let span = max(end.timeIntervalSince(start), 1)
+                    ZStack(alignment: .leading) {
+                        RoundedRectangle(cornerRadius: 5, style: .continuous)
+                            .fill(tintColor.opacity(0.08))
+
+                        ForEach(todayWorkouts, id: \.persistentModelID) { workout in
+                            RoundedRectangle(cornerRadius: 5, style: .continuous)
+                                .fill(dailyWorkoutColor(for: workout.activityTypeRawValue))
+                                .frame(width: max(workout.duration / span * proxy.size.width, 4))
+                                .offset(x: workout.timestamp.timeIntervalSince(start) / span * proxy.size.width)
+                        }
+                    }
+                }
+                .frame(height: 24)
+            } else {
+                Text("No workouts today")
+                    .font(.subheadline.weight(.medium))
+                    .foregroundStyle(.secondary)
+            }
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+    }
+
+    private func dailyWorkoutColor(for activityType: UInt) -> Color {
+        switch activityType {
+        case 50: .purple
+        case 52: .orange
+        case 13: .green
+        default: tintColor
+        }
+    }
+
+    private func dailyWorkoutName(for activityType: UInt) -> String {
+        switch activityType {
+        case 50: "Strength"
+        case 52: "Running"
+        case 13: "Cycling"
+        default: "Workout"
+        }
+    }
+
+    private func dailySummaryMetric(
+        value: String,
+        label: String,
+        valueColor: Color = .primary,
+        valueFont: Font = .subheadline.weight(.semibold).monospacedDigit(),
+        alignment: HorizontalAlignment = .leading
+    ) -> some View {
+        VStack(alignment: alignment, spacing: 2) {
+            Text(value)
+                .font(valueFont)
+                .foregroundStyle(valueColor)
+                .lineLimit(1)
+                .minimumScaleFactor(0.7)
+            Text(label)
+                .font(.caption2)
+                .foregroundStyle(.secondary)
+                .lineLimit(1)
+        }
+    }
+
+    private func todayWorkoutDescription(_ workouts: [WorkoutEntry]) -> String {
+        guard !workouts.isEmpty else { return "—" }
+        let types = Set(workouts.map(\.activityTypeRawValue))
+        guard types.count == 1, let type = types.first else { return "Mixed" }
+
+        switch type {
+        case 50: return "Strength"
+        case 52: return "Running"
+        case 13: return "Cycling"
+        default: return "Workout"
         }
     }
 
@@ -818,7 +1675,7 @@ struct OverviewView: View {
             }
         }
         .chartYScale(domain: weightYDomain)
-        .chartXScale(domain: chartVisibleStartDate()...Date())
+        .chartXScale(domain: chartDisplayXDomain)
         .chartYAxis {
             AxisMarks(position: .trailing) { value in
                 AxisGridLine()
@@ -837,21 +1694,26 @@ struct OverviewView: View {
             }
         }
         .chartXAxis(.hidden)
-        .chartXSelection(value: $selectedDate)
         .chartOverlay { proxy in
             GeometryReader { geometry in
-                if let selectedData = selectedDataPoint, let weight = selectedData.weight {
-                    selectedChartPopupOverlay(
-                        proxy: proxy,
-                        geometry: geometry,
-                        date: selectedData.date,
-                        value: weight,
-                        estimatedWidth: 76,
-                        estimatedHeight: 28,
-                        xOffset: 0,
-                        yOffset: -18
-                    ) {
-                        selectedValuePill(String(format: "%.1f lbs", weight))
+                ZStack {
+                    Color.clear
+                        .contentShape(Rectangle())
+                        .simultaneousGesture(chartInspectionGesture(proxy: proxy, geometry: geometry, kind: .weight))
+
+                    if let selectedData = selectedDataPoint, let weight = selectedData.weight {
+                        selectedChartPopupOverlay(
+                            proxy: proxy,
+                            geometry: geometry,
+                            date: selectedData.date,
+                            value: weight,
+                            estimatedWidth: 76,
+                            estimatedHeight: 28,
+                            xOffset: 0,
+                            yOffset: -18
+                        ) {
+                            selectedValuePill(String(format: "%.1f lbs", weight))
+                        }
                     }
                 }
             }
@@ -904,7 +1766,7 @@ struct OverviewView: View {
             }
         }
         .chartYScale(domain: 0...(Double(maxStepCount) * 1.15))
-        .chartXScale(domain: chartVisibleStartDate()...Date())
+        .chartXScale(domain: chartDisplayXDomain)
         .chartYAxis {
             AxisMarks(position: .trailing) { value in
                 AxisGridLine()
@@ -922,7 +1784,6 @@ struct OverviewView: View {
                 }
             }
         }
-        .chartXSelection(value: $selectedDate)
         .chartXAxis {
             if !hasSleepData && !hasWorkoutData {
                 dateAxisMarks
@@ -930,18 +1791,24 @@ struct OverviewView: View {
         }
         .chartOverlay { proxy in
             GeometryReader { geometry in
-                if let selectedData = selectedDataPoint, let steps = selectedData.steps {
-                    selectedChartPopupOverlay(
-                        proxy: proxy,
-                        geometry: geometry,
-                        date: selectedData.date,
-                        value: Double(steps),
-                        estimatedWidth: 104,
-                        estimatedHeight: 28,
-                        xOffset: 0,
-                        yOffset: -18
-                    ) {
-                        selectedValuePill("\(steps.formatted()) steps")
+                ZStack {
+                    Color.clear
+                        .contentShape(Rectangle())
+                        .simultaneousGesture(chartInspectionGesture(proxy: proxy, geometry: geometry, kind: .steps))
+
+                    if let selectedData = selectedDataPoint, let steps = selectedData.steps {
+                        selectedChartPopupOverlay(
+                            proxy: proxy,
+                            geometry: geometry,
+                            date: selectedData.date,
+                            value: Double(steps),
+                            estimatedWidth: 104,
+                            estimatedHeight: 28,
+                            xOffset: 0,
+                            yOffset: -18
+                        ) {
+                            selectedValuePill("\(steps.formatted()) steps")
+                        }
                     }
                 }
             }
@@ -951,9 +1818,9 @@ struct OverviewView: View {
 
     private func chartGoalIcon(systemName: String, accessibilityLabel: String) -> some View {
         Image(systemName: systemName)
-            .font(.caption2.weight(.semibold))
+            .font(.system(size: 9, weight: .semibold))
             .foregroundStyle(tintColor)
-            .frame(width: 14, height: 14)
+            .frame(width: 11, height: 11)
             .accessibilityLabel(accessibilityLabel)
             .offset(x: -8)
     }
@@ -962,18 +1829,39 @@ struct OverviewView: View {
 
     private var centeredWeightDisplay: some View {
         VStack(spacing: 4) {
-            Text(primaryStatDisplay.value)
-                .font(.system(size: 64, weight: .semibold, design: .rounded))
-                .foregroundStyle(primaryStatDisplay.value == "--" ? .secondary : .primary)
-                .contentTransition(.numericText())
-                .lineLimit(1)
+            if primaryStatDisplay.value == "--" {
+                Text(emptyPrimaryStatMessage)
+                    .font(.title2.weight(.semibold))
+                    .foregroundStyle(.secondary)
 
-            Text(primaryStatDisplay.label)
-                .font(.subheadline.weight(.semibold))
+                HStack(spacing: 4) {
+                    Text("Change your primary stat in")
+                    Button("Settings") {
+                        onOpenSettings()
+                    }
+                    .buttonStyle(.plain)
+                    .foregroundStyle(tintColor)
+                    .fontWeight(.semibold)
+                    .accessibilityHint("Opens settings")
+                }
+                .font(.subheadline)
                 .foregroundStyle(.secondary)
-                .lineLimit(1)
+            } else {
+                Text(primaryStatDisplay.value)
+                    .font(.system(size: 64, weight: .semibold, design: .rounded))
+                    .foregroundStyle(.primary)
+                    .contentTransition(.numericText())
+                    .lineLimit(1)
+
+                Text(primaryStatDisplay.label)
+                    .font(.subheadline.weight(.semibold))
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
+            }
         }
-        .frame(maxWidth: .infinity)
+        // Reserve the populated-stat height so the Charts section stays put
+        // when this switches between its empty and populated states.
+        .frame(maxWidth: .infinity, minHeight: 100)
         .padding(.top, 128)
         .padding(.bottom, 56)
     }
@@ -982,6 +1870,10 @@ struct OverviewView: View {
 
     private var statsFooter: some View {
         VStack(spacing: 20) {
+            Text("Overview")
+                .font(.title3.weight(.bold))
+                .frame(maxWidth: .infinity, alignment: .leading)
+
             // First Card: Change & Average
             HStack(spacing: 0) {
                 VStack(alignment: .leading, spacing: 4) {
@@ -1118,6 +2010,8 @@ struct OverviewView: View {
             }
 
             chart()
+                .padding(.vertical, chartPeriod == .today ? 8 : 0)
+                .frame(height: chartPeriod == .today ? height : nil)
         }
     }
 
@@ -1239,7 +2133,7 @@ struct OverviewView: View {
                 .lineStyle(StrokeStyle(lineWidth: 1.5, dash: [4, 4]))
             }
         }
-        .chartXScale(domain: chartVisibleStartDate()...Date())
+        .chartXScale(domain: chartDisplayXDomain)
         .chartYScale(domain: 0...(maxSleepHours * 1.2))
         .chartYAxis {
             AxisMarks(position: .trailing) { value in
@@ -1261,23 +2155,34 @@ struct OverviewView: View {
                 dateAxisMarks
             }
         }
-        .chartXSelection(value: $selectedDate)
         .chartOverlay { proxy in
             GeometryReader { geometry in
-                if let selectedData = selectedDataPoint,
-                   let point = sleepChartPoints.first(where: { Calendar.current.isDate($0.date, inSameDayAs: selectedData.date) }),
-                   point.totalHours > 0 {
-                    selectedChartPopupOverlay(
-                        proxy: proxy,
-                        geometry: geometry,
-                        date: selectedData.date,
-                        value: point.totalHours,
-                        estimatedWidth: 88,
-                        estimatedHeight: 96,
-                        xOffset: 0,
-                        yOffset: -12
-                    ) {
-                        sleepBreakdownCard(for: point)
+                ZStack {
+                    Color.clear
+                        .contentShape(Rectangle())
+                        .simultaneousGesture(chartInspectionGesture(proxy: proxy, geometry: geometry, kind: .sleep))
+
+                    if let selectedData = selectedDataPoint {
+                        let point = sleepChartPoints.first {
+                            Calendar.current.isDate($0.date, inSameDayAs: selectedData.date)
+                        }
+                        let sleepHours = point?.totalHours ?? 0
+                        selectedChartPopupOverlay(
+                            proxy: proxy,
+                            geometry: geometry,
+                            date: selectedData.date,
+                            value: sleepHours,
+                            estimatedWidth: sleepHours > 0 ? 250 : 88,
+                            estimatedHeight: 28,
+                            xOffset: 0,
+                            yOffset: -18
+                        ) {
+                            if let point, sleepHours > 0 {
+                                sleepBreakdownCard(for: point)
+                            } else {
+                                selectedValuePill("No sleep today")
+                            }
+                        }
                     }
                 }
             }
@@ -1382,7 +2287,7 @@ struct OverviewView: View {
                 }
             }
         }
-        .chartXScale(domain: chartVisibleStartDate()...Date())
+        .chartXScale(domain: chartDisplayXDomain)
         .chartYScale(domain: 0...(maxWorkoutHours * 1.2))
         .chartYAxis {
             AxisMarks(position: .trailing) { value in
@@ -1399,26 +2304,35 @@ struct OverviewView: View {
                 }
             }
         }
-        .chartXAxis {
-            dateAxisMarks
-        }
-        .chartXSelection(value: $selectedDate)
+        .chartXAxis(.hidden)
         .chartOverlay { proxy in
             GeometryReader { geometry in
-                if let selectedData = selectedDataPoint,
-                   let point = workoutChartPoints.first(where: { Calendar.current.isDate($0.date, inSameDayAs: selectedData.date) }),
-                   point.totalHours > 0 {
-                    selectedChartPopupOverlay(
-                        proxy: proxy,
-                        geometry: geometry,
-                        date: selectedData.date,
-                        value: point.totalHours,
-                        estimatedWidth: 200,
-                        estimatedHeight: 26,
-                        xOffset: 0,
-                        yOffset: -18
-                    ) {
-                        workoutBreakdownCard(for: point)
+                ZStack {
+                    Color.clear
+                        .contentShape(Rectangle())
+                        .simultaneousGesture(chartInspectionGesture(proxy: proxy, geometry: geometry, kind: .workouts))
+
+                    if let selectedData = selectedDataPoint {
+                        let point = workoutChartPoints.first {
+                            Calendar.current.isDate($0.date, inSameDayAs: selectedData.date)
+                        }
+                        let workoutHours = point?.totalHours ?? 0
+                        selectedChartPopupOverlay(
+                            proxy: proxy,
+                            geometry: geometry,
+                            date: selectedData.date,
+                            value: workoutHours,
+                            estimatedWidth: workoutHours > 0 ? 200 : 104,
+                            estimatedHeight: 26,
+                            xOffset: 0,
+                            yOffset: -18
+                        ) {
+                            if let point, workoutHours > 0 {
+                                workoutBreakdownCard(for: point)
+                            } else {
+                                selectedValuePill("No workouts today")
+                            }
+                        }
                     }
                 }
             }
@@ -1439,6 +2353,25 @@ struct OverviewView: View {
             goal: selectedGoal,
             targetWeight: activeTargetWeight
         )
+    }
+
+    private func reloadChartHealthData() {
+        let start = chartVisibleStartDate()
+        let activityDescriptor = FetchDescriptor<DailyActivitySummary>(
+            predicate: #Predicate { $0.date >= start },
+            sortBy: [SortDescriptor(\.date, order: .reverse)]
+        )
+        let sleepDescriptor = FetchDescriptor<SleepEntry>(
+            predicate: #Predicate { $0.endDate >= start },
+            sortBy: [SortDescriptor(\.endDate, order: .reverse)]
+        )
+        let workoutsDescriptor = FetchDescriptor<WorkoutEntry>(
+            predicate: #Predicate { $0.timestamp >= start },
+            sortBy: [SortDescriptor(\.timestamp, order: .reverse)]
+        )
+        dailyActivitySummaries = (try? modelContext.fetch(activityDescriptor)) ?? []
+        allSleepEntries = (try? modelContext.fetch(sleepDescriptor)) ?? []
+        allWorkouts = (try? modelContext.fetch(workoutsDescriptor)) ?? []
     }
 
     private func resetChartScrollPosition() {
@@ -1532,11 +2465,7 @@ struct OverviewView: View {
             .monospacedDigit()
             .padding(.horizontal, 8)
             .padding(.vertical, 5)
-            .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 10, style: .continuous))
-            .overlay {
-                RoundedRectangle(cornerRadius: 10, style: .continuous)
-                    .stroke(.white.opacity(0.5), lineWidth: 0.5)
-            }
+            .glassEffect(.regular, in: RoundedRectangle(cornerRadius: 10, style: .continuous))
             .shadow(color: .black.opacity(0.22), radius: 4, x: 0, y: 2)
             .fixedSize(horizontal: true, vertical: true)
     }
@@ -1548,11 +2477,7 @@ struct OverviewView: View {
             content()
         }
         .padding(7)
-        .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 10, style: .continuous))
-        .overlay {
-            RoundedRectangle(cornerRadius: 10, style: .continuous)
-                .stroke(.white.opacity(0.5), lineWidth: 0.5)
-        }
+        .glassEffect(.regular, in: RoundedRectangle(cornerRadius: 10, style: .continuous))
         .shadow(color: .black.opacity(0.22), radius: 4, x: 0, y: 2)
         .fixedSize(horizontal: true, vertical: true)
     }
@@ -1565,34 +2490,26 @@ struct OverviewView: View {
             (point.unspecifiedHours, "Sleep", Self.unspecifiedSleepColor)
         ]
 
-        return VStack(alignment: .leading, spacing: 5) {
-            ForEach(Array(items.filter { $0.value > 0 }.enumerated()), id: \.offset) { _, item in
-                HStack(spacing: 5) {
+        return selectedBreakdownCard {
+            HStack(spacing: 8) {
+                ForEach(Array(items.filter { $0.value > 0 }.enumerated()), id: \.offset) { _, item in
+                    HStack(spacing: 4) {
                     Circle()
                         .fill(item.color)
-                        .frame(width: 7, height: 7)
+                        .frame(width: 6, height: 6)
 
                     Text(item.label)
                         .font(.system(size: 9, weight: .semibold, design: .rounded))
                         .foregroundStyle(.primary)
 
-                    Spacer(minLength: 4)
-
                     Text(String(format: "%.1fh", item.value))
                         .font(.system(size: 9, weight: .bold, design: .rounded))
                         .foregroundStyle(.primary)
                         .monospacedDigit()
+                    }
                 }
             }
         }
-        .padding(7)
-        .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 10, style: .continuous))
-        .overlay {
-            RoundedRectangle(cornerRadius: 10, style: .continuous)
-                .stroke(.white.opacity(0.5), lineWidth: 0.5)
-        }
-        .shadow(color: .black.opacity(0.22), radius: 4, x: 0, y: 2)
-        .fixedSize(horizontal: true, vertical: true)
     }
 
     private func workoutBreakdownCard(for point: WorkoutChartPoint) -> some View {
@@ -1643,7 +2560,7 @@ struct OverviewView: View {
 }
 
 #Preview {
-    OverviewView()
+    OverviewView(chartSelection: .constant(nil), timelineFocusRequest: 0, onOpenSettings: {}, onOpenHistory: {}, onAddMoment: {})
         .modelContainer(for: [WeightEntry.self, WorkoutEntry.self, DailyActivitySummary.self, SleepEntry.self], inMemory: true)
         .environment(HealthKitManager())
         .environment(NotificationManager())

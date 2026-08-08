@@ -10,17 +10,20 @@ import Foundation
 struct MiniGoal: Identifiable, Codable, Equatable {
     var id: UUID
     var parentGoalRawValue: String
+    var parentBigGoalID: UUID?
     var name: String
     var targetWeight: Double
 
     init(
         id: UUID = UUID(),
         parentGoal: WeightGoal,
-        name: String = "Mini Goal",
+        parentBigGoalID: UUID? = nil,
+        name: String = "Small goal",
         targetWeight: Double
     ) {
         self.id = id
         self.parentGoalRawValue = parentGoal.rawValue
+        self.parentBigGoalID = parentBigGoalID
         self.name = name
         self.targetWeight = targetWeight
     }
@@ -32,6 +35,7 @@ struct MiniGoal: Identifiable, Codable, Equatable {
     private enum CodingKeys: String, CodingKey {
         case id
         case parentGoalRawValue
+        case parentBigGoalID
         case name
         case targetWeight
     }
@@ -40,6 +44,7 @@ struct MiniGoal: Identifiable, Codable, Equatable {
         let container = try decoder.container(keyedBy: CodingKeys.self)
         id = try container.decode(UUID.self, forKey: .id)
         parentGoalRawValue = try container.decodeIfPresent(String.self, forKey: .parentGoalRawValue) ?? ""
+        parentBigGoalID = try container.decodeIfPresent(UUID.self, forKey: .parentBigGoalID)
         name = try container.decode(String.self, forKey: .name)
         targetWeight = try container.decode(Double.self, forKey: .targetWeight)
     }
@@ -48,6 +53,7 @@ struct MiniGoal: Identifiable, Codable, Equatable {
         var container = encoder.container(keyedBy: CodingKeys.self)
         try container.encode(id, forKey: .id)
         try container.encode(parentGoalRawValue, forKey: .parentGoalRawValue)
+        try container.encodeIfPresent(parentBigGoalID, forKey: .parentBigGoalID)
         try container.encode(name, forKey: .name)
         try container.encode(targetWeight, forKey: .targetWeight)
     }

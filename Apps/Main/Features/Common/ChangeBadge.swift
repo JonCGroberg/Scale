@@ -7,9 +7,15 @@
 
 import SwiftUI
 
+struct ChartDaySelection: Equatable {
+    let date: Date
+    let value: String
+}
+
 struct ChangeBadge: View {
     let entries: [WeightEntry]
     let showsRange: Bool
+    let chartSelection: ChartDaySelection?
 
     @AppStorage("appTint") private var appTint = AppTint.defaultValue.rawValue
     @AppStorage("badgePeriodIndex") private var currentIndex: Int = 2
@@ -17,9 +23,10 @@ struct ChangeBadge: View {
     @AppStorage("cutTargetWeight") private var cutTargetWeight = 180.0
     @AppStorage("bulkTargetWeight") private var bulkTargetWeight = 180.0
 
-    init(entries: [WeightEntry], showsRange: Bool = false) {
+    init(entries: [WeightEntry], showsRange: Bool = false, chartSelection: ChartDaySelection? = nil) {
         self.entries = entries
         self.showsRange = showsRange
+        self.chartSelection = chartSelection
     }
 
     private var period: TimePeriod {
@@ -54,7 +61,7 @@ struct ChangeBadge: View {
     }
 
     private var hasEntries: Bool {
-        !entries.isEmpty
+        entries.contains(where: \.includesWeight)
     }
 
     /// "this week" / "today" — reads naturally after "... lbs ".
@@ -99,47 +106,40 @@ struct ChangeBadge: View {
         // expands inside this badge instead of replacing it with a second pill.
         badgeContent
             .frame(width: showsRange ? 244 : nil)
+            .padding(.vertical, showsRange ? 0 : 1)
             .padding(.bottom, showsRange ? 8 : 0)
-            .background(.black.opacity(0.18), in: RoundedRectangle(cornerRadius: 17, style: .continuous))
-            .glassEffect(.regular, in: RoundedRectangle(cornerRadius: 17, style: .continuous))
+            .glassEffect(
+                .regular.interactive(),
+                in: RoundedRectangle(cornerRadius: 17, style: .continuous)
+            )
         .animation(.spring(response: 0.36, dampingFraction: 0.86), value: showsRange)
         .animation(.snappy, value: goalFillFraction)
         .animation(.snappy, value: currentIndex)
         .sensoryFeedback(.selection, trigger: currentIndex)
     }
 
-    private var periodSwipeGesture: some Gesture {
-        DragGesture(minimumDistance: 20)
-            .onEnded { value in
-                let threshold: CGFloat = 30
-                if value.translation.width < -threshold {
-                    withAnimation(.snappy) {
-                        currentIndex = min(currentIndex + 1, TimePeriod.allCases.count - 1)
-                    }
-                } else if value.translation.width > threshold {
-                    withAnimation(.snappy) {
-                        currentIndex = max(currentIndex - 1, 0)
-                    }
-                }
-            }
-    }
-
     private var badgeContent: some View {
         VStack(spacing: 4) {
             summaryRow
-                .simultaneousGesture(periodSwipeGesture)
 
             if showsRange {
                 Divider()
 
-                Picker("Chart range", selection: $currentIndex) {
-                    ForEach(Array(TimePeriod.allCases.enumerated()), id: \.offset) { index, period in
-                        Text(period.rawValue).tag(index)
+                Picker("Time range", selection: Binding(
+                    get: { period },
+                    set: { newPeriod in
+                        guard let index = TimePeriod.allCases.firstIndex(of: newPeriod) else { return }
+                        currentIndex = index
+                    }
+                )) {
+                    ForEach(TimePeriod.allCases, id: \.self) { period in
+                        Text(period.rawValue).tag(period)
                     }
                 }
-                .labelsHidden()
                 .pickerStyle(.segmented)
-                .controlSize(.small)
+                .tint(tintColor)
+                .labelsHidden()
+                .accessibilityLabel("Time range")
                 .frame(width: 216)
                 .transition(.identity)
             }
@@ -148,22 +148,29 @@ struct ChangeBadge: View {
 
     private var summaryRow: some View {
         HStack(spacing: 4) {
-            HStack(spacing: 2) {
-                Image(systemName: "flame.fill")
-                    .font(.system(size: 11, weight: .semibold))
-                    .foregroundStyle(.orange)
+            if chartSelection == nil {
+                HStack(spacing: 2) {
+                    Image(systemName: "flame.fill")
+                        .font(.system(size: 11, weight: .semibold))
+                        .foregroundStyle(.orange)
 
-                Text("\(summary.streak)")
-                    .font(.caption)
-                    .fontWeight(.bold)
-                    .contentTransition(.numericText())
+                    Text("\(summary.streak)")
+                        .font(.caption)
+                        .fontWeight(.bold)
+                        .contentTransition(.numericText())
+                }
+
+                Circle()
+                    .fill(.secondary.opacity(0.4))
+                    .frame(width: 4, height: 4)
             }
 
-            Circle()
-                .fill(.secondary.opacity(0.4))
-                .frame(width: 4, height: 4)
-
-            if !hasEntries {
+            if let chartSelection {
+                Text("\(Text(chartSelection.date.formatted(.dateTime.month(.abbreviated).day())).foregroundStyle(.secondary)) \(Text("·").foregroundStyle(.secondary)) \(Text(chartSelection.value).foregroundStyle(tintColor).fontWeight(.bold))")
+                    .font(.caption)
+                    .fontWeight(.semibold)
+                    .contentTransition(.numericText())
+            } else if !hasEntries {
                 Text("No entries yet")
                     .font(.caption)
                     .fontWeight(.semibold)
@@ -189,13 +196,19 @@ struct ChangeBadge: View {
                         .contentTransition(.numericText())
                 }
             } else if let goalProgress {
-                let raw = GoalProgressFeedback.progressText(goalProgress)
-                let (body, lbsText) = splitOffLbs(raw)
-                Text("\(Text(body).fontWeight(.bold).foregroundStyle(.primary))\(Text(lbsText).foregroundStyle(tintColor).fontWeight(.bold))  \(inPeriodPhrase)")
-                    .font(.caption)
-                    .fontWeight(.semibold)
-                    .foregroundStyle(.secondary)
-                    .contentTransition(.numericText())
+                let arrow = selectedGoal == .gain ? "↑" : "↓"
+                let numerator = String(format: "%.1f", abs(goalProgress.completedChange))
+                let denominator = String(format: "%.1f", abs(goalProgress.totalChange))
+                HStack(spacing: 0) {
+                    Text("\(arrow) \(numerator)/\(denominator) lbs")
+                        .foregroundStyle(tintColor)
+                        .fontWeight(.bold)
+                    Text("  \(thisPeriodPhrase)")
+                        .foregroundStyle(.secondary)
+                }
+                .font(.caption)
+                .fontWeight(.semibold)
+                .contentTransition(.numericText())
             } else {
                 Text("-- lbs \(thisPeriodPhrase)")
                     .font(.caption)
@@ -251,5 +264,31 @@ struct ChangeBadge: View {
             }
         }
         .clipShape(Capsule(style: .continuous))
+    }
+}
+
+/// The overview chart's range selector, presented in the floating bottom toolbar.
+struct TimeRangePill: View {
+    @AppStorage("badgePeriodIndex") private var currentIndex: Int = 2
+    @AppStorage("appTint") private var appTint = AppTint.defaultValue.rawValue
+
+    private var tintColor: Color {
+        (AppTint(rawValue: appTint) ?? .defaultValue).color
+    }
+
+    var body: some View {
+        Picker("Time range", selection: $currentIndex) {
+            ForEach(Array(TimePeriod.allCases.enumerated()), id: \.offset) { index, period in
+                Text(period.rawValue).tag(index)
+            }
+        }
+        .pickerStyle(.segmented)
+        .tint(tintColor)
+        .labelsHidden()
+        .frame(width: 236)
+        .padding(5)
+        .glassEffect(.regular.interactive(), in: Capsule())
+        .accessibilityLabel("Time range")
+        .sensoryFeedback(.selection, trigger: currentIndex)
     }
 }

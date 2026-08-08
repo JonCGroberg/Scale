@@ -28,6 +28,9 @@ enum SleepSource: String, Codable {
 @Model
 final class WeightEntry {
     var weight: Double
+    /// `false` for a photo-only moment. Keeping the numeric field non-optional
+    /// makes this an additive, migration-safe schema change for existing stores.
+    var includesWeight: Bool = true
     var timestamp: Date
     var source: WeightSource
     var note: String?
@@ -67,6 +70,7 @@ final class WeightEntry {
 
     init(
         weight: Double,
+        includesWeight: Bool = true,
         timestamp: Date = Date(),
         source: WeightSource = .manual,
         note: String? = nil,
@@ -75,6 +79,7 @@ final class WeightEntry {
         photoData: Data? = nil
     ) {
         self.weight = weight
+        self.includesWeight = includesWeight
         self.timestamp = timestamp
         self.source = source
         self.note = note

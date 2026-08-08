@@ -35,11 +35,17 @@ struct RootView: View {
     @State private var celebrationQueue: [(message: Text, systemImage: String, type: CelebrationType)] = []
     @State private var isCelebrationRunning = false
     @State private var showSettings = false
+    @State private var chartSelection: ChartDaySelection?
+    @State private var overviewTimelineFocusRequest = 0
     @State private var tabDragOffset: CGFloat = 0
     @Namespace private var tabNamespace
 
     private var selectedTint: AppTint {
         AppTint(rawValue: appTint) ?? .defaultValue
+    }
+
+    private var weightEntries: [WeightEntry] {
+        entries.filter(\.includesWeight)
     }
 
     private var tabSelection: Binding<Int> {
@@ -93,10 +99,24 @@ struct RootView: View {
                             showLog: $showLog,
                             logDate: $logDate
                         )
-                        .transition(.asymmetric(insertion: .move(edge: .leading), removal: .move(edge: .trailing)))
+                        .transition(.asymmetric(insertion: .move(edge: .trailing), removal: .move(edge: .leading)))
                     } else if selectedTab == 3 {
-                        OverviewView()
-                            .transition(.asymmetric(insertion: .move(edge: .trailing), removal: .move(edge: .leading)))
+                        OverviewView(
+                            chartSelection: $chartSelection,
+                            timelineFocusRequest: overviewTimelineFocusRequest
+                        ) {
+                            showSettings = true
+                        } onOpenHistory: {
+                            withAnimation(.spring(response: 0.32, dampingFraction: 0.78)) {
+                                selectedTab = 1
+                            }
+                            Haptics.selection()
+                        } onAddMoment: {
+                            Haptics.impact()
+                            logDate = nil
+                            showLog = true
+                        }
+                            .transition(.asymmetric(insertion: .move(edge: .leading), removal: .move(edge: .trailing)))
                     }
                 }
                 .gesture(
@@ -106,16 +126,16 @@ struct RootView: View {
                             let vertical = value.translation.height
                             if abs(horizontal) > abs(vertical) && abs(horizontal) > 45 {
                                 if horizontal < 0 {
-                                    if selectedTab == 1 {
+                                    if selectedTab == 3 {
                                         Haptics.selection()
                                         withAnimation(.spring(response: 0.35, dampingFraction: 0.8)) {
-                                            selectedTab = 3
+                                            selectedTab = 1
                                         }
                                     }
-                                } else if selectedTab == 3 {
+                                } else if selectedTab == 1 {
                                     Haptics.selection()
                                     withAnimation(.spring(response: 0.35, dampingFraction: 0.8)) {
-                                        selectedTab = 1
+                                        selectedTab = 3
                                     }
                                 }
                             }
@@ -125,7 +145,9 @@ struct RootView: View {
                 .navigationBarTitleDisplayMode(.inline)
                 .toolbarBackground(.visible, for: .navigationBar)
                 .safeAreaInset(edge: .bottom) {
-                    Color.clear.frame(height: 76)
+                    if selectedTab == 3 {
+                        Color.clear.frame(height: 76)
+                    }
                 }
             }
 
@@ -133,9 +155,11 @@ struct RootView: View {
                 .allowsHitTesting(false)
 
             VStack(spacing: 0) {
-                topAccessoryRow
-                    .padding(.horizontal, 16)
-                    .padding(.top, 8)
+                if selectedTab == 1 || selectedTab == 3 {
+                    topAccessoryRow
+                        .padding(.horizontal, 16)
+                        .padding(.top, 4)
+                }
 
                 Spacer()
 
@@ -162,9 +186,9 @@ struct RootView: View {
                 historyScrollRequest: $historyScrollRequest,
                 historySelectedEntry: $historySelectedEntry,
                 logDate: logDate,
-                latestWeight: entries.first?.weight
+                latestWeight: weightEntries.first?.weight
             )
-            .presentationDetents([.height(430), .large])
+            .presentationDetents([.large])
         }
         .sheet(isPresented: $showSettings) {
             SettingsView()
@@ -229,12 +253,14 @@ struct RootView: View {
 
             Spacer(minLength: 0)
 
-            LinearGradient(
-                colors: [.clear, Color(uiColor: .systemBackground).opacity(0.88)],
-                startPoint: .top,
-                endPoint: .bottom
-            )
-            .frame(height: 180)
+            if selectedTab == 3 {
+                LinearGradient(
+                    colors: [.clear, Color(uiColor: .systemBackground).opacity(0.88)],
+                    startPoint: .top,
+                    endPoint: .bottom
+                )
+                .frame(height: 180)
+            }
         }
         .ignoresSafeArea()
     }
@@ -242,7 +268,9 @@ struct RootView: View {
     private var floatingBottomBar: some View {
         GlassEffectContainer(spacing: 40) {
             HStack(spacing: 10) {
-                tabPill
+                if selectedTab == 3 {
+                    TimeRangePill()
+                }
                 Spacer()
                 logButton
             }
@@ -255,7 +283,8 @@ struct RootView: View {
 
     private var topAccessoryRow: some View {
         ZStack(alignment: .top) {
-            ChangeBadge(entries: entries, showsRange: selectedTab == 3)
+            ChangeBadge(entries: entries, chartSelection: chartSelection)
+                .frame(width: 260, height: 44, alignment: .center)
                 .frame(width: 260, height: 94, alignment: .top)
                 .onTapGesture {
                     guard selectedTab != 3 else { return }
@@ -266,6 +295,38 @@ struct RootView: View {
                 }
 
             HStack {
+                if selectedTab == 1 {
+                    Button {
+                        Haptics.selection()
+                        withAnimation(.spring(response: 0.32, dampingFraction: 0.78)) {
+                            selectedTab = 3
+                        }
+                    } label: {
+                        Image(systemName: "chevron.backward")
+                            .font(.callout.weight(.semibold))
+                            .foregroundStyle(.secondary)
+                            .frame(width: 44, height: 44)
+                    }
+                    .buttonStyle(.plain)
+                    .glassEffect(.regular.interactive(), in: Circle())
+                    .accessibilityLabel("Back to Activity")
+                } else if selectedTab == 3 {
+                    Button {
+                        Haptics.selection()
+                        withAnimation(.spring(response: 0.32, dampingFraction: 0.78)) {
+                            selectedTab = 1
+                        }
+                    } label: {
+                        Image(systemName: "calendar")
+                            .font(.callout.weight(.semibold))
+                            .foregroundStyle(.secondary)
+                            .frame(width: 44, height: 44)
+                    }
+                    .buttonStyle(.plain)
+                    .glassEffect(.regular.interactive(), in: Circle())
+                    .accessibilityLabel("Open calendar")
+                }
+
                 Spacer()
 
                 Button {
@@ -326,8 +387,7 @@ struct RootView: View {
 
     private var tabPill: some View {
         HStack(spacing: 4) {
-            tabButton(title: "Journal", systemImage: "calendar", tabValue: 1)
-            tabButton(title: "Overview", systemImage: "chart.xyaxis.line", tabValue: 3)
+            tabButton(title: "Activity", systemImage: "heart.text.square.fill", tabValue: 3)
         }
         .padding(5)
         .glassEffect(.regular.interactive(), in: Capsule())
@@ -369,10 +429,10 @@ struct RootView: View {
                             DragGesture(minimumDistance: 5)
                                 .onChanged { value in
                                     let translation = value.translation.width
-                                    if selectedTab == 1 {
-                                        tabDragOffset = max(0, min(110, translation))
-                                    } else {
+                                    if selectedTab == 3 {
                                         tabDragOffset = min(0, max(-110, translation))
+                                    } else {
+                                        tabDragOffset = max(0, min(110, translation))
                                     }
                                 }
                                 .onEnded { value in
@@ -380,11 +440,11 @@ struct RootView: View {
                                     let threshold: CGFloat = 50
                                     
                                     withAnimation(.spring(response: 0.32, dampingFraction: 0.72)) {
-                                        if selectedTab == 1 && translation > threshold {
-                                            selectedTab = 3
-                                            Haptics.selection()
-                                        } else if selectedTab == 3 && translation < -threshold {
+                                        if selectedTab == 3 && translation < -threshold {
                                             selectedTab = 1
+                                            Haptics.selection()
+                                        } else if selectedTab == 1 && translation > threshold {
+                                            selectedTab = 3
                                             Haptics.selection()
                                         }
                                         tabDragOffset = 0
@@ -417,9 +477,9 @@ struct RootView: View {
 
     private var widgetSnapshotSignature: Int {
         var hasher = Hasher()
-        hasher.combine(entries.count)
-        hasher.combine(entries.first?.timestamp.timeIntervalSinceReferenceDate ?? 0)
-        hasher.combine(entries.first?.weight ?? 0)
+        hasher.combine(weightEntries.count)
+        hasher.combine(weightEntries.first?.timestamp.timeIntervalSinceReferenceDate ?? 0)
+        hasher.combine(weightEntries.first?.weight ?? 0)
         return hasher.finalize()
     }
 }

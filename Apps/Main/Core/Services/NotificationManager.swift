@@ -109,7 +109,7 @@ final class NotificationManager {
         let endOfDay = calendar.date(byAdding: .day, value: 1, to: startOfDay)!
 
         let predicate = #Predicate<WeightEntry> {
-            $0.timestamp >= startOfDay && $0.timestamp < endOfDay
+            $0.includesWeight && $0.timestamp >= startOfDay && $0.timestamp < endOfDay
         }
         var descriptor = FetchDescriptor<WeightEntry>(predicate: predicate)
         descriptor.fetchLimit = 1

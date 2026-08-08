@@ -14,6 +14,7 @@ import ImageIO
 import QuickLook
 
 struct JournalView: View {
+    @Environment(\.modelContext) private var modelContext
     private final class PhotoThumbnailCache {
         nonisolated static let shared = PhotoThumbnailCache()
 
@@ -185,10 +186,13 @@ struct JournalView: View {
         var id: Date { monthStart }
     }
 
-    @Query(sort: \WeightEntry.timestamp, order: .reverse) private var entries: [WeightEntry]
-    @Query(sort: \WorkoutEntry.timestamp, order: .reverse) private var workouts: [WorkoutEntry]
-    @Query(sort: \DailyActivitySummary.date, order: .reverse) private var dailyActivitySummaries: [DailyActivitySummary]
-    @Query(sort: \SleepEntry.endDate, order: .reverse) private var sleepEntries: [SleepEntry]
+    // The calendar only needs records for the months it has loaded. Keeping this
+    // as explicit state avoids materializing a user's entire Health history just
+    // to render the initial five months.
+    @State private var entries: [WeightEntry] = []
+    @State private var workouts: [WorkoutEntry] = []
+    @State private var dailyActivitySummaries: [DailyActivitySummary] = []
+    @State private var sleepEntries: [SleepEntry] = []
     @AppStorage("appTint") private var appTint = AppTint.defaultValue.rawValue
     @AppStorage("calendarDayStat") private var calendarDayStat = CalendarDayStat.defaultValue.rawValue
 
@@ -198,7 +202,7 @@ struct JournalView: View {
     @Binding var showLog: Bool
     @Binding var logDate: Date?
 
-    @State private var monthLoader = CalendarMonthLoader(batchSize: 5)
+    @State private var monthLoader = CalendarMonthLoader(batchSize: 2)
     @State private var monthRenderDataByMonth: [Date: MonthRenderData] = [:]
     @State private var entryIDsByDay: [Date: [PersistentIdentifier]] = [:]
     @State private var workoutIDsByDay: [Date: [PersistentIdentifier]] = [:]
@@ -361,17 +365,18 @@ struct JournalView: View {
                                         presentedSheet: $presentedSheet,
                                         thumbnailLoader: thumbnailLoader,
                                         pendingThumbnails: pendingThumbnails,
-                                        presentDayPreview: { date in
-                                            self.presentDayPreview(for: date)
-                                        }
+                                        presentDayPreview: { date in self.presentDayPreview(for: date) }
                                     )
                                     .id(section.id)
+                                    .onScrollVisibilityChange(threshold: 0.1) { isVisible in
+                                        guard isVisible, section.monthStart == monthLoader.earliest else { return }
+                                        loadEarlierMonthsIfNeeded(proxy: proxy)
+                                    }
                                 } else {
                                     VStack(alignment: .leading, spacing: 12) {
                                         Text(section.title)
                                             .font(.title3.weight(.semibold))
                                             .foregroundStyle(.primary)
-                                        
                                         ProgressView()
                                             .frame(maxWidth: .infinity)
                                             .frame(height: 200)
@@ -387,26 +392,16 @@ struct JournalView: View {
                     }
                     .defaultScrollAnchor(.bottom)
                     .safeAreaPadding(.top, 32)
-                    .onScrollGeometryChange(for: Bool.self) { geometry in
-                        Self.isNearTop(
-                            contentOffsetY: geometry.contentOffset.y,
-                            topInset: geometry.contentInsets.top
-                        )
-                    } action: { wasNearTop, isNearTop in
-                        guard !wasNearTop, isNearTop else { return }
-                        loadEarlierMonthsIfNeeded(proxy: proxy)
-                    }
                     .onAppear {
                         ensureInitialMonthsLoaded()
                         if !hasPerformedInitialScroll {
-                            // Synchronous rebuild only on very first appear so scroll target exists.
-                            if !isDataReady {
-                                rebuildMonthRenderData(forceAll: true)
-                                isDataReady = true
-                            }
-                            scrollToFocusedEntry(with: proxy, animated: false)
                             hasPerformedInitialScroll = true
                             Task { @MainActor in
+                                await Task.yield()
+                                reloadLoadedMonthData()
+                                rebuildMonthRenderData(forceAll: true)
+                                isDataReady = true
+                                scrollToFocusedEntry(with: proxy, animated: false)
                                 hasFinishedInitialMonthPositioning = true
                             }
                         }
@@ -419,6 +414,10 @@ struct JournalView: View {
                     }
                     .onChange(of: journalDataVersion) { _, _ in
                         rebuildMonthRenderData(forceAll: true)
+                    }
+                    .onChange(of: showLog) { _, isPresented in
+                        guard !isPresented else { return }
+                        reloadLoadedMonthData()
                     }
                 }
 
@@ -552,8 +551,8 @@ struct JournalView: View {
             dayPreview = DayPreview(
                 date: day,
                 photos: photos,
-                weightText: dayEntries.first.map { String(format: "%.1f lbs", $0.weight) },
-                entryCount: dayEntries.count,
+                weightText: dayEntries.first(where: \.includesWeight).map { String(format: "%.1f lbs", $0.weight) },
+                entryCount: dayEntries.filter(\.includesWeight).count,
                 workoutCount: dayWorkouts.count,
                 stepCount: activitySummary?.stepCount ?? 0,
                 activeEnergyBurnedKilocalories: activitySummary?.activeEnergyBurnedKilocalories ?? 0,
@@ -572,14 +571,14 @@ struct JournalView: View {
     }
 
     private func ensureInitialMonthsLoaded() {
-        monthLoader.loadInitialMonths(count: 5)
+        monthLoader.loadInitialMonths(count: 2)
     }
 
     private func ensureMonthLoaded(_ month: Date) {
         let currentMonth = monthStart(for: .now)
         let clampedMonth = min(month, currentMonth)
 
-        monthLoader.loadInitialMonths(count: 5)
+        monthLoader.loadInitialMonths(count: 2)
         var didChangeLoadedMonths = false
 
         while let earliest = monthLoader.earliest, clampedMonth < earliest {
@@ -587,6 +586,7 @@ struct JournalView: View {
         }
 
         if didChangeLoadedMonths {
+            reloadLoadedMonthData()
             rebuildMonthRenderData(forceAll: false)
         }
     }
@@ -596,6 +596,7 @@ struct JournalView: View {
         guard let earliest = monthLoader.earliest else { return }
         let anchorMonth = earliest
         if monthLoader.expandIfNeeded(for: earliest) {
+            reloadLoadedMonthData()
             rebuildMonthRenderData(forceAll: false)
             DispatchQueue.main.async {
                 withAnimation(.spring(response: 0.48, dampingFraction: 0.80)) {
@@ -603,6 +604,35 @@ struct JournalView: View {
                 }
             }
         }
+    }
+
+    private func reloadLoadedMonthData() {
+        guard let firstMonth = monthLoader.earliest,
+              let lastMonth = monthLoader.latest,
+              let end = calendar.date(byAdding: .month, value: 1, to: lastMonth)
+        else { return }
+
+        let entriesDescriptor = FetchDescriptor<WeightEntry>(
+            predicate: #Predicate { $0.timestamp >= firstMonth && $0.timestamp < end },
+            sortBy: [SortDescriptor(\.timestamp, order: .reverse)]
+        )
+        let workoutsDescriptor = FetchDescriptor<WorkoutEntry>(
+            predicate: #Predicate { $0.timestamp >= firstMonth && $0.timestamp < end },
+            sortBy: [SortDescriptor(\.timestamp, order: .reverse)]
+        )
+        let activityDescriptor = FetchDescriptor<DailyActivitySummary>(
+            predicate: #Predicate { $0.date >= firstMonth && $0.date < end },
+            sortBy: [SortDescriptor(\.date, order: .reverse)]
+        )
+        let sleepDescriptor = FetchDescriptor<SleepEntry>(
+            predicate: #Predicate { $0.endDate >= firstMonth && $0.endDate < end },
+            sortBy: [SortDescriptor(\.endDate, order: .reverse)]
+        )
+
+        entries = (try? modelContext.fetch(entriesDescriptor)) ?? []
+        workouts = (try? modelContext.fetch(workoutsDescriptor)) ?? []
+        dailyActivitySummaries = (try? modelContext.fetch(activityDescriptor)) ?? []
+        sleepEntries = (try? modelContext.fetch(sleepDescriptor)) ?? []
     }
 
     private func makeWeeks(for monthStart: Date) -> [[Date]] {
@@ -647,7 +677,7 @@ struct JournalView: View {
         }
 
         let today = calendar.startOfDay(for: Date())
-        let todayHasEntry = entriesByDay[today] != nil
+        let todayHasEntry = entriesByDay[today]?.contains(where: \.includesWeight) == true
 
         // Efficiently iterate only through the 28-31 days of this specific month
         // instead of filtering all historical database keys. This reduces the complexity
@@ -678,7 +708,7 @@ struct JournalView: View {
                 streakValue = streaksByDay[day] ?? 0
             }
             result[day] = DayData(
-                weightText: dayEntries.first.map { String(format: "%.1f", $0.weight) },
+                weightText: dayEntries.first(where: \.includesWeight).map { String(format: "%.1f", $0.weight) },
                 workoutCount: workoutsByDay[day]?.count ?? 0,
                 sleepCount: sleepByDay[day]?.count ?? 0,
                 stepText: stepText(for: dailyActivityByDay[day]?.stepCount ?? 0),
@@ -797,9 +827,8 @@ struct JournalView: View {
         }
         pendingThumbnails = newPending
 
-        for (key, pending) in newPending {
-            thumbnailLoader.loadIfNeeded(key: key, pending: pending)
-        }
+        // Thumbnails are intentionally started by the visible day cells' `onAppear`.
+        // Starting every request here defeats lazy loading when several months contain photos.
     }
 
     /// Returns the cache key for the first available photo across the day's entries, or nil if none.
@@ -1053,6 +1082,13 @@ struct QuickLookPreview: UIViewControllerRepresentable {
 }
 
 struct LogDayDetailSheet: View {
+    private struct DayData {
+        let entries: [WeightEntry]
+        let workouts: [WorkoutEntry]
+        let activitySummary: DailyActivitySummary?
+        let sleepEntries: [SleepEntry]
+    }
+
     private struct PhotoItem {
         let image: UIImage
         let entryID: PersistentIdentifier
@@ -1061,6 +1097,7 @@ struct LogDayDetailSheet: View {
 
     private struct EntryDraft {
         var weight: String
+        let includesWeight: Bool
         var timestamp: Date
         var note: String
         var photosData: [Data]
@@ -1069,10 +1106,6 @@ struct LogDayDetailSheet: View {
     @Environment(\.modelContext) private var modelContext
     @Environment(HealthKitManager.self) private var healthManager
     @Environment(NotificationManager.self) private var notificationManager
-    @Query(sort: \WeightEntry.timestamp, order: .reverse) private var allEntries: [WeightEntry]
-    @Query(sort: \WorkoutEntry.timestamp, order: .reverse) private var allWorkouts: [WorkoutEntry]
-    @Query(sort: \DailyActivitySummary.date, order: .reverse) private var allDailyActivitySummaries: [DailyActivitySummary]
-    @Query(sort: \SleepEntry.endDate, order: .reverse) private var allSleepEntries: [SleepEntry]
 
     let initialDate: Date
     let tintColor: Color
@@ -1088,6 +1121,8 @@ struct LogDayDetailSheet: View {
     @State private var selectedPhotoItems: [PhotosPickerItem] = []
     @State private var pendingDayPhotoEntryID: PersistentIdentifier?
     @State private var dragStartIndex: Int? = nil
+    @State private var dayData: DayData?
+    @State private var isLoadingDayData = true
 
     init(initialDate: Date, tintColor: Color, onDismiss: @escaping () -> Void) {
         self.initialDate = initialDate
@@ -1113,39 +1148,28 @@ struct LogDayDetailSheet: View {
     }
 
     private var entries: [WeightEntry] {
-        allEntries.filter { calendar.isDate($0.timestamp, inSameDayAs: currentDate) }
+        dayData?.entries ?? []
     }
 
     private var workouts: [WorkoutEntry] {
-        allWorkouts.filter { calendar.isDate($0.timestamp, inSameDayAs: currentDate) }
+        dayData?.workouts ?? []
     }
 
     private var sleepEntries: [SleepEntry] {
-        allSleepEntries
-            .filter { calendar.isDate($0.startDate, inSameDayAs: currentDate) }
-            .sorted(by: { $0.endDate > $1.endDate })
+        dayData?.sleepEntries ?? []
     }
 
     private var dailyActivitySummary: DailyActivitySummary? {
-        allDailyActivitySummaries.first { Calendar.current.isDate($0.date, inSameDayAs: currentDate) }
-    }
-
-    private var datesWithPhotos: [Date] {
-        let calendar = Calendar.current
-        let uniqueDays = Set(allEntries.filter { $0.hasPhotos }.map { calendar.startOfDay(for: $0.timestamp) })
-        return uniqueDays.sorted()
+        dayData?.activitySummary
     }
 
     private var previousDateWithPhotos: Date? {
-        let calendar = Calendar.current
-        let currentDay = calendar.startOfDay(for: currentDate)
-        return datesWithPhotos.last(where: { $0 < currentDay })
+        calendar.date(byAdding: .day, value: -1, to: currentDate)
     }
 
     private var nextDateWithPhotos: Date? {
-        let calendar = Calendar.current
-        let currentDay = calendar.startOfDay(for: currentDate)
-        return datesWithPhotos.first(where: { $0 > currentDay })
+        let tomorrow = calendar.date(byAdding: .day, value: 1, to: currentDate)
+        return (tomorrow ?? currentDate) <= Date() ? tomorrow : nil
     }
 
     private var photoItems: [PhotoItem] {
@@ -1187,16 +1211,16 @@ struct LogDayDetailSheet: View {
     }
 
     private var dayPhotoEntry: WeightEntry? {
-        return entries.first
+        entries.first(where: \.hasPhotos)
     }
 
     private var dayEditEntry: WeightEntry? {
-        return entries.first
+        entries.first
     }
 
     private var canSaveDraft: Bool {
         !entryDrafts.isEmpty && entryDrafts.values.allSatisfy { draft in
-            WeightCalculations.parseWeight(from: draft.weight) != nil
+            !draft.includesWeight || WeightCalculations.parseWeight(from: draft.weight) != nil
         }
     }
 
@@ -1213,32 +1237,37 @@ struct LogDayDetailSheet: View {
         NavigationStack {
             ScrollView(showsIndicators: false) {
                 VStack(alignment: .leading, spacing: 20) {
-                    if !entries.isEmpty || dailyActivitySummary != nil || !workouts.isEmpty || !sleepEntries.isEmpty {
-                        compactStatsRow(
-                            weight: entries.sorted(by: { $0.timestamp > $1.timestamp }).first,
-                            summary: dailyActivitySummary,
-                            workouts: workouts,
-                            sleepEntries: sleepEntries
-                        )
+                    if isLoadingDayData {
+                        ProgressView()
+                            .frame(maxWidth: .infinity, minHeight: 240)
+                    } else {
+                        if !entries.isEmpty || dailyActivitySummary != nil || !workouts.isEmpty || !sleepEntries.isEmpty {
+                            compactStatsRow(
+                                weight: entries.first(where: \.includesWeight),
+                                summary: dailyActivitySummary,
+                                workouts: workouts,
+                                sleepEntries: sleepEntries
+                            )
+                        }
+
+                        if isEditingEntry {
+                            logCarouselSection
+                        }
+
+                        if dayPhotoEntry != nil {
+                            photoHeroSection
+                        }
+
+                        sleepSection
+
+                        if entries.isEmpty && workouts.isEmpty && sleepEntries.isEmpty {
+                            Text("No entry logged for this day.")
+                                .foregroundStyle(.secondary)
+                                .padding(.horizontal, 20)
+                        }
+
+                        workoutSection
                     }
-
-                    if isEditingEntry {
-                        logCarouselSection
-                    }
-
-                    if dayPhotoEntry != nil {
-                        photoHeroSection
-                    }
-
-                    sleepSection
-
-                    if entries.isEmpty && workouts.isEmpty && sleepEntries.isEmpty {
-                        Text("No entry logged for this day.")
-                            .foregroundStyle(.secondary)
-                            .padding(.horizontal, 20)
-                    }
-
-                    workoutSection
                 }
                 .padding(.horizontal, 16)
                 .padding(.top, 12)
@@ -1354,11 +1383,14 @@ struct LogDayDetailSheet: View {
                     onEditCurrentPhoto: editPhotoSourceEntry,
                     canRemoveCurrentPhoto: isEditingEntry,
                     onRemoveCurrentPhoto: removeDisplayedPhoto,
-                    weightEntry: entries.sorted(by: { $0.timestamp > $1.timestamp }).first,
+                    weightEntry: entries.first(where: \.includesWeight),
                     activitySummary: dailyActivitySummary,
                     tintColor: tintColor,
                     date: currentDate
                 )
+            }
+            .task(id: currentDate) {
+                await loadDayData(for: currentDate)
             }
             .onChange(of: selectedPhotoItems) { _, newItems in
                 guard !newItems.isEmpty else { return }
@@ -1375,6 +1407,54 @@ struct LogDayDetailSheet: View {
                 }
             }
         }
+    }
+
+    @MainActor
+    private func loadDayData(for date: Date) async {
+        isLoadingDayData = true
+        dayData = nil
+        await Task.yield()
+        guard !Task.isCancelled else { return }
+
+        let dayStart = calendar.startOfDay(for: date)
+        guard let dayEnd = calendar.date(byAdding: .day, value: 1, to: dayStart) else {
+            isLoadingDayData = false
+            return
+        }
+
+        let entryDescriptor = FetchDescriptor<WeightEntry>(
+            predicate: #Predicate { entry in
+                entry.timestamp >= dayStart && entry.timestamp < dayEnd
+            },
+            sortBy: [SortDescriptor(\WeightEntry.timestamp, order: .reverse)]
+        )
+        let workoutDescriptor = FetchDescriptor<WorkoutEntry>(
+            predicate: #Predicate { workout in
+                workout.timestamp >= dayStart && workout.timestamp < dayEnd
+            },
+            sortBy: [SortDescriptor(\WorkoutEntry.timestamp, order: .reverse)]
+        )
+        let sleepDescriptor = FetchDescriptor<SleepEntry>(
+            predicate: #Predicate { sleep in
+                sleep.startDate >= dayStart && sleep.startDate < dayEnd
+            },
+            sortBy: [SortDescriptor(\SleepEntry.endDate, order: .reverse)]
+        )
+        let activityDescriptor = FetchDescriptor<DailyActivitySummary>(
+            predicate: #Predicate { summary in
+                summary.date >= dayStart && summary.date < dayEnd
+            }
+        )
+
+        let loadedData = DayData(
+            entries: (try? modelContext.fetch(entryDescriptor)) ?? [],
+            workouts: (try? modelContext.fetch(workoutDescriptor)) ?? [],
+            activitySummary: try? modelContext.fetch(activityDescriptor).first,
+            sleepEntries: (try? modelContext.fetch(sleepDescriptor)) ?? []
+        )
+        guard !Task.isCancelled, calendar.isDate(date, inSameDayAs: currentDate) else { return }
+        dayData = loadedData
+        isLoadingDayData = false
     }
 
     private var logCarouselSection: some View {
@@ -1525,6 +1605,7 @@ struct LogDayDetailSheet: View {
                 currentEntry.persistentModelID,
                 EntryDraft(
                     weight: String(format: "%.1f", currentEntry.weight),
+                    includesWeight: currentEntry.includesWeight,
                     timestamp: currentEntry.timestamp,
                     note: currentEntry.note ?? "",
                     photosData: currentEntry.photosData
@@ -1567,17 +1648,25 @@ struct LogDayDetailSheet: View {
 
         guard updates.count == entries.count else { return }
 
-        let healthUpdates = updates.compactMap { entry, draft -> (WeightEntry, UUID?, Double, Date)? in
-            guard let updatedWeight = WeightCalculations.parseWeight(from: draft.weight) else { return nil }
-            let trimmedNote = draft.note.trimmingCharacters(in: .whitespacesAndNewlines)
-            let previousUUID = entry.healthKitUUID
+        var healthUpdates: [(WeightEntry, UUID?, Double, Date)] = []
+        for (entry, draft) in updates {
+            if !draft.includesWeight && draft.photosData.isEmpty {
+                modelContext.delete(entry)
+                continue
+            }
 
-            entry.weight = updatedWeight
+            let trimmedNote = draft.note.trimmingCharacters(in: .whitespacesAndNewlines)
+
             entry.timestamp = draft.timestamp
             entry.note = trimmedNote.isEmpty ? nil : trimmedNote
             entry.photosData = draft.photosData
 
-            return (entry, previousUUID, updatedWeight, draft.timestamp)
+            if draft.includesWeight,
+               let updatedWeight = WeightCalculations.parseWeight(from: draft.weight) {
+                let previousUUID = entry.healthKitUUID
+                entry.weight = updatedWeight
+                healthUpdates.append((entry, previousUUID, updatedWeight, draft.timestamp))
+            }
         }
 
         cancelEditing()
@@ -1612,7 +1701,7 @@ struct LogDayDetailSheet: View {
         }
 
         let sampleUUID = entry.healthKitUUID
-        let remainingEntries = allEntries.filter { $0.persistentModelID != entryID }
+        let remainingEntries = allWeightEntries().filter { $0.persistentModelID != entryID }
 
         isPhotoCarouselPresented = false
         modelContext.delete(entry)
@@ -1624,6 +1713,7 @@ struct LogDayDetailSheet: View {
             try modelContext.save()
             WeightWidgetSnapshotStore.refresh(using: remainingEntries)
             notificationManager.rescheduleReminders()
+            Task { await loadDayData(for: currentDate) }
         } catch {
             return
         }
@@ -1636,8 +1726,15 @@ struct LogDayDetailSheet: View {
     }
 
     private func refreshDerivedState() {
-        WeightWidgetSnapshotStore.refresh(using: allEntries)
+        WeightWidgetSnapshotStore.refresh(using: allWeightEntries())
         notificationManager.rescheduleReminders()
+    }
+
+    private func allWeightEntries() -> [WeightEntry] {
+        let descriptor = FetchDescriptor<WeightEntry>(
+            sortBy: [SortDescriptor(\WeightEntry.timestamp, order: .reverse)]
+        )
+        return (try? modelContext.fetch(descriptor)) ?? []
     }
 
     private func editPhotoSourceEntry(at index: Int) {
@@ -1661,9 +1758,8 @@ struct LogDayDetailSheet: View {
     }
 
     private func photosCount(for date: Date) -> Int {
-        let calendar = Calendar.current
-        let dayEntries = allEntries.filter { calendar.isDate($0.timestamp, inSameDayAs: date) }
-        return dayEntries.flatMap(\.photosData).count
+        guard calendar.isDate(date, inSameDayAs: currentDate) else { return 0 }
+        return entries.flatMap(\.photosData).count
     }
 
     @ViewBuilder
@@ -1799,7 +1895,7 @@ struct LogDayDetailSheet: View {
     private func editRow(for entry: WeightEntry, index: Int) -> some View {
         VStack(alignment: .leading, spacing: 10) {
             HStack(spacing: 12) {
-                Text(entries.count > 1 ? "Weight \(index + 1)" : "Weight")
+                Text(entry.includesWeight ? (entries.filter(\.includesWeight).count > 1 ? "Weight \(index + 1)" : "Weight") : "Photo moment")
                     .font(.headline.weight(.semibold))
 
                 Spacer(minLength: 0)
@@ -1809,18 +1905,20 @@ struct LogDayDetailSheet: View {
                 }
             }
 
-            HStack(alignment: .firstTextBaseline, spacing: 4) {
-                TextField("Weight", text: draftWeightBinding(for: entry))
-                    .keyboardType(.decimalPad)
-                    .font(.system(size: 34, weight: .semibold, design: .rounded))
-                    .foregroundStyle(tintColor)
-                    .frame(minWidth: 50)
+            if entry.includesWeight {
+                HStack(alignment: .firstTextBaseline, spacing: 4) {
+                    TextField("Weight", text: draftWeightBinding(for: entry))
+                        .keyboardType(.decimalPad)
+                        .font(.system(size: 34, weight: .semibold, design: .rounded))
+                        .foregroundStyle(tintColor)
+                        .frame(minWidth: 50)
 
-                Text("lbs")
-                    .font(.subheadline.weight(.semibold))
-                    .foregroundStyle(.secondary)
+                    Text("lbs")
+                        .font(.subheadline.weight(.semibold))
+                        .foregroundStyle(.secondary)
+                }
+                .fixedSize(horizontal: true, vertical: false)
             }
-            .fixedSize(horizontal: true, vertical: false)
 
             HStack(spacing: 6) {
                 DatePicker(
@@ -2116,10 +2214,7 @@ struct LogDayDetailSheet: View {
 }
 
 struct LogPhotoCarouselView: View {
-    @Query(sort: \WeightEntry.timestamp, order: .reverse) private var allEntries: [WeightEntry]
-    @Query(sort: \DailyActivitySummary.date, order: .reverse) private var allDailyActivitySummaries: [DailyActivitySummary]
-    @Query(sort: \WorkoutEntry.timestamp, order: .reverse) private var allWorkouts: [WorkoutEntry]
-    @Query(sort: \SleepEntry.endDate, order: .reverse) private var allSleepEntries: [SleepEntry]
+    @Environment(\.modelContext) private var modelContext
 
     let initialPhotos: [UIImage]
     let initialIndex: Int
@@ -2137,6 +2232,13 @@ struct LogPhotoCarouselView: View {
     @State private var dateState: Date
     @State private var photosState: [UIImage]
     @State private var dragStartIndex: Int? = nil
+    // Photo dates are the only carousel-wide data. The per-day stats below are
+    // fetched on demand so opening the viewer does not materialize all Health data.
+    @State private var photoEntries: [WeightEntry] = []
+    @State private var loadedWeightEntry: WeightEntry?
+    @State private var loadedActivitySummary: DailyActivitySummary?
+    @State private var loadedWorkouts: [WorkoutEntry] = []
+    @State private var loadedSleepEntries: [SleepEntry] = []
 
     init(
         photos: [UIImage],
@@ -2182,7 +2284,7 @@ struct LogPhotoCarouselView: View {
 
     private var datesWithPhotos: [Date] {
         let calendar = Calendar.current
-        let uniqueDays = Set(allEntries.filter { $0.hasPhotos }.map { calendar.startOfDay(for: $0.timestamp) })
+        let uniqueDays = Set(photoEntries.filter { $0.hasPhotos }.map { calendar.startOfDay(for: $0.timestamp) })
         return uniqueDays.sorted()
     }
 
@@ -2198,14 +2300,39 @@ struct LogPhotoCarouselView: View {
         return datesWithPhotos.first(where: { $0 > currentDay })
     }
 
+    private var dayPreviewDates: [Date] {
+        [previousDateWithPhotos, dateState, nextDateWithPhotos].compactMap { $0 }
+    }
+
+    private func previewPhoto(for day: Date) -> UIImage? {
+        let calendar = Calendar.current
+        if calendar.isDate(day, inSameDayAs: date) {
+            return initialPhotos.first
+        }
+
+        return photoEntries
+            .filter { calendar.isDate($0.timestamp, inSameDayAs: day) }
+            .sorted(by: { $0.timestamp > $1.timestamp })
+            .flatMap(\.photosData)
+            .compactMap(UIImage.init(data:))
+            .first
+    }
+
+    private func previewDateLabel(for day: Date) -> String {
+        if Calendar.current.isDateInToday(day) {
+            return "Today"
+        }
+        return day.formatted(.dateTime.weekday(.abbreviated))
+    }
+
     private var currentWeightEntry: WeightEntry? {
         let calendar = Calendar.current
         let targetDay = calendar.startOfDay(for: dateState)
         let initialDay = calendar.startOfDay(for: date)
         if calendar.isDate(targetDay, inSameDayAs: initialDay) {
-            return weightEntry
+            return weightEntry?.includesWeight == true ? weightEntry : nil
         }
-        return allEntries.first { calendar.isDate($0.timestamp, inSameDayAs: targetDay) }
+        return loadedWeightEntry
     }
 
     private var currentActivitySummary: DailyActivitySummary? {
@@ -2215,19 +2342,15 @@ struct LogPhotoCarouselView: View {
         if calendar.isDate(targetDay, inSameDayAs: initialDay) {
             return activitySummary
         }
-        return allDailyActivitySummaries.first { calendar.isDate($0.date, inSameDayAs: targetDay) }
+        return loadedActivitySummary
     }
 
     private var currentWorkouts: [WorkoutEntry] {
-        let calendar = Calendar.current
-        let targetDay = calendar.startOfDay(for: dateState)
-        return allWorkouts.filter { calendar.isDate($0.timestamp, inSameDayAs: targetDay) }
+        return loadedWorkouts
     }
 
     private var currentSleepEntries: [SleepEntry] {
-        let calendar = Calendar.current
-        let targetDay = calendar.startOfDay(for: dateState)
-        return allSleepEntries.filter { calendar.isDate($0.startDate, inSameDayAs: targetDay) }
+        return loadedSleepEntries
     }
 
     private func sleepText(_ duration: TimeInterval) -> String {
@@ -2254,7 +2377,7 @@ struct LogPhotoCarouselView: View {
         if calendar.isDate(targetDay, inSameDayAs: initialDay) {
             photosState = initialPhotos
         } else {
-            let dayEntries = allEntries.filter { calendar.isDate($0.timestamp, inSameDayAs: targetDay) }
+            let dayEntries = photoEntries.filter { calendar.isDate($0.timestamp, inSameDayAs: targetDay) }
             photosState = dayEntries
                 .sorted(by: { $0.timestamp > $1.timestamp })
                 .flatMap(\.photosData)
@@ -2291,7 +2414,7 @@ struct LogPhotoCarouselView: View {
                     .tag(index)
             }
         }
-        .tabViewStyle(.page(indexDisplayMode: .always))
+        .tabViewStyle(.page(indexDisplayMode: .never))
         .id(dateState)
         .simultaneousGesture(
             DragGesture()
@@ -2376,13 +2499,170 @@ struct LogPhotoCarouselView: View {
                     .fontWeight(.semibold)
                 }
             }
+            .safeAreaInset(edge: .bottom, spacing: 0) {
+                if !photosState.isEmpty {
+                    VStack(spacing: 0) {
+                        if dayPreviewDates.count > 1 {
+                            dayPreviewStrip
+                                .padding(.bottom, 8)
+                        }
+
+                        carouselThumbnailStrip
+                            .background(.ultraThinMaterial)
+                    }
+                }
+            }
         }
         .onAppear {
             selectedIndex = min(max(initialIndex, 0), max(photosState.count - 1, 0))
         }
+        .task {
+            // Let the full-screen transition complete before the one unavoidable
+            // photo-index query runs. This is deliberately separate from daily stats.
+            await Task.yield()
+            guard !Task.isCancelled else { return }
+            let descriptor = FetchDescriptor<WeightEntry>(
+                sortBy: [SortDescriptor(\WeightEntry.timestamp, order: .reverse)]
+            )
+            photoEntries = (try? modelContext.fetch(descriptor)) ?? []
+        }
+        .task(id: dateState) {
+            await loadCurrentDayStats(for: dateState)
+        }
         .onChange(of: photosState.count) { _, count in
             selectedIndex = min(selectedIndex, max(count - 1, 0))
         }
+    }
+
+    private var carouselThumbnailStrip: some View {
+        ScrollViewReader { proxy in
+            ScrollView(.horizontal, showsIndicators: false) {
+                HStack(spacing: 8) {
+                    ForEach(Array(photosState.enumerated()), id: \.offset) { index, photo in
+                        Button {
+                            withAnimation(.snappy) {
+                                selectedIndex = index
+                            }
+                            Haptics.selection()
+                        } label: {
+                            Image(uiImage: photo)
+                                .resizable()
+                                .scaledToFill()
+                                .frame(width: 48, height: 58)
+                                .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
+                                .overlay {
+                                    RoundedRectangle(cornerRadius: 8, style: .continuous)
+                                        .stroke(
+                                            index == selectedIndex ? tintColor : Color.white.opacity(0.24),
+                                            lineWidth: index == selectedIndex ? 3 : 1
+                                        )
+                                }
+                                .opacity(index == selectedIndex ? 1 : 0.64)
+                        }
+                        .buttonStyle(.plain)
+                        .id(index)
+                        .accessibilityLabel("Photo \(index + 1) of \(photosState.count)")
+                    }
+                }
+                .padding(.horizontal, 16)
+            }
+            .scrollClipDisabled()
+            .frame(height: 74)
+            .onAppear {
+                proxy.scrollTo(selectedIndex, anchor: .center)
+            }
+            .onChange(of: selectedIndex) { _, index in
+                withAnimation(.snappy) {
+                    proxy.scrollTo(index, anchor: .center)
+                }
+            }
+        }
+    }
+
+    private var dayPreviewStrip: some View {
+        ScrollViewReader { proxy in
+            ScrollView(.horizontal, showsIndicators: false) {
+                HStack(spacing: 10) {
+                    ForEach(dayPreviewDates, id: \.self) { day in
+                        if let photo = previewPhoto(for: day) {
+                            Button {
+                                guard !Calendar.current.isDate(day, inSameDayAs: dateState) else { return }
+                                Haptics.selection()
+                                withAnimation(.snappy) {
+                                    navigateTo(newDate: day)
+                                }
+                            } label: {
+                                VStack(spacing: 4) {
+                                    Image(uiImage: photo)
+                                        .resizable()
+                                        .scaledToFill()
+                                        .frame(width: 64, height: 40)
+                                        .clipShape(RoundedRectangle(cornerRadius: 7, style: .continuous))
+
+                                    Text(previewDateLabel(for: day))
+                                        .font(.caption2.weight(.medium))
+                                        .foregroundStyle(.primary)
+                                }
+                                .padding(4)
+                                .overlay {
+                                    RoundedRectangle(cornerRadius: 10, style: .continuous)
+                                        .stroke(
+                                            Calendar.current.isDate(day, inSameDayAs: dateState) ? tintColor : Color.white.opacity(0.24),
+                                            lineWidth: Calendar.current.isDate(day, inSameDayAs: dateState) ? 2 : 1
+                                        )
+                                }
+                                .opacity(Calendar.current.isDate(day, inSameDayAs: dateState) ? 1 : 0.68)
+                            }
+                            .buttonStyle(.plain)
+                            .id(day)
+                            .accessibilityLabel("View photos from \(previewDateLabel(for: day))")
+                        }
+                    }
+                }
+                .padding(.horizontal, 16)
+                .padding(.vertical, 8)
+            }
+            .scrollClipDisabled()
+            .frame(height: 70)
+            .onAppear {
+                proxy.scrollTo(dateState, anchor: .center)
+            }
+            .onChange(of: dateState) { _, day in
+                withAnimation(.snappy) {
+                    proxy.scrollTo(day, anchor: .center)
+                }
+            }
+        }
+    }
+
+    @MainActor
+    private func loadCurrentDayStats(for date: Date) async {
+        await Task.yield()
+        guard !Task.isCancelled else { return }
+
+        let dayStart = Calendar.current.startOfDay(for: date)
+        guard let dayEnd = Calendar.current.date(byAdding: .day, value: 1, to: dayStart) else { return }
+
+        let weightDescriptor = FetchDescriptor<WeightEntry>(
+            predicate: #Predicate { $0.includesWeight && $0.timestamp >= dayStart && $0.timestamp < dayEnd },
+            sortBy: [SortDescriptor(\WeightEntry.timestamp, order: .reverse)]
+        )
+        let activityDescriptor = FetchDescriptor<DailyActivitySummary>(
+            predicate: #Predicate { $0.date >= dayStart && $0.date < dayEnd }
+        )
+        let workoutDescriptor = FetchDescriptor<WorkoutEntry>(
+            predicate: #Predicate { $0.timestamp >= dayStart && $0.timestamp < dayEnd },
+            sortBy: [SortDescriptor(\WorkoutEntry.timestamp, order: .reverse)]
+        )
+        let sleepDescriptor = FetchDescriptor<SleepEntry>(
+            predicate: #Predicate { $0.startDate >= dayStart && $0.startDate < dayEnd },
+            sortBy: [SortDescriptor(\SleepEntry.endDate, order: .reverse)]
+        )
+
+        loadedWeightEntry = try? modelContext.fetch(weightDescriptor).first
+        loadedActivitySummary = try? modelContext.fetch(activityDescriptor).first
+        loadedWorkouts = (try? modelContext.fetch(workoutDescriptor)) ?? []
+        loadedSleepEntries = (try? modelContext.fetch(sleepDescriptor)) ?? []
     }
 
     @ViewBuilder
@@ -2559,6 +2839,10 @@ struct ZoomableScrollView<Content: View>: UIViewRepresentable {
         scrollView.showsVerticalScrollIndicator = false
         scrollView.bouncesZoom = true
         scrollView.backgroundColor = .clear
+        scrollView.isMultipleTouchEnabled = true
+        scrollView.pinchGestureRecognizer?.isEnabled = true
+        scrollView.accessibilityLabel = "Photo viewer"
+        scrollView.accessibilityHint = "Pinch with two fingers to zoom."
 
         let hostedController = UIHostingController(rootView: content)
         hostedController.view.translatesAutoresizingMaskIntoConstraints = false
@@ -3030,15 +3314,9 @@ struct LogDayCreateSheet: View {
     @Environment(\.modelContext) private var modelContext
     @Environment(HealthKitManager.self) private var healthManager
     @Environment(NotificationManager.self) private var notificationManager
-    @Query(sort: \WeightEntry.timestamp, order: .reverse) private var allEntries: [WeightEntry]
-    @Query(sort: \DailyActivitySummary.date, order: .reverse) private var allDailyActivitySummaries: [DailyActivitySummary]
     @AppStorage("weightGoal") private var weightGoal = WeightGoal.defaultValue.rawValue
     @AppStorage("cutTargetWeight") private var cutTargetWeight = 180.0
     @AppStorage("bulkTargetWeight") private var bulkTargetWeight = 180.0
-
-    private var dailyActivitySummary: DailyActivitySummary? {
-        allDailyActivitySummaries.first { Calendar.current.isDate($0.date, inSameDayAs: date) }
-    }
 
     let date: Date
     let title: String
@@ -3053,6 +3331,9 @@ struct LogDayCreateSheet: View {
     @State private var photoData: [Data] = []
     @State private var selectedPhotoIndex = 0
     @State private var isPhotoCarouselPresented = false
+    @State private var allEntries: [WeightEntry] = []
+    @State private var dailyActivitySummary: DailyActivitySummary?
+    @State private var isLoadingRequiredData = true
 
     init(
         date: Date,
@@ -3108,6 +3389,9 @@ struct LogDayCreateSheet: View {
             .navigationBarTitleDisplayMode(.inline)
             .presentationDetents([.height(280), .medium])
             .liquidGlassSheetPresentation()
+            .task(id: date) {
+                await loadRequiredData()
+            }
             .onChange(of: selectedPhotoItems) { _, newItems in
                 guard !newItems.isEmpty else { return }
                 Task {
@@ -3136,7 +3420,7 @@ struct LogDayCreateSheet: View {
                         saveEntry()
                     }
                     .fontWeight(.semibold)
-                    .disabled(!canSave)
+                    .disabled(!canSave || isLoadingRequiredData)
                 }
             }
             .fullScreenCover(isPresented: $isPhotoCarouselPresented) {
@@ -3237,6 +3521,30 @@ struct LogDayCreateSheet: View {
             NotificationCenter.default.post(name: .didSetNewMaxStreak, object: streak)
         }
         dismissSheet()
+    }
+
+    @MainActor
+    private func loadRequiredData() async {
+        isLoadingRequiredData = true
+        // Rendering the sheet is more important than deriving streak feedback.
+        // Defer the history read until after its first frame.
+        await Task.yield()
+        guard !Task.isCancelled else { return }
+
+        let dayStart = Calendar.current.startOfDay(for: date)
+        guard let dayEnd = Calendar.current.date(byAdding: .day, value: 1, to: dayStart) else {
+            isLoadingRequiredData = false
+            return
+        }
+        let entriesDescriptor = FetchDescriptor<WeightEntry>(
+            sortBy: [SortDescriptor(\WeightEntry.timestamp, order: .reverse)]
+        )
+        let activityDescriptor = FetchDescriptor<DailyActivitySummary>(
+            predicate: #Predicate { $0.date >= dayStart && $0.date < dayEnd }
+        )
+        allEntries = ((try? modelContext.fetch(entriesDescriptor)) ?? []).filter(\.includesWeight)
+        dailyActivitySummary = try? modelContext.fetch(activityDescriptor).first
+        isLoadingRequiredData = false
     }
 
     private func dismissSheet() {
@@ -3360,6 +3668,8 @@ struct LogDayCreateSheet: View {
 }
 
 fileprivate struct MonthSectionView: View {
+    @Environment(\.colorScheme) private var colorScheme
+
     let monthStart: Date
     let title: String
     let renderData: JournalView.MonthRenderData
@@ -3515,19 +3825,19 @@ fileprivate struct MonthSectionView: View {
                     if streakDay >= 1 && !isStreakPotential {
                         ZStack {
                             Image(systemName: "flame.fill")
-                                .font(.system(size: 16))
-                                .foregroundStyle(.orange)
+                                .font(.system(size: 17))
+                                .foregroundStyle(colorScheme == .dark ? Color(red: 0.92, green: 0.46, blue: 0.08) : .orange)
                                 .shadow(color: .black.opacity(0.25), radius: 2, x: 0, y: 1)
 
                             Circle()
-                                .fill(.orange)
-                                .frame(width: 8, height: 8)
-                                .offset(y: 2)
+                                .fill(colorScheme == .dark ? Color(red: 0.92, green: 0.46, blue: 0.08) : .orange)
+                                .frame(width: 9, height: 9)
+                                .offset(y: 2.7)
 
                             Text("\(streakDay)")
-                                .font(.system(size: 7.5, weight: .black, design: .rounded))
+                                .font(.system(size: 8.5, weight: .black, design: .rounded))
                                 .foregroundStyle(.white)
-                                .offset(y: 2.2)
+                                .offset(y: 2.9)
                                 .minimumScaleFactor(0.5)
                                 .lineLimit(1)
                         }

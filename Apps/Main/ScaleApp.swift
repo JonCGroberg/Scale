@@ -36,11 +36,12 @@ struct ScaleApp: App {
 
     private let healthKitManager = HealthKitManager()
     private let notificationManager = NotificationManager()
-    @State private var selectedTab = 1
+    @State private var selectedTab = 3
     @State private var didInitializeTab = false
     @State private var showLog = false
 
     @AppStorage("autoSyncHealthKit") private var autoSyncHealthKit = false
+    @AppStorage("badgePeriodIndex") private var badgePeriodIndex = 0
     @AppStorage("hasCompletedOnboarding_v2") private var hasCompletedOnboarding = false
 
     private static let notificationDelegate = NotificationDelegate()
@@ -58,7 +59,8 @@ struct ScaleApp: App {
                     .environment(notificationManager)
                     .onAppear {
                         if !didInitializeTab {
-                            selectedTab = 1
+                            selectedTab = 3
+                            badgePeriodIndex = 0
                             didInitializeTab = true
                         }
                         
@@ -67,8 +69,12 @@ struct ScaleApp: App {
                         notificationManager.modelContext = sharedModelContainer.mainContext
                         notificationManager.rescheduleReminders()
 
-                        // Pre-populate mock data for demonstration/screenshots
-                        populateMockDataIfNeeded()
+                        // Mock data is opt-in for Debug screenshots only. Keeping this
+                        // behind an explicit launch argument prevents a fresh real user
+                        // install from being seeded or backfilled at startup.
+                        if Self.isMockDataSeedingEnabled {
+                            populateMockDataIfNeeded()
+                        }
 
                         // Automatically open the log sheet if the user hasn't
                         // recorded a weight entry today yet.
@@ -91,6 +97,14 @@ struct ScaleApp: App {
             }
         }
         .modelContainer(sharedModelContainer)
+    }
+
+    private static var isMockDataSeedingEnabled: Bool {
+        #if DEBUG
+        ProcessInfo.processInfo.arguments.contains("-seedMockData")
+        #else
+        false
+        #endif
     }
 
     private func populateMockDataIfNeeded() {

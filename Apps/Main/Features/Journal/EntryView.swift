@@ -8,16 +8,21 @@
 import SwiftUI
 import SwiftData
 import UIKit
+import Photos
 import PhotosUI
 
 struct EntryView: View {
+    private enum EntryMode: String, CaseIterable, Identifiable {
+        case moment = "Photo"
+        case weight = "Weight"
+
+        var id: Self { self }
+    }
+
     @Environment(\.modelContext) private var modelContext
     @Environment(\.dismiss) private var dismiss
     @Environment(HealthKitManager.self) private var healthManager
     @Environment(NotificationManager.self) private var notificationManager
-    @Query(sort: \DailyActivitySummary.date, order: .reverse) private var allDailyActivitySummaries: [DailyActivitySummary]
-    @Query(sort: \SleepEntry.startDate, order: .reverse) private var allSleepEntries: [SleepEntry]
-    @Query(sort: \WorkoutEntry.timestamp, order: .reverse) private var allWorkouts: [WorkoutEntry]
     @Binding var historyScrollRequest: Int
     @Binding var historySelectedEntry: WeightEntry?
     var logDate: Date?
@@ -33,30 +38,44 @@ struct EntryView: View {
         logDate ?? Date()
     }
 
-    private var dailyActivitySummary: DailyActivitySummary? {
-        let calendar = Calendar.current
-        let targetDay = calendar.startOfDay(for: effectiveDate)
-        return allDailyActivitySummaries.first { calendar.startOfDay(for: $0.date) == targetDay }
+    private struct DayStats {
+        var activitySummary: DailyActivitySummary?
+        var sleepDuration: TimeInterval?
+        var workoutCount = 0
     }
 
-    private var sleepDurationForDay: TimeInterval? {
-        let calendar = Calendar.current
-        let targetDay = calendar.startOfDay(for: effectiveDate)
-        let nextDay = calendar.date(byAdding: .day, value: 1, to: targetDay)!
-        let dayEntries = allSleepEntries.filter {
-            $0.startDate >= targetDay && $0.startDate < nextDay
-        }
-        guard !dayEntries.isEmpty else { return nil }
-        return dayEntries.reduce(0) { $0 + $1.duration }
+    private var statsDay: Date {
+        Calendar.current.startOfDay(for: effectiveDate)
     }
 
-    private var workoutCountForDay: Int {
+    @State private var dayStats = DayStats()
+
+    /// Fetch only the records displayed by this sheet. The task yields once so
+    /// sheet presentation can commit its initial frame before the fetch begins.
+    private func loadDayStats() {
         let calendar = Calendar.current
-        let targetDay = calendar.startOfDay(for: effectiveDate)
+        let targetDay = statsDay
         let nextDay = calendar.date(byAdding: .day, value: 1, to: targetDay)!
-        return allWorkouts.filter {
-            $0.timestamp >= targetDay && $0.timestamp < nextDay
-        }.count
+
+        let activityDescriptor = FetchDescriptor<DailyActivitySummary>(
+            predicate: #Predicate { $0.date >= targetDay && $0.date < nextDay }
+        )
+        let sleepDescriptor = FetchDescriptor<SleepEntry>(
+            predicate: #Predicate { $0.startDate >= targetDay && $0.startDate < nextDay }
+        )
+        let workoutDescriptor = FetchDescriptor<WorkoutEntry>(
+            predicate: #Predicate { $0.timestamp >= targetDay && $0.timestamp < nextDay }
+        )
+
+        let activitySummary = try? modelContext.fetch(activityDescriptor).first
+        let sleepEntries = (try? modelContext.fetch(sleepDescriptor)) ?? []
+        let workoutCount = (try? modelContext.fetchCount(workoutDescriptor)) ?? 0
+
+        dayStats = DayStats(
+            activitySummary: activitySummary,
+            sleepDuration: sleepEntries.isEmpty ? nil : sleepEntries.reduce(0) { $0 + $1.duration },
+            workoutCount: workoutCount
+        )
     }
 
     @State private var currentWeight: Double = 142.5
@@ -66,6 +85,7 @@ struct EntryView: View {
     @State private var pendingEntry: WeightEntry?
     @State private var selectedPhotoItems: [PhotosPickerItem] = []
     @State private var photoData: [Data] = []
+    @State private var entryMode: EntryMode = .moment
     @FocusState private var weightFieldFocused: Bool
 
     private let step = 0.1
@@ -111,20 +131,19 @@ struct EntryView: View {
                     .ignoresSafeArea()
 
                 VStack(spacing: 0) {
-                    dayStatsRow
-                        .padding(.horizontal, 46)
-                        .padding(.top, 8)
-
-                    Spacer()
-
-                    VStack(spacing: 16) {
-                        weightDisplay
+                    if entryMode == .moment {
+                        momentCapture
+                    } else {
+                        weightLogging
                     }
-                    .padding(.horizontal, 46)
-                    .padding(.vertical, 28)
-                    .frame(maxWidth: .infinity)
-                    .padding(.bottom, 28)
                 }
+                .contentShape(Rectangle())
+                .simultaneousGesture(
+                    DragGesture(minimumDistance: 24)
+                        .onEnded { value in
+                            switchEntryMode(for: value)
+                        }
+                )
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity)
             .toolbar {
@@ -138,7 +157,9 @@ struct EntryView: View {
                         }
                         .buttonStyle(.glass)
 
-                        addPhotosButton
+                        if entryMode == .moment {
+                            addPhotosButton
+                        }
                     }
                 }
 
@@ -153,6 +174,7 @@ struct EntryView: View {
                         Button("Save") {
                             saveEntry()
                         }
+                        .disabled(entryMode == .moment && photoData.isEmpty)
                     }
                 }
             }
@@ -161,13 +183,21 @@ struct EntryView: View {
                     currentWeight = latestWeight
                 }
             }
+            .task(id: statsDay) {
+                await Task.yield()
+                loadDayStats()
+            }
             .safeAreaInset(edge: .bottom) {
-                if isEditingWeight {
-                    weightEditControls
-                        .padding(.horizontal, 20)
-                        .padding(.bottom, 8)
-                        .transition(.move(edge: .bottom).combined(with: .opacity))
+                VStack(spacing: 10) {
+                    if isEditingWeight {
+                        weightEditControls
+                            .transition(.move(edge: .bottom).combined(with: .opacity))
+                    }
+
+                    entryModePicker
                 }
+                .padding(.horizontal, 20)
+                .padding(.bottom, 8)
             }
             .onChange(of: selectedPhotoItems) { _, newItems in
                 guard !newItems.isEmpty else { return }
@@ -186,6 +216,116 @@ struct EntryView: View {
 
     // MARK: - Weight Display
 
+    private var entryModePicker: some View {
+        Picker("Entry type", selection: $entryMode) {
+            ForEach(EntryMode.allCases) { mode in
+                Text(mode.rawValue).tag(mode)
+            }
+        }
+        .pickerStyle(.segmented)
+    }
+
+    private func switchEntryMode(for value: DragGesture.Value) {
+        let horizontal = value.translation.width
+        let vertical = value.translation.height
+        guard abs(horizontal) > abs(vertical), abs(horizontal) > 56 else { return }
+
+        let nextMode: EntryMode = horizontal < 0 ? .weight : .moment
+        guard nextMode != entryMode else { return }
+
+        withAnimation(.snappy) {
+            entryMode = nextMode
+        }
+        Haptics.selection()
+    }
+
+    private func saveToPhotoLibrary(_ image: UIImage) {
+        PHPhotoLibrary.requestAuthorization(for: .addOnly) { status in
+            guard status == .authorized || status == .limited else { return }
+
+            PHPhotoLibrary.shared().performChanges {
+                PHAssetChangeRequest.creationRequestForAsset(from: image)
+            }
+        }
+    }
+
+    private var weightLogging: some View {
+        VStack(spacing: 0) {
+            dayStatsRow
+                .padding(.horizontal, 46)
+                .padding(.top, 8)
+
+            Spacer()
+
+            VStack(spacing: 16) {
+                weightDisplay
+            }
+            .padding(.horizontal, 46)
+            .padding(.vertical, 28)
+            .frame(maxWidth: .infinity)
+            .padding(.bottom, 28)
+        }
+    }
+
+    @ViewBuilder
+    private var momentCapture: some View {
+        VStack(spacing: 14) {
+            momentContext
+
+            if UIImagePickerController.isSourceTypeAvailable(.camera) {
+                ProgressPhotoCameraView { image in
+                    guard let data = image?.jpegData(compressionQuality: 0.9) else { return }
+                    photoData.append(data)
+                    if let image {
+                        saveToPhotoLibrary(image)
+                    }
+                    saved = false
+                    Haptics.success()
+                }
+                .clipShape(RoundedRectangle(cornerRadius: 24, style: .continuous))
+                .padding(.horizontal, 16)
+                .padding(.top, 16)
+            } else {
+                ContentUnavailableView {
+                    Label("Camera unavailable", systemImage: "camera")
+                } description: {
+                    Text("Choose a photo from your library to add a moment.")
+                } actions: {
+                    addPhotosButton
+                }
+                .frame(maxHeight: .infinity)
+            }
+
+            if !photos.isEmpty {
+                entryPhotoSection
+                    .padding(.horizontal, 24)
+            } else {
+                Text("Take a progress photo, then save it as today’s moment.")
+                    .font(.footnote)
+                    .foregroundStyle(.secondary)
+                    .multilineTextAlignment(.center)
+                    .padding(.horizontal, 32)
+            }
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+    }
+
+    private var momentContext: some View {
+        HStack(alignment: .firstTextBaseline, spacing: 12) {
+            Image(systemName: "scalemass.fill")
+                .font(.footnote.weight(.semibold))
+                .foregroundStyle(.secondary)
+
+            Text("\(currentWeight.formatted(.number.precision(.fractionLength(1)))) lbs")
+                .font(.caption.weight(.semibold))
+                .foregroundStyle(.secondary)
+
+            dayStatsRow
+        }
+        .frame(maxWidth: .infinity)
+        .padding(.horizontal, 28)
+    }
+
     private var weightDisplay: some View {
         VStack(spacing: weightDisplaySpacing) {
             weightValue
@@ -201,10 +341,10 @@ struct EntryView: View {
 
     @ViewBuilder
     private var dayStatsRow: some View {
-        let summary = dailyActivitySummary
+        let summary = dayStats.activitySummary
         let stepsText = summary.map { $0.stepCount.formatted() } ?? "—"
         let calText = summary.map { "\(Int($0.activeEnergyBurnedKilocalories.rounded())) cal" } ?? "—"
-        let sleepHours = sleepDurationForDay.map { String(format: "%.1fh", $0 / 3600) } ?? "—"
+        let sleepHours = dayStats.sleepDuration.map { String(format: "%.1fh", $0 / 3600) } ?? "—"
 
         HStack(spacing: 12) {
             Label {
@@ -237,9 +377,9 @@ struct EntryView: View {
             }
             .foregroundStyle(.secondary)
 
-            if workoutCountForDay > 0 {
+            if dayStats.workoutCount > 0 {
                 Label {
-                    Text("\(workoutCountForDay)")
+                    Text("\(dayStats.workoutCount)")
                         .font(.caption.weight(.semibold))
                         .lineLimit(1)
                 } icon: {
@@ -396,6 +536,11 @@ struct EntryView: View {
     }
 
     private func saveEntry() {
+        if entryMode == .moment {
+            savePhotoOnlyMoment()
+            return
+        }
+
         let goal = WeightGoal(rawValue: weightGoal) ?? .defaultValue
         let isFirstEverLog = latestWeight == nil
         let reachedGoal = GoalProgressFeedback.didReachGoal(
@@ -418,15 +563,15 @@ struct EntryView: View {
         )
         entry.photosData = photoData
 
-        let preInsertDescriptor = FetchDescriptor<WeightEntry>(sortBy: [SortDescriptor(\.timestamp, order: .reverse)])
-        let preInsertEntries = (try? modelContext.fetch(preInsertDescriptor)) ?? []
-        let previousLongestStreak = WeightCalculations.longestStreak(from: preInsertEntries)
+        let existingEntriesDescriptor = FetchDescriptor<WeightEntry>(sortBy: [SortDescriptor(\.timestamp, order: .reverse)])
+        let existingEntries = (try? modelContext.fetch(existingEntriesDescriptor)) ?? []
+        let previousLongestStreak = WeightCalculations.longestStreak(from: existingEntries)
 
         modelContext.insert(entry)
 
-        // Fetch existing entries for streak + widget refresh after insert.
-        let descriptor = FetchDescriptor<WeightEntry>(sortBy: [SortDescriptor(\.timestamp, order: .reverse)])
-        let allEntries = (try? modelContext.fetch(descriptor)) ?? []
+        // Reuse the pre-insert history. The new entry is known locally, so a second
+        // whole-history fetch during the Save tap is unnecessary.
+        let allEntries = [entry] + existingEntries
 
         let streak = WeightCalculations.currentStreak(from: allEntries, includingToday: true)
         entry.streakCount = streak
@@ -475,6 +620,29 @@ struct EntryView: View {
         if isNewMaxStreak {
             NotificationCenter.default.post(name: .didSetNewMaxStreak, object: streak)
         }
+        close()
+    }
+
+    private func savePhotoOnlyMoment() {
+        guard !photoData.isEmpty else { return }
+
+        let entry = WeightEntry(
+            weight: 0,
+            includesWeight: false,
+            timestamp: logDate ?? Date()
+        )
+        entry.photosData = photoData
+        modelContext.insert(entry)
+
+        do {
+            try modelContext.save()
+        } catch {
+            modelContext.delete(entry)
+            return
+        }
+
+        resetDraftAfterSave()
+        Haptics.success()
         close()
     }
 
