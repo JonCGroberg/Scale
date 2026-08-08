@@ -12,6 +12,17 @@ import Foundation
 import UniformTypeIdentifiers
 import UIKit
 
+enum OverviewChartContentState: Equatable {
+    case loading
+    case empty
+    case charts
+
+    static func resolve(hasCompletedInitialLoad: Bool, visibleChartCount: Int) -> Self {
+        if visibleChartCount > 0 { return .charts }
+        return hasCompletedInitialLoad ? .empty : .loading
+    }
+}
+
 /// The set of chart cards shown on the Overview screen, in user-configurable order.
 private enum ChartKind: String, CaseIterable, Identifiable {
     case goal, weight, steps, sleep, workouts
@@ -107,7 +118,6 @@ struct OverviewView: View {
         let currentWeight: Double?
         let longestStreak: Int
         let chart: WeightCalculations.ChartSnapshot
-        let chartHistory: WeightCalculations.ChartSnapshot
         let weightChangeLbs: Double?
         let averageWeight: Double?
         let goalProgress: WeightCalculations.GoalProgress?
@@ -122,7 +132,6 @@ struct OverviewView: View {
             currentWeight: nil,
             longestStreak: 0,
             chart: .empty,
-            chartHistory: .empty,
             weightChangeLbs: nil,
             averageWeight: nil,
             goalProgress: nil,
@@ -138,7 +147,6 @@ struct OverviewView: View {
             currentWeight = entries.first(where: \.includesWeight)?.weight
             longestStreak = WeightCalculations.longestStreak(from: entries)
             chart = WeightCalculations.chartSnapshot(from: entries, over: period)
-            chartHistory = WeightCalculations.fullChartSnapshot(from: entries, using: period)
             weightChangeLbs = WeightCalculations.weightChangeLbs(from: entries, over: period)
             averageWeight = WeightCalculations.averageWeight(from: entries, over: period)
             goalProgress = targetWeight.flatMap {
@@ -253,7 +261,6 @@ struct OverviewView: View {
             currentWeight: Double?,
             longestStreak: Int,
             chart: WeightCalculations.ChartSnapshot,
-            chartHistory: WeightCalculations.ChartSnapshot,
             weightChangeLbs: Double?,
             averageWeight: Double?,
             goalProgress: WeightCalculations.GoalProgress?,
@@ -267,7 +274,6 @@ struct OverviewView: View {
             self.currentWeight = currentWeight
             self.longestStreak = longestStreak
             self.chart = chart
-            self.chartHistory = chartHistory
             self.weightChangeLbs = weightChangeLbs
             self.averageWeight = averageWeight
             self.goalProgress = goalProgress
@@ -295,8 +301,9 @@ struct OverviewView: View {
     }
     @AppStorage("overviewChartOrder") private var chartOrderRaw = ChartKind.allCases.map(\.rawValue).joined(separator: ",")
     @State private var snapshot: Snapshot = .empty
+    @State private var hasCompletedInitialChartLoad = false
+    @State private var isRefreshingChartData = true
     @State private var miniGoals: [MiniGoal] = []
-    @State private var chartScrollPosition = Date()
     @State private var selectedDate: Date? = nil
     @State private var selectedChartKind: ChartKind?
     @State private var isInspectingChart = false
@@ -645,21 +652,6 @@ struct OverviewView: View {
         return smoothed
     }
 
-    private var chartXDomain: ClosedRange<Date> {
-        let endDate = Date()
-        let visibleStartDate = chartVisibleStartDate(endingAt: endDate)
-        let firstEntryDate = snapshot.chartHistory.entries.first?.timestamp
-        let firstStepDate = stepChartPoints.first?.date
-        let firstDataDate = [firstEntryDate, firstStepDate].compactMap { $0 }.min() ?? visibleStartDate
-        let startDate = min(firstDataDate, visibleStartDate)
-
-        return startDate...endDate
-    }
-
-    private var chartXVisibleDomainLength: TimeInterval {
-        Date().timeIntervalSince(chartVisibleStartDate())
-    }
-
     /// A one-day range contains one aggregate value per chart. Center that value
     /// in the plot instead of anchoring it at midnight on the leading edge.
     private var chartDisplayXDomain: ClosedRange<Date> {
@@ -742,11 +734,6 @@ struct OverviewView: View {
         hasher.combine(entries.count)
         hasher.combine(entries.first?.timestamp.timeIntervalSinceReferenceDate ?? 0)
         hasher.combine(entries.first?.weight ?? 0)
-        hasher.combine(dailyActivitySummaries.count)
-        hasher.combine(dailyActivitySummaries.first?.date.timeIntervalSinceReferenceDate ?? 0)
-        hasher.combine(dailyActivitySummaries.first?.stepCount ?? 0)
-        hasher.combine(allSleepEntries.count)
-        hasher.combine(allWorkouts.count)
         return hasher.finalize()
     }
 
@@ -792,19 +779,22 @@ struct OverviewView: View {
         }
         .onAppear {
             updateMiniGoals()
-            resetChartScrollPosition()
             loadChartOrder()
+            updateSnapshot()
         }
         .task(id: badgePeriodIndex) {
-            await Task.yield()
-            reloadChartHealthData()
+            isRefreshingChartData = true
+            do {
+                try reloadChartHealthData()
+            } catch {
+                NSLog("Could not refresh Overview chart data: %@", String(describing: error))
+            }
             updateSnapshot()
+            hasCompletedInitialChartLoad = true
+            isRefreshingChartData = false
         }
         .onChange(of: dataVersion) { _, _ in
             updateSnapshot()
-        }
-        .onChange(of: badgePeriodIndex) { _, _ in
-            resetChartScrollPosition()
         }
         .onChange(of: weightGoal) { _, _ in
             updateMiniGoals()
@@ -1012,17 +1002,29 @@ struct OverviewView: View {
             HStack(alignment: .firstTextBaseline) {
                 Text("Health")
                     .font(.title3.weight(.bold))
+
+                if isRefreshingChartData {
+                    ProgressView()
+                        .controlSize(.small)
+                        .accessibilityLabel("Loading health charts")
+                }
             }
             .padding(.vertical, 16)
 
-            if visibleChartOrder.isEmpty {
+            switch OverviewChartContentState.resolve(
+                hasCompletedInitialLoad: hasCompletedInitialChartLoad,
+                visibleChartCount: visibleChartOrder.count
+            ) {
+            case .loading:
+                chartLoadingPlaceholder
+            case .empty:
                 ContentUnavailableView {
                     Label(chartEmptyStateTitle, systemImage: "chart.line.downtrend.xyaxis")
                 } description: {
                     Text(chartEmptyStateDescription)
                 }
                     .frame(maxWidth: .infinity, minHeight: 180)
-            } else {
+            case .charts:
                 VStack(alignment: .leading, spacing: 10) {
                     ForEach(visibleChartOrder) { kind in
                         chartCardView(for: kind)
@@ -1038,6 +1040,25 @@ struct OverviewView: View {
 
         }
         .padding(.vertical, 14)
+    }
+
+    private var chartLoadingPlaceholder: some View {
+        VStack(spacing: 10) {
+            ForEach([130.0, 80.0, 120.0], id: \.self) { height in
+                RoundedRectangle(cornerRadius: 22, style: .continuous)
+                    .fill(Color(.secondarySystemGroupedBackground))
+                    .frame(height: height)
+                    .overlay(alignment: .topLeading) {
+                        RoundedRectangle(cornerRadius: 4, style: .continuous)
+                            .fill(.secondary.opacity(0.18))
+                            .frame(width: 112, height: 18)
+                            .padding(18)
+                    }
+            }
+        }
+        .redacted(reason: .placeholder)
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel("Loading health charts")
     }
 
     @ViewBuilder
@@ -2355,27 +2376,36 @@ struct OverviewView: View {
         )
     }
 
-    private func reloadChartHealthData() {
+    private func reloadChartHealthData() throws {
+        let calendar = Calendar.current
         let start = chartVisibleStartDate()
-        let activityDescriptor = FetchDescriptor<DailyActivitySummary>(
-            predicate: #Predicate { $0.date >= start },
+        let end = calendar.date(
+            byAdding: .day,
+            value: 1,
+            to: calendar.startOfDay(for: Date())
+        ) ?? Date()
+        var activityDescriptor = FetchDescriptor<DailyActivitySummary>(
+            predicate: #Predicate { $0.date >= start && $0.date < end },
             sortBy: [SortDescriptor(\.date, order: .reverse)]
         )
+        if chartPeriod == .today {
+            activityDescriptor.fetchLimit = 1
+        }
         let sleepDescriptor = FetchDescriptor<SleepEntry>(
-            predicate: #Predicate { $0.endDate >= start },
+            predicate: #Predicate { $0.endDate >= start && $0.endDate < end },
             sortBy: [SortDescriptor(\.endDate, order: .reverse)]
         )
         let workoutsDescriptor = FetchDescriptor<WorkoutEntry>(
-            predicate: #Predicate { $0.timestamp >= start },
+            predicate: #Predicate { $0.timestamp >= start && $0.timestamp < end },
             sortBy: [SortDescriptor(\.timestamp, order: .reverse)]
         )
-        dailyActivitySummaries = (try? modelContext.fetch(activityDescriptor)) ?? []
-        allSleepEntries = (try? modelContext.fetch(sleepDescriptor)) ?? []
-        allWorkouts = (try? modelContext.fetch(workoutsDescriptor)) ?? []
-    }
 
-    private func resetChartScrollPosition() {
-        chartScrollPosition = chartVisibleStartDate()
+        let refreshedActivity = try modelContext.fetch(activityDescriptor)
+        let refreshedSleep = try modelContext.fetch(sleepDescriptor)
+        let refreshedWorkouts = try modelContext.fetch(workoutsDescriptor)
+        dailyActivitySummaries = refreshedActivity
+        allSleepEntries = refreshedSleep
+        allWorkouts = refreshedWorkouts
     }
 
     private func updateMiniGoals() {
