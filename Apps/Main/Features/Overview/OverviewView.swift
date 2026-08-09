@@ -96,11 +96,16 @@ private struct ChartCardDropDelegate: DropDelegate {
 
 struct OverviewView: View {
     @Environment(\.modelContext) private var modelContext
+    @Environment(HealthKitManager.self) private var healthManager
     @Binding var chartSelection: ChartDaySelection?
     let timelineFocusRequest: Int
     let onOpenSettings: () -> Void
     let onOpenHistory: () -> Void
+    let onAddWeight: () -> Void
     let onAddMoment: () -> Void
+    let showsCharts: Bool
+    let showsTimeline: Bool
+    let isMomentsTab: Bool
     private struct TimelinePhotoSelection: Identifiable {
         let id = UUID()
         let entry: WeightEntry
@@ -196,9 +201,11 @@ struct OverviewView: View {
                 var rem: Double = 0
                 var unspecified: Double = 0
                 for entry in entries {
+                    guard entry.stage.countsTowardSleepDuration else { continue }
                     let hours = entry.duration / 3600
                     total += hours
                     switch entry.stage {
+                    case .awake, .inBed: continue
                     case .deep: deep += hours
                     case .core: core += hours
                     case .rem: rem += hours
@@ -290,12 +297,16 @@ struct OverviewView: View {
     @State private var dailyActivitySummaries: [DailyActivitySummary] = []
     @State private var allSleepEntries: [SleepEntry] = []
     @State private var allWorkouts: [WorkoutEntry] = []
+    @State private var timelineActivitySummaries: [DailyActivitySummary] = []
+    @State private var timelineSleepEntries: [SleepEntry] = []
+    @State private var timelineWorkouts: [WorkoutEntry] = []
     @AppStorage("appTint") private var appTint = AppTint.defaultValue.rawValue
     @AppStorage("calendarDayStat") private var calendarDayStat = CalendarDayStat.defaultValue.rawValue
     @AppStorage("weightGoal") private var weightGoal = WeightGoal.defaultValue.rawValue
     @AppStorage("cutTargetWeight") private var cutTargetWeight = 180.0
     @AppStorage("bulkTargetWeight") private var bulkTargetWeight = 180.0
-    @AppStorage("badgePeriodIndex") private var badgePeriodIndex: Int = 2
+    @AppStorage("badgePeriodIndex") private var badgePeriodIndex: Int = 0
+    @AppStorage("overviewTimeframeLastOpenedDate") private var overviewTimeframeLastOpenedDate = ""
     private var chartPeriod: TimePeriod {
         TimePeriod.allCases[badgePeriodIndex]
     }
@@ -310,10 +321,10 @@ struct OverviewView: View {
     @State private var selectedGoalMilestoneID: UUID?
     @State private var chartOrder: [ChartKind] = ChartKind.allCases
     @State private var draggedKind: ChartKind? = nil
-    @State private var timelineFilter: TimelineContentFilter = .images
+    @AppStorage("journalTimelineFilter") private var timelineFilterRaw = TimelineContentFilter.images.rawValue
     @State private var timelinePhotoSelection: TimelinePhotoSelection?
 
-    private enum TimelineContentFilter: String, CaseIterable, Identifiable {
+    enum TimelineContentFilter: String, CaseIterable, Identifiable {
         case all
         case weight
         case steps
@@ -341,6 +352,17 @@ struct OverviewView: View {
     private var hasSleepData: Bool { snapshot.hasSleepData }
     private var hasWorkoutData: Bool { snapshot.hasWorkoutData }
 
+    private var timelineFilter: TimelineContentFilter {
+        TimelineContentFilter(rawValue: timelineFilterRaw) ?? .images
+    }
+
+    private var timelineFilterBinding: Binding<TimelineContentFilter> {
+        Binding(
+            get: { timelineFilter },
+            set: { timelineFilterRaw = $0.rawValue }
+        )
+    }
+
     private var weightEntries: [WeightEntry] {
         entries.filter(\.includesWeight)
     }
@@ -349,43 +371,60 @@ struct OverviewView: View {
         chartOrder.filter { kind in
             switch kind {
             case .goal: return false
-            case .weight: return !snapshot.chart.smoothedEntries.isEmpty
+            // Today should always provide a clear weight-logging entry point,
+            // even before the first weight has been recorded.
+            case .weight: return chartPeriod == .today || !snapshot.chart.smoothedEntries.isEmpty
             case .steps: return hasStepData
             case .sleep: return hasSleepData
-            case .workouts: return hasWorkoutData
+            // Keep the workout card in its saved position even before Health
+            // has imported a workout, rather than inserting it later and
+            // shifting the rest of the chart stack.
+            case .workouts: return true
             }
         }
     }
 
     private var timelineEntries: [WeightEntry] {
-        let cutoff = chartPeriod.startDate(endingAt: Date(), calendar: .current)
         return entries
-            .filter { $0.timestamp >= cutoff }
             .filter { entry in
                 switch timelineFilter {
                 case .all: return true
                 case .weight: return entry.includesWeight
                 case .steps:
-                    return dailyActivitySummaries.contains {
+                    return timelineActivitySummaries.contains {
                         Calendar.current.isDate($0.date, inSameDayAs: entry.timestamp) && $0.stepCount > 0
                     }
                 case .activeCalories:
-                    return dailyActivitySummaries.contains {
+                    return timelineActivitySummaries.contains {
                         Calendar.current.isDate($0.date, inSameDayAs: entry.timestamp)
                             && $0.activeEnergyBurnedKilocalories > 0
                     }
                 case .sleep:
-                    return allSleepEntries.contains {
+                    return timelineSleepEntries.contains {
                         Calendar.current.isDate($0.endDate, inSameDayAs: entry.timestamp)
                     }
                 case .workouts:
-                    return allWorkouts.contains {
+                    return timelineWorkouts.contains {
                         Calendar.current.isDate($0.timestamp, inSameDayAs: entry.timestamp)
                     }
                 case .images: return entry.hasPhotos
                 }
             }
             .sorted { $0.timestamp < $1.timestamp }
+    }
+
+    /// Moments is organized around dates rather than individual log records.
+    /// When a day has multiple entries, prefer the one that carries its photo.
+    private var timelineDayEntries: [WeightEntry] {
+        let calendar = Calendar.current
+        let byDay = Dictionary(grouping: timelineEntries) {
+            calendar.startOfDay(for: $0.timestamp)
+        }
+
+        return byDay.values.compactMap { entriesForDay in
+            entriesForDay.last(where: \.hasPhotos) ?? entriesForDay.last
+        }
+        .sorted { $0.timestamp > $1.timestamp }
     }
 
     private var selectedGoal: WeightGoal {
@@ -577,22 +616,22 @@ struct OverviewView: View {
             guard entry.includesWeight else { return ("Photo", "moment") }
             return (String(format: "%.1f", entry.weight), "lbs")
         case .steps:
-            let steps = dailyActivitySummaries.first {
+            let steps = timelineActivitySummaries.first {
                 calendar.isDate($0.date, inSameDayAs: date)
             }?.stepCount
             return (steps.map { $0.formatted() } ?? "—", "steps")
         case .activeCalories:
-            let calories = dailyActivitySummaries.first {
+            let calories = timelineActivitySummaries.first {
                 calendar.isDate($0.date, inSameDayAs: date)
             }?.activeEnergyBurnedKilocalories
             return (calories.map { Int($0.rounded()).formatted() } ?? "—", "cal")
         case .sleep:
-            let hours = allSleepEntries
+            let hours = timelineSleepEntries
                 .filter { calendar.isDate($0.endDate, inSameDayAs: date) }
                 .reduce(0) { $0 + $1.duration / 3_600 }
             return (hours > 0 ? String(format: "%.1f", hours) : "—", "hrs sleep")
         case .workouts:
-            let hours = allWorkouts
+            let hours = timelineWorkouts
                 .filter { calendar.isDate($0.timestamp, inSameDayAs: date) }
                 .reduce(0) { $0 + $1.duration / 3_600 }
             return (hours > 0 ? String(format: "%.1f", hours) : "—", "hrs workout")
@@ -741,13 +780,20 @@ struct OverviewView: View {
         ScrollViewReader { proxy in
             ScrollView {
                 VStack(spacing: 16) {
-                    chartCard
-                    timelineSection
+                    if showsCharts {
+                        chartCard
+                    }
+                    if showsTimeline {
+                        timelineSection
+                    }
                 }
-                .padding(.top, -16)
+                .padding(.top, 20)
                 .padding(.horizontal, 20)
             }
             .scrollDisabled(isInspectingChart)
+            .refreshable {
+                await syncHealthFromHome()
+            }
             .onChange(of: timelineFocusRequest) {
                 DispatchQueue.main.async {
                     proxy.scrollTo("overview-timeline", anchor: .top)
@@ -778,14 +824,17 @@ struct OverviewView: View {
             chartSelection = nil
         }
         .onAppear {
+            selectDailyDefaultTimeframeIfNeeded()
             updateMiniGoals()
             loadChartOrder()
             updateSnapshot()
+            try? reloadTimelineHealthData()
         }
         .task(id: badgePeriodIndex) {
             isRefreshingChartData = true
             do {
                 try reloadChartHealthData()
+                try reloadTimelineHealthData()
             } catch {
                 NSLog("Could not refresh Overview chart data: %@", String(describing: error))
             }
@@ -795,6 +844,7 @@ struct OverviewView: View {
         }
         .onChange(of: dataVersion) { _, _ in
             updateSnapshot()
+            try? reloadTimelineHealthData()
         }
         .onChange(of: weightGoal) { _, _ in
             updateMiniGoals()
@@ -813,48 +863,43 @@ struct OverviewView: View {
         }
     }
 
+    @MainActor
+    private func syncHealthFromHome() async {
+        // Pull-to-refresh belongs to Home only; Moments uses the same view type
+        // but intentionally has no refresh behavior.
+        guard showsCharts, healthManager.isAvailable else { return }
+
+        Haptics.impact(.medium)
+        isRefreshingChartData = true
+        await healthManager.importAllData(modelContext: modelContext)
+
+        do {
+            try reloadChartHealthData()
+            try reloadTimelineHealthData()
+        } catch {
+            NSLog("Could not refresh Health data after sync: %@", String(describing: error))
+        }
+        updateSnapshot()
+        isRefreshingChartData = false
+    }
+
     // MARK: - Chart
 
     // MARK: - Timeline
 
     private var timelineSection: some View {
         VStack(alignment: .leading, spacing: 12) {
-            HStack(alignment: .firstTextBaseline, spacing: 8) {
+            if !isMomentsTab {
                 Button("Moments", action: onOpenHistory)
                     .font(.title3.weight(.bold))
                     .foregroundStyle(.primary)
                     .buttonStyle(.plain)
                     .accessibilityHint("Opens full history")
-
-                Spacer(minLength: 8)
-
-                Button(action: openTimelinePhotoCarousel) {
-                    Label("View All", systemImage: "photo.on.rectangle.angled")
-                }
-                    .font(.subheadline.weight(.semibold))
-                    .foregroundStyle(tintColor)
-                    .buttonStyle(.plain)
-                    .accessibilityHint("Opens the photo carousel")
-
-                Menu {
-                    Picker("Show", selection: $timelineFilter) {
-                        ForEach(TimelineContentFilter.allCases) { filter in
-                            Text(filter.title).tag(filter)
-                        }
-                    }
-                } label: {
-                    Image(systemName: "line.3.horizontal.decrease")
-                        .font(.subheadline.weight(.semibold))
-                        .foregroundStyle(.secondary)
-                        .frame(width: 28, height: 28)
-                        .contentShape(Rectangle())
-                }
-                .accessibilityLabel("History filter")
             }
 
-            if timelineEntries.isEmpty {
+            if timelineDayEntries.isEmpty {
                 ContentUnavailableView {
-                    Label("No moments today yet", systemImage: "photo.on.rectangle.angled")
+                    Label(isMomentsTab ? "No moments yet" : "No moments today yet", systemImage: "photo.on.rectangle.angled")
                 } description: {
                     Text("Add a photo to a weight entry to capture this day.")
                 } actions: {
@@ -863,6 +908,12 @@ struct OverviewView: View {
                         .tint(tintColor)
                 }
                 .frame(maxWidth: .infinity, minHeight: 180)
+            } else if isMomentsTab {
+                LazyVStack(spacing: 10) {
+                    ForEach(timelineDayEntries, id: \.persistentModelID) { entry in
+                        momentDayRow(for: entry)
+                    }
+                }
             } else {
                 ScrollViewReader { proxy in
                     ScrollView(.horizontal, showsIndicators: false) {
@@ -881,10 +932,7 @@ struct OverviewView: View {
                     .onAppear {
                         scrollTimelineToLatest(using: proxy)
                     }
-                    .onChange(of: badgePeriodIndex) {
-                        scrollTimelineToLatest(using: proxy)
-                    }
-                    .onChange(of: timelineFilter) {
+                    .onChange(of: timelineFilterRaw) {
                         scrollTimelineToLatest(using: proxy)
                     }
                 }
@@ -961,6 +1009,76 @@ struct OverviewView: View {
         .accessibilityLabel("\(hasPhoto ? "Progress photo" : "Entry") from \(entry.timestamp.formatted(.dateTime.month(.wide).day()))")
     }
 
+    private func momentDayRow(for entry: WeightEntry) -> some View {
+        let stat = timelinePrimaryStat(for: entry.timestamp, entry: entry)
+        let photos = entry.photosData.compactMap(UIImage.init(data:))
+        let hasPhoto = !photos.isEmpty
+
+        return Button {
+            if hasPhoto {
+                openPhotoCarousel(for: entry)
+            }
+        } label: {
+            HStack(alignment: .top, spacing: 16) {
+                Group {
+                    if let photo = photos.first {
+                        Image(uiImage: photo)
+                            .resizable()
+                            .scaledToFill()
+                    } else {
+                        Image(systemName: "photo")
+                            .font(.title3)
+                            .foregroundStyle(tintColor.opacity(0.7))
+                            .frame(maxWidth: .infinity, maxHeight: .infinity)
+                            .background(Color(.tertiarySystemGroupedBackground))
+                    }
+                }
+                .frame(width: 96, height: 96)
+                .clipped()
+
+                VStack(alignment: .leading, spacing: 5) {
+                    Text(entry.timestamp.formatted(.dateTime.weekday(.wide).month(.abbreviated).day().year()))
+                        .font(.headline.weight(.semibold))
+                        .foregroundStyle(.primary)
+
+                    HStack(alignment: .firstTextBaseline, spacing: 4) {
+                        Text(stat.value)
+                            .font(.subheadline.weight(.bold).monospacedDigit())
+                        Text(stat.label)
+                            .font(.caption.weight(.medium))
+                            .foregroundStyle(.secondary)
+                    }
+
+                    if let note = entry.note?.trimmingCharacters(in: .whitespacesAndNewlines), !note.isEmpty {
+                        Text(note)
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                            .lineLimit(1)
+                    } else if hasPhoto {
+                        Text("\(photos.count) \(photos.count == 1 ? "photo" : "photos")")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
+                }
+                .padding(.vertical, 12)
+
+                Spacer(minLength: 8)
+
+                Image(systemName: "chevron.right")
+                    .font(.caption.weight(.bold))
+                    .foregroundStyle(.tertiary)
+                    .padding(.vertical, 12)
+                    .padding(.trailing, 16)
+            }
+            .background(Color(.secondarySystemGroupedBackground))
+            .clipShape(RoundedRectangle(cornerRadius: 20, style: .continuous))
+            .contentShape(RoundedRectangle(cornerRadius: 20, style: .continuous))
+        }
+        .buttonStyle(.plain)
+        .disabled(!hasPhoto)
+        .accessibilityLabel("Moment from \(entry.timestamp.formatted(.dateTime.month(.wide).day().year()))")
+    }
+
     private func openPhotoCarousel(for entry: WeightEntry) {
         let photos = entry.photosData.compactMap(UIImage.init(data:))
         guard !photos.isEmpty else { return }
@@ -999,17 +1117,15 @@ struct OverviewView: View {
 
     private var chartCard: some View {
         VStack(alignment: .leading, spacing: 0) {
-            HStack(alignment: .firstTextBaseline) {
-                Text("Health")
-                    .font(.title3.weight(.bold))
-
-                if isRefreshingChartData {
+            if isRefreshingChartData {
+                HStack {
+                    Spacer(minLength: 0)
                     ProgressView()
                         .controlSize(.small)
                         .accessibilityLabel("Loading health charts")
                 }
+                .padding(.bottom, 12)
             }
-            .padding(.vertical, 16)
 
             switch OverviewChartContentState.resolve(
                 hasCompletedInitialLoad: hasCompletedInitialChartLoad,
@@ -1039,7 +1155,7 @@ struct OverviewView: View {
             }
 
         }
-        .padding(.vertical, 14)
+        .padding(.bottom, 14)
     }
 
     private var chartLoadingPlaceholder: some View {
@@ -1249,7 +1365,11 @@ struct OverviewView: View {
             }
         } else {
             reorderableCard(for: kind) {
-                labeledChart(title: kind.title, systemImage: kind.systemImage, height: chartContentHeight(for: kind)) {
+                labeledChart(
+                    title: kind.title,
+                    systemImage: kind.systemImage,
+                    height: chartContentHeight(for: kind)
+                ) {
                     chartView(for: kind)
                 }
                 .padding(.horizontal, 16)
@@ -1280,13 +1400,9 @@ struct OverviewView: View {
                 .font(.subheadline)
                 .foregroundStyle(.secondary)
 
-            Button("Open Settings") {
-                onOpenSettings()
-            }
-            .font(.subheadline.weight(.semibold))
-            .buttonStyle(.plain)
-            .foregroundStyle(tintColor)
-            .accessibilityHint("Opens settings")
+            Text("Set one up from your profile.")
+                .font(.subheadline.weight(.semibold))
+                .foregroundStyle(tintColor)
         }
         .padding(14)
         .frame(maxWidth: .infinity, alignment: .leading)
@@ -1350,11 +1466,34 @@ struct OverviewView: View {
         kind.height
     }
 
+    @ViewBuilder
     private var dailyWeightSummary: some View {
         let todayWeight = weightEntries.first { Calendar.current.isDateInToday($0.timestamp) }?.weight
         let weekAverage = WeightCalculations.averageWeight(from: entries, over: .week)
 
-        return HStack(alignment: .center, spacing: 16) {
+        if todayWeight == nil {
+            VStack(spacing: 10) {
+                    Text("No weight logged")
+                        .font(.headline.weight(.bold))
+
+                    Text("Log your weight to track today’s progress.")
+                        .font(.subheadline)
+                        .foregroundStyle(.secondary)
+                        .multilineTextAlignment(.center)
+
+                    Button("Log a weight", systemImage: "scalemass") {
+                        onAddWeight()
+                    }
+                    .buttonStyle(.borderedProminent)
+                    .tint(tintColor)
+                    .padding(.vertical, 6)
+            }
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
+            .accessibilityElement(children: .combine)
+            .accessibilityLabel("No weight logged. Log a weight.")
+        } else {
+            Button(action: onAddWeight) {
+            HStack(alignment: .center, spacing: 16) {
             VStack(alignment: .leading, spacing: 2) {
                 Text(todayWeight.map { String(format: "%.1f", $0) } ?? "—")
                     .font(.system(size: 34, weight: .bold, design: .rounded))
@@ -1372,7 +1511,11 @@ struct OverviewView: View {
                 alignment: .trailing
             )
         }
-        .frame(maxWidth: .infinity, maxHeight: .infinity)
+            }
+            .buttonStyle(.plain)
+            .accessibilityLabel("Today’s weight")
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
+        }
     }
 
     private var dailyStepsSummary: some View {
@@ -1421,7 +1564,9 @@ struct OverviewView: View {
     }
 
     private func dailySleepBreakdownChart(for entries: [SleepEntry]) -> AnyView {
-        let totalDuration = entries.reduce(0) { $0 + $1.duration }
+        let totalDuration = entries
+            .filter { $0.stage.countsTowardSleepDuration }
+            .reduce(0) { $0 + $1.duration }
         let visibleStages = Set(entries.map(\.stage))
         guard let start = entries.first?.startDate,
               let end = entries.map(\.endDate).max()
@@ -1438,7 +1583,7 @@ struct OverviewView: View {
                 Spacer(minLength: 8)
 
                 HStack(spacing: 6) {
-                    ForEach([SleepStage.deep, .core, .rem, .unspecified], id: \.self) { stage in
+                    ForEach([SleepStage.deep, .core, .rem, .unspecified, .inBed], id: \.self) { stage in
                         if visibleStages.contains(stage) {
                             HStack(spacing: 4) {
                                 Circle()
@@ -1460,16 +1605,43 @@ struct OverviewView: View {
                     RoundedRectangle(cornerRadius: 6, style: .continuous)
                         .fill(tintColor.opacity(0.08))
 
-                    ForEach(entries, id: \.persistentModelID) { entry in
+                    ForEach(entries.filter { $0.stage == .inBed }, id: \.persistentModelID) { entry in
                         let offset = entry.startDate.timeIntervalSince(start) / span
                         let width = max(entry.duration / span * proxy.size.width, 4)
 
-                        RoundedRectangle(cornerRadius: 5, style: .continuous)
+                        Rectangle()
                             .fill(dailySleepStageColor(entry.stage))
                             .frame(width: width)
                             .offset(x: offset * proxy.size.width)
                     }
+
+                    ForEach(entries.filter { $0.stage != .inBed && $0.stage != .awake }, id: \.persistentModelID) { entry in
+                        let offset = entry.startDate.timeIntervalSince(start) / span
+                        let width = max(entry.duration / span * proxy.size.width, 4)
+
+                        // The enclosing track owns the rounded corners; stage joins stay square.
+                        Rectangle()
+                            .fill(dailySleepStageColor(entry.stage))
+                            .frame(width: width)
+                            .offset(x: offset * proxy.size.width)
+                    }
+
+                    // Awake samples describe gaps in the sleep session. Erase
+                    // the background/in-bed track there rather than assigning
+                    // them another stage color.
+                    ForEach(entries.filter { $0.stage == .awake }, id: \.persistentModelID) { entry in
+                        let offset = entry.startDate.timeIntervalSince(start) / span
+                        let width = max(entry.duration / span * proxy.size.width, 4)
+
+                        Rectangle()
+                            .fill(.black)
+                            .frame(width: width)
+                            .offset(x: offset * proxy.size.width)
+                            .blendMode(.destinationOut)
+                    }
                 }
+                .compositingGroup()
+                .clipShape(RoundedRectangle(cornerRadius: 6, style: .continuous))
             }
             .frame(height: 28)
 
@@ -1487,16 +1659,13 @@ struct OverviewView: View {
     }
 
     private func dailySleepStageColor(_ stage: SleepStage) -> Color {
-        switch stage {
-        case .deep: Self.deepSleepColor
-        case .core: Self.coreSleepColor
-        case .rem: Self.remSleepColor
-        case .unspecified: .gray
-        }
+        sleepStageColor(stage)
     }
 
     private func dailySleepStageName(_ stage: SleepStage) -> String {
         switch stage {
+        case .awake: ""
+        case .inBed: "In Bed"
         case .deep: "Deep"
         case .core: "Core"
         case .rem: "REM"
@@ -1855,16 +2024,7 @@ struct OverviewView: View {
                     .font(.title2.weight(.semibold))
                     .foregroundStyle(.secondary)
 
-                HStack(spacing: 4) {
-                    Text("Change your primary stat in")
-                    Button("Settings") {
-                        onOpenSettings()
-                    }
-                    .buttonStyle(.plain)
-                    .foregroundStyle(tintColor)
-                    .fontWeight(.semibold)
-                    .accessibilityHint("Opens settings")
-                }
+                Text("Choose a primary stat from your profile.")
                 .font(.subheadline)
                 .foregroundStyle(.secondary)
             } else {
@@ -2015,7 +2175,13 @@ struct OverviewView: View {
         }
     }
 
-    private func labeledChart<V: View>(title: String, systemImage: String, height: CGFloat, @ViewBuilder chart: () -> V) -> some View {
+    private func labeledChart<V: View>(
+        title: String,
+        systemImage: String,
+        height: CGFloat,
+        showsDragHandle: Bool = true,
+        @ViewBuilder chart: () -> V
+    ) -> some View {
         VStack(alignment: .leading, spacing: 2) {
             HStack {
                 Image(systemName: systemImage)
@@ -2027,7 +2193,9 @@ struct OverviewView: View {
 
                 Spacer()
 
-                dragHandle
+                if showsDragHandle {
+                    dragHandle
+                }
             }
 
             chart()
@@ -2083,10 +2251,22 @@ struct OverviewView: View {
         return smoothed
     }
 
-    private static let deepSleepColor = Color.indigo
-    private static let coreSleepColor = Color.blue
-    private static let remSleepColor = Color.purple
-    private static let unspecifiedSleepColor = Color.orange
+    /// Solid stage colors sampled from one shared, alternate-tint spectrum.
+    private func sleepStageColor(_ stage: SleepStage) -> Color {
+        guard stage != .awake else { return .clear }
+        let activeTint = AppTint(rawValue: appTint) ?? .defaultValue
+        let endpoints = AppTint.sleepGradientEndpoints(excluding: activeTint)
+        let position: CGFloat = switch stage {
+        case .inBed: 0.02
+        case .deep: 0.10
+        case .core: 0.32
+        case .rem: 0.58
+        case .unspecified: 0.80
+        case .awake: 0
+        }
+        let color = Color.interpolated(from: endpoints.0, to: endpoints.1, amount: position)
+        return stage == .inBed ? color.opacity(0.22) : color
+    }
 
     private var sleepChart: some View {
         let selectedDay = selectedDate.map { Calendar.current.startOfDay(for: $0) }
@@ -2101,28 +2281,28 @@ struct OverviewView: View {
                         yEnd: .value("Deep end", point.deepHours),
                         width: stepBarWidth
                     )
-                    .foregroundStyle(Self.deepSleepColor)
+                    .foregroundStyle(sleepStageColor(.deep))
                     BarMark(
                         x: .value("Date", point.date),
                         yStart: .value("Core start", point.deepHours),
                         yEnd: .value("Core end", point.deepHours + point.coreHours),
                         width: stepBarWidth
                     )
-                    .foregroundStyle(Self.coreSleepColor)
+                    .foregroundStyle(sleepStageColor(.core))
                     BarMark(
                         x: .value("Date", point.date),
                         yStart: .value("REM start", point.deepHours + point.coreHours),
                         yEnd: .value("REM end", point.deepHours + point.coreHours + point.remHours),
                         width: stepBarWidth
                     )
-                    .foregroundStyle(Self.remSleepColor)
+                    .foregroundStyle(sleepStageColor(.rem))
                     BarMark(
                         x: .value("Date", point.date),
                         yStart: .value("Unspecified start", point.deepHours + point.coreHours + point.remHours),
                         yEnd: .value("Unspecified end", point.totalHours),
                         width: stepBarWidth
                     )
-                    .foregroundStyle(Self.unspecifiedSleepColor)
+                    .foregroundStyle(sleepStageColor(.unspecified))
                 } else {
                     // Unselected days just show total hours in the app tint.
                     let dimmedOpacity: Double = selectedDate == nil ? 0.88 : 0.28
@@ -2408,6 +2588,40 @@ struct OverviewView: View {
         allWorkouts = refreshedWorkouts
     }
 
+    /// Moments always reflects the complete entry history, independent of the
+    /// chart range. Load its supporting activity data over that same span so
+    /// its filters and card stats stay stable as the chart range changes.
+    private func reloadTimelineHealthData() throws {
+        guard let oldestEntryDate = entries.map(\.timestamp).min() else {
+            timelineActivitySummaries = []
+            timelineSleepEntries = []
+            timelineWorkouts = []
+            return
+        }
+
+        let calendar = Calendar.current
+        let start = calendar.startOfDay(for: oldestEntryDate)
+        let end = calendar.date(
+            byAdding: .day,
+            value: 1,
+            to: calendar.startOfDay(for: Date())
+        ) ?? Date()
+
+        let activityDescriptor = FetchDescriptor<DailyActivitySummary>(
+            predicate: #Predicate { $0.date >= start && $0.date < end }
+        )
+        let sleepDescriptor = FetchDescriptor<SleepEntry>(
+            predicate: #Predicate { $0.endDate >= start && $0.endDate < end }
+        )
+        let workoutsDescriptor = FetchDescriptor<WorkoutEntry>(
+            predicate: #Predicate { $0.timestamp >= start && $0.timestamp < end }
+        )
+
+        timelineActivitySummaries = try modelContext.fetch(activityDescriptor)
+        timelineSleepEntries = try modelContext.fetch(sleepDescriptor)
+        timelineWorkouts = try modelContext.fetch(workoutsDescriptor)
+    }
+
     private func updateMiniGoals() {
         miniGoals = MiniGoalStore.load(for: selectedGoal)
     }
@@ -2418,6 +2632,24 @@ struct OverviewView: View {
         chartOrder = saved.contains(.goal)
             ? saved + missing
             : [.goal] + saved + missing.filter { $0 != .goal }
+    }
+
+    /// Starts each calendar day on the one-day range, while preserving a
+    /// person's last selection for every later visit to Overview that day.
+    private func selectDailyDefaultTimeframeIfNeeded() {
+        let calendar = Calendar.current
+        let today = calendar.startOfDay(for: Date())
+        let formatter = DateFormatter()
+        formatter.calendar = calendar
+        formatter.locale = Locale(identifier: "en_US_POSIX")
+        formatter.timeZone = calendar.timeZone
+        formatter.dateFormat = "yyyy-MM-dd"
+
+        let todayKey = formatter.string(from: today)
+        guard overviewTimeframeLastOpenedDate != todayKey else { return }
+
+        badgePeriodIndex = TimePeriod.allCases.firstIndex(of: .today) ?? 0
+        overviewTimeframeLastOpenedDate = todayKey
     }
 
     private func persistChartOrder() {
@@ -2514,10 +2746,10 @@ struct OverviewView: View {
 
     private func sleepBreakdownCard(for point: SleepChartPoint) -> some View {
         let items: [(value: Double, label: String, color: Color)] = [
-            (point.deepHours, "Deep", Self.deepSleepColor),
-            (point.coreHours, "Core", Self.coreSleepColor),
-            (point.remHours, "REM", Self.remSleepColor),
-            (point.unspecifiedHours, "Sleep", Self.unspecifiedSleepColor)
+            (point.deepHours, "Deep", sleepStageColor(.deep)),
+            (point.coreHours, "Core", sleepStageColor(.core)),
+            (point.remHours, "REM", sleepStageColor(.rem)),
+            (point.unspecifiedHours, "Sleep", sleepStageColor(.unspecified))
         ]
 
         return selectedBreakdownCard {
@@ -2590,7 +2822,17 @@ struct OverviewView: View {
 }
 
 #Preview {
-    OverviewView(chartSelection: .constant(nil), timelineFocusRequest: 0, onOpenSettings: {}, onOpenHistory: {}, onAddMoment: {})
+    OverviewView(
+        chartSelection: .constant(nil),
+        timelineFocusRequest: 0,
+        onOpenSettings: {},
+        onOpenHistory: {},
+        onAddWeight: {},
+        onAddMoment: {},
+        showsCharts: true,
+        showsTimeline: true,
+        isMomentsTab: false
+    )
         .modelContainer(for: [WeightEntry.self, WorkoutEntry.self, DailyActivitySummary.self, SleepEntry.self], inMemory: true)
         .environment(HealthKitManager())
         .environment(NotificationManager())

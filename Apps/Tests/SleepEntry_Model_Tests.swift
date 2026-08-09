@@ -48,10 +48,19 @@ struct SleepEntryModelTests {
     @Test func sleepEntryAllStages() {
         let start = Date()
         let end = start.addingTimeInterval(28800)
-        for stage in [SleepStage.core, SleepStage.deep, SleepStage.rem, SleepStage.unspecified] {
+        for stage in [SleepStage.awake, .inBed, .core, .deep, .rem, .unspecified] {
             let entry = SleepEntry(startDate: start, endDate: end, duration: 28800, stage: stage)
             #expect(entry.stage == stage)
         }
+    }
+
+    @Test func onlyAsleepStagesCountTowardSleepDuration() {
+        #expect(SleepStage.awake.countsTowardSleepDuration == false)
+        #expect(SleepStage.inBed.countsTowardSleepDuration == false)
+        #expect(SleepStage.core.countsTowardSleepDuration)
+        #expect(SleepStage.deep.countsTowardSleepDuration)
+        #expect(SleepStage.rem.countsTowardSleepDuration)
+        #expect(SleepStage.unspecified.countsTowardSleepDuration)
     }
 
     @Test func sleepEntryNilUUID() {

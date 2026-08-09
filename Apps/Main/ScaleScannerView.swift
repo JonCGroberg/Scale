@@ -253,6 +253,7 @@ private struct CameraPreviewRepresentable: UIViewControllerRepresentable {
 final class CameraPreviewController: UIViewController, AVCaptureVideoDataOutputSampleBufferDelegate {
     private let captureSession = AVCaptureSession()
     private let videoOutput = AVCaptureVideoDataOutput()
+    private let sessionQueue = DispatchQueue(label: "com.scale.scanner.session", qos: .userInitiated)
     private let processingQueue = DispatchQueue(label: "com.scale.scanner", qos: .userInitiated)
     private let onFrameCaptured: (CMSampleBuffer) -> Void
     private var previewLayer: AVCaptureVideoPreviewLayer?
@@ -280,39 +281,42 @@ final class CameraPreviewController: UIViewController, AVCaptureVideoDataOutputS
     }
 
     private func setupCamera() {
-        captureSession.sessionPreset = .high
-
-        guard let camera = AVCaptureDevice.default(.builtInWideAngleCamera, for: .video, position: .back),
-              let input = try? AVCaptureDeviceInput(device: camera) else { return }
-
-        if captureSession.canAddInput(input) {
-            captureSession.addInput(input)
-        }
-
-        videoOutput.setSampleBufferDelegate(self, queue: processingQueue)
-        videoOutput.alwaysDiscardsLateVideoFrames = true
-
-        if captureSession.canAddOutput(videoOutput) {
-            captureSession.addOutput(videoOutput)
-        }
-
-        // Enable auto-focus for close-up scale reading
-        if camera.isFocusModeSupported(.continuousAutoFocus) {
-            try? camera.lockForConfiguration()
-            camera.focusMode = .continuousAutoFocus
-            if camera.isAutoFocusRangeRestrictionSupported {
-                camera.autoFocusRangeRestriction = .near
-            }
-            camera.unlockForConfiguration()
-        }
-
         let preview = AVCaptureVideoPreviewLayer(session: captureSession)
         preview.videoGravity = .resizeAspectFill
         view.layer.addSublayer(preview)
         previewLayer = preview
 
-        DispatchQueue.global(qos: .userInitiated).async { [captureSession] in
-            captureSession.startRunning()
+        sessionQueue.async { [weak self] in
+            guard let self,
+                  let camera = AVCaptureDevice.default(.builtInWideAngleCamera, for: .video, position: .back),
+                  let input = try? AVCaptureDeviceInput(device: camera) else { return }
+
+            self.captureSession.beginConfiguration()
+            self.captureSession.sessionPreset = .high
+
+            if self.captureSession.canAddInput(input) {
+                self.captureSession.addInput(input)
+            }
+
+            self.videoOutput.setSampleBufferDelegate(self, queue: self.processingQueue)
+            self.videoOutput.alwaysDiscardsLateVideoFrames = true
+
+            if self.captureSession.canAddOutput(self.videoOutput) {
+                self.captureSession.addOutput(self.videoOutput)
+            }
+
+            // Enable auto-focus for close-up scale reading.
+            if camera.isFocusModeSupported(.continuousAutoFocus) {
+                try? camera.lockForConfiguration()
+                camera.focusMode = .continuousAutoFocus
+                if camera.isAutoFocusRangeRestrictionSupported {
+                    camera.autoFocusRangeRestriction = .near
+                }
+                camera.unlockForConfiguration()
+            }
+
+            self.captureSession.commitConfiguration()
+            self.captureSession.startRunning()
         }
     }
 

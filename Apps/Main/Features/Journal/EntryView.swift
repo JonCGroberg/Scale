@@ -10,9 +10,10 @@ import SwiftData
 import UIKit
 import Photos
 import PhotosUI
+import AVFoundation
 
 struct EntryView: View {
-    private enum EntryMode: String, CaseIterable, Identifiable {
+    enum EntryMode: String, CaseIterable, Identifiable {
         case moment = "Photo"
         case weight = "Weight"
 
@@ -27,12 +28,14 @@ struct EntryView: View {
     @Binding var historySelectedEntry: WeightEntry?
     var logDate: Date?
     var latestWeight: Double?
+    var initialEntryMode: EntryMode? = nil
     var onDismiss: (() -> Void)?
 
     @AppStorage("appTint") private var appTint = AppTint.defaultValue.rawValue
     @AppStorage("weightGoal") private var weightGoal = WeightGoal.defaultValue.rawValue
     @AppStorage("cutTargetWeight") private var cutTargetWeight = 180.0
     @AppStorage("bulkTargetWeight") private var bulkTargetWeight = 180.0
+    @AppStorage("lastEntryMode") private var lastEntryMode = EntryMode.moment.rawValue
 
     private var effectiveDate: Date {
         logDate ?? Date()
@@ -148,19 +151,23 @@ struct EntryView: View {
             .frame(maxWidth: .infinity, maxHeight: .infinity)
             .toolbar {
                 ToolbarItem(placement: .topBarLeading) {
-                    HStack(spacing: 6) {
+                    HStack(spacing: 0) {
                         Button {
                             Haptics.selection()
                             close()
                         } label: {
                             Image(systemName: "xmark")
+                                .frame(width: 44, height: 44)
                         }
-                        .buttonStyle(.glass)
+                        .buttonStyle(.plain)
 
                         if entryMode == .moment {
-                            addPhotosButton
+                            toolbarAddPhotosButton
                         }
                     }
+                    // This is one grouped control: its shared capsule is glass,
+                    // while the contained actions deliberately remain plain.
+                    .glassEffect(.regular.interactive(), in: Capsule())
                 }
 
                 ToolbarItem(placement: .principal) {
@@ -182,6 +189,7 @@ struct EntryView: View {
                 if let latestWeight {
                     currentWeight = latestWeight
                 }
+                entryMode = initialEntryMode ?? EntryMode(rawValue: lastEntryMode) ?? .moment
             }
             .task(id: statsDay) {
                 await Task.yield()
@@ -209,6 +217,9 @@ struct EntryView: View {
                         selectedPhotoItems = []
                     }
                 }
+            }
+            .onChange(of: entryMode) { _, newMode in
+                lastEntryMode = newMode.rawValue
             }
             .sensoryFeedback(.selection, trigger: isEditingWeight) { _, new in new }
         }
@@ -489,6 +500,21 @@ struct EntryView: View {
                 .foregroundStyle(tintColor)
         }
         .buttonStyle(.glass)
+        .accessibilityLabel("Add photos")
+    }
+
+    private var toolbarAddPhotosButton: some View {
+        PhotosPicker(
+            selection: $selectedPhotoItems,
+            maxSelectionCount: nil,
+            matching: .images
+        ) {
+            Image(systemName: "photo.badge.plus")
+                .font(.footnote.weight(.semibold))
+                .foregroundStyle(tintColor)
+                .frame(width: 44, height: 44)
+        }
+        .buttonStyle(.plain)
         .accessibilityLabel("Add photos")
     }
 
@@ -788,39 +814,213 @@ private struct RepeatingWeightAdjustButton: View {
 struct ProgressPhotoCameraView: UIViewControllerRepresentable {
     let onImagePicked: (UIImage?) -> Void
 
-    func makeUIViewController(context: Context) -> UIImagePickerController {
-        let picker = UIImagePickerController()
-        picker.sourceType = .camera
-        picker.cameraCaptureMode = .photo
-        picker.delegate = context.coordinator
-        return picker
+    func makeUIViewController(context: Context) -> ProgressPhotoCameraController {
+        ProgressPhotoCameraController(onImagePicked: onImagePicked)
     }
 
-    func updateUIViewController(_ uiViewController: UIImagePickerController, context: Context) { }
+    func updateUIViewController(_ uiViewController: ProgressPhotoCameraController, context: Context) { }
 
-    func makeCoordinator() -> Coordinator {
-        Coordinator(onImagePicked: onImagePicked)
+    static func dismantleUIViewController(_ uiViewController: ProgressPhotoCameraController, coordinator: ()) {
+        uiViewController.stopCaptureSession()
+    }
+}
+
+final class ProgressPhotoCameraController: UIViewController, AVCapturePhotoCaptureDelegate {
+    private let onImagePicked: (UIImage?) -> Void
+    private let session = AVCaptureSession()
+    private let sessionQueue = DispatchQueue(label: "com.groberg.Scale.progress-photo-camera")
+    private let photoOutput = AVCapturePhotoOutput()
+    private let previewView = UIView()
+    private var previewLayer: AVCaptureVideoPreviewLayer?
+    private var videoInput: AVCaptureDeviceInput?
+
+    init(onImagePicked: @escaping (UIImage?) -> Void) {
+        self.onImagePicked = onImagePicked
+        super.init(nibName: nil, bundle: nil)
     }
 
-    final class Coordinator: NSObject, UINavigationControllerDelegate, UIImagePickerControllerDelegate {
-        private let onImagePicked: (UIImage?) -> Void
+    required init?(coder: NSCoder) { nil }
 
-        init(onImagePicked: @escaping (UIImage?) -> Void) {
-            self.onImagePicked = onImagePicked
+    override func viewDidLoad() {
+        super.viewDidLoad()
+        view.backgroundColor = .black
+        configureLayout()
+        configureCaptureSession()
+    }
+
+    override func viewDidLayoutSubviews() {
+        super.viewDidLayoutSubviews()
+        previewLayer?.frame = previewView.bounds
+    }
+
+    func stopCaptureSession() {
+        sessionQueue.async { [session] in
+            guard session.isRunning else { return }
+            session.stopRunning()
         }
+    }
 
-        func imagePickerControllerDidCancel(_ picker: UIImagePickerController) {
-            picker.dismiss(animated: true)
-            onImagePicked(nil)
+    private func configureLayout() {
+        previewView.translatesAutoresizingMaskIntoConstraints = false
+        previewView.backgroundColor = .black
+        view.addSubview(previewView)
+
+        let controls = UIStackView(arrangedSubviews: [cancelButton, shutterButton, switchCameraButton])
+        controls.translatesAutoresizingMaskIntoConstraints = false
+        controls.axis = .horizontal
+        controls.alignment = .center
+        controls.distribution = .equalCentering
+        controls.isLayoutMarginsRelativeArrangement = true
+        controls.directionalLayoutMargins = NSDirectionalEdgeInsets(top: 12, leading: 28, bottom: 12, trailing: 28)
+        controls.backgroundColor = .black
+        view.addSubview(controls)
+
+        NSLayoutConstraint.activate([
+            controls.leadingAnchor.constraint(equalTo: view.leadingAnchor),
+            controls.trailingAnchor.constraint(equalTo: view.trailingAnchor),
+            controls.bottomAnchor.constraint(equalTo: view.safeAreaLayoutGuide.bottomAnchor),
+            controls.heightAnchor.constraint(equalToConstant: 88),
+            previewView.topAnchor.constraint(equalTo: view.topAnchor),
+            previewView.leadingAnchor.constraint(equalTo: view.leadingAnchor),
+            previewView.trailingAnchor.constraint(equalTo: view.trailingAnchor),
+            previewView.bottomAnchor.constraint(equalTo: controls.topAnchor)
+        ])
+    }
+
+    private var cancelButton: UIButton {
+        cameraButton(image: "xmark", action: #selector(cancelCapture))
+    }
+
+    private var switchCameraButton: UIButton {
+        cameraButton(image: "arrow.triangle.2.circlepath.camera", action: #selector(switchCamera))
+    }
+
+    private var shutterButton: UIButton {
+        let button = UIButton(type: .custom)
+        button.translatesAutoresizingMaskIntoConstraints = false
+        button.backgroundColor = .white
+        button.layer.cornerRadius = 31
+        button.layer.borderWidth = 5
+        button.layer.borderColor = UIColor(white: 0.2, alpha: 1).cgColor
+        button.addTarget(self, action: #selector(capturePhoto), for: .touchUpInside)
+        button.accessibilityLabel = "Take photo"
+        NSLayoutConstraint.activate([
+            button.widthAnchor.constraint(equalToConstant: 62),
+            button.heightAnchor.constraint(equalToConstant: 62)
+        ])
+        return button
+    }
+
+    private func cameraButton(image: String, action: Selector) -> UIButton {
+        var configuration = UIButton.Configuration.filled()
+        configuration.image = UIImage(systemName: image)
+        configuration.baseForegroundColor = .white
+        configuration.baseBackgroundColor = UIColor(white: 0.16, alpha: 1)
+        configuration.cornerStyle = .capsule
+
+        let button = UIButton(configuration: configuration)
+        button.translatesAutoresizingMaskIntoConstraints = false
+        button.addTarget(self, action: action, for: .touchUpInside)
+        NSLayoutConstraint.activate([
+            button.widthAnchor.constraint(equalToConstant: 48),
+            button.heightAnchor.constraint(equalToConstant: 48)
+        ])
+        return button
+    }
+
+    private func configureCaptureSession() {
+        switch AVCaptureDevice.authorizationStatus(for: .video) {
+        case .authorized:
+            setUpCaptureSession()
+        case .notDetermined:
+            AVCaptureDevice.requestAccess(for: .video) { [weak self] granted in
+                guard granted else { return }
+                self?.setUpCaptureSession()
+            }
+        case .denied, .restricted:
+            break
+        @unknown default:
+            break
         }
+    }
 
-        func imagePickerController(
-            _ picker: UIImagePickerController,
-            didFinishPickingMediaWithInfo info: [UIImagePickerController.InfoKey: Any]
-        ) {
-            let image = (info[.editedImage] ?? info[.originalImage]) as? UIImage
-            picker.dismiss(animated: true)
-            onImagePicked(image)
+    private func setUpCaptureSession() {
+        sessionQueue.async { [weak self] in
+            guard let self else { return }
+            self.session.beginConfiguration()
+            self.session.sessionPreset = .photo
+
+            guard let device = self.cameraDevice(position: .back),
+                  let input = try? AVCaptureDeviceInput(device: device),
+                  self.session.canAddInput(input),
+                  self.session.canAddOutput(self.photoOutput) else {
+                self.session.commitConfiguration()
+                return
+            }
+
+            self.session.addInput(input)
+            self.session.addOutput(self.photoOutput)
+            self.videoInput = input
+
+            DispatchQueue.main.async {
+                let layer = AVCaptureVideoPreviewLayer(session: self.session)
+                layer.videoGravity = .resizeAspectFill
+                layer.frame = self.previewView.bounds
+                self.previewView.layer.addSublayer(layer)
+                self.previewLayer = layer
+            }
+            self.session.commitConfiguration()
+            self.session.startRunning()
+        }
+    }
+
+    @objc private func capturePhoto() {
+        sessionQueue.async { [weak self] in
+            guard let self else { return }
+            self.photoOutput.capturePhoto(with: AVCapturePhotoSettings(), delegate: self)
+        }
+    }
+
+    @objc private func switchCamera() {
+        sessionQueue.async { [weak self] in
+            guard let self,
+                  let currentInput = self.videoInput,
+                  let nextPosition: AVCaptureDevice.Position = currentInput.device.position == .back ? .front : .back,
+                  let device = self.cameraDevice(position: nextPosition),
+                  let newInput = try? AVCaptureDeviceInput(device: device) else { return }
+
+            self.session.beginConfiguration()
+            self.session.removeInput(currentInput)
+            if self.session.canAddInput(newInput) {
+                self.session.addInput(newInput)
+                self.videoInput = newInput
+            } else {
+                self.session.addInput(currentInput)
+            }
+            self.session.commitConfiguration()
+        }
+    }
+
+    @objc private func cancelCapture() {
+        stopCaptureSession()
+        onImagePicked(nil)
+    }
+
+    private func cameraDevice(position: AVCaptureDevice.Position) -> AVCaptureDevice? {
+        AVCaptureDevice.default(.builtInWideAngleCamera, for: .video, position: position)
+    }
+
+    nonisolated func photoOutput(
+        _ output: AVCapturePhotoOutput,
+        didFinishProcessingPhoto photo: AVCapturePhoto,
+        error: Error?
+    ) {
+        guard error == nil,
+              let data = photo.fileDataRepresentation(),
+              let image = UIImage(data: data) else { return }
+
+        DispatchQueue.main.async { [weak self] in
+            self?.onImagePicked(image)
         }
     }
 }

@@ -202,7 +202,9 @@ struct JournalView: View {
     @Binding var showLog: Bool
     @Binding var logDate: Date?
 
-    @State private var monthLoader = CalendarMonthLoader(batchSize: 2)
+    // Keep the initial context lightweight, then fetch one older month only when
+    // the user actually reaches the leading edge of the calendar.
+    @State private var monthLoader = CalendarMonthLoader(batchSize: 1)
     @State private var monthRenderDataByMonth: [Date: MonthRenderData] = [:]
     @State private var entryIDsByDay: [Date: [PersistentIdentifier]] = [:]
     @State private var workoutIDsByDay: [Date: [PersistentIdentifier]] = [:]
@@ -210,6 +212,8 @@ struct JournalView: View {
     @State private var presentedSheet: PresentedDaySheet?
     @State private var hasFinishedInitialMonthPositioning = false
     @State private var hasPerformedInitialScroll = false
+    @State private var isLoadingEarlierMonths = false
+    @State private var lastExpandedMonth: Date?
     @State private var isDataReady = false
     @State private var thumbnailLoader = LazyThumbnailLoader()
     @State private var pendingThumbnails: [String: PendingThumbnail] = [:]
@@ -401,7 +405,16 @@ struct JournalView: View {
                                 reloadLoadedMonthData()
                                 rebuildMonthRenderData(forceAll: true)
                                 isDataReady = true
-                                scrollToFocusedEntry(with: proxy, animated: false)
+                                // Rebuilding the month data expands the lazy stack on the
+                                // next layout pass. Scrolling before that pass lands at the
+                                // bottom of the placeholder content, which leaves the current
+                                // day visible instead of the calendar's real bottom.
+                                await Task.yield()
+                                if focusedEntry == nil {
+                                    scrollToBottom(with: proxy, animated: false)
+                                } else {
+                                    scrollToFocusedEntry(with: proxy, animated: false)
+                                }
                                 hasFinishedInitialMonthPositioning = true
                             }
                         }
@@ -592,17 +605,31 @@ struct JournalView: View {
     }
 
     private func loadEarlierMonthsIfNeeded(proxy: ScrollViewProxy) {
-        guard hasFinishedInitialMonthPositioning else { return }
+        guard hasFinishedInitialMonthPositioning, !isLoadingEarlierMonths else { return }
         guard let earliest = monthLoader.earliest else { return }
+        // Visibility callbacks can fire repeatedly as SwiftUI relays out the lazy
+        // stack. Each earliest month may therefore request at most one expansion.
+        guard earliest != lastExpandedMonth else { return }
+
         let anchorMonth = earliest
-        if monthLoader.expandIfNeeded(for: earliest) {
-            reloadLoadedMonthData()
-            rebuildMonthRenderData(forceAll: false)
-            DispatchQueue.main.async {
-                withAnimation(.spring(response: 0.48, dampingFraction: 0.80)) {
-                    proxy.scrollTo(anchorMonth, anchor: .top)
-                }
-            }
+        isLoadingEarlierMonths = true
+        lastExpandedMonth = earliest
+
+        guard monthLoader.expandIfNeeded(for: earliest) else {
+            isLoadingEarlierMonths = false
+            return
+        }
+
+        reloadLoadedMonthData()
+        rebuildMonthRenderData(forceAll: false)
+
+        Task { @MainActor in
+            // Allow the inserted month to lay out before restoring the user's
+            // position. Avoiding an animated correction keeps the scroll fluid.
+            await Task.yield()
+            proxy.scrollTo(anchorMonth, anchor: .top)
+            await Task.yield()
+            isLoadingEarlierMonths = false
         }
     }
 
@@ -1288,7 +1315,7 @@ struct LogDayDetailSheet: View {
                     }
             )
             .toolbar {
-                ToolbarItemGroup(placement: .topBarLeading) {
+                ToolbarItem(placement: .topBarLeading) {
                     if isEditingEntry {
                         headerIconButton(
                             systemImage: "xmark",
@@ -1296,18 +1323,18 @@ struct LogDayDetailSheet: View {
                         ) {
                             cancelEditing()
                         }
-
-                        if dayPhotoEntry != nil {
-                            addPhotosToolbarButton
-                        }
                     } else {
                         if let dayEditEntry {
                             editEntryButton(for: dayEditEntry)
                         }
+                    }
+                }
 
-                        if dayPhotoEntry != nil {
-                            addPhotosToolbarButton
-                        }
+                if dayPhotoEntry != nil {
+                    ToolbarSpacer(.fixed)
+
+                    ToolbarItem(placement: .topBarLeading) {
+                        addPhotosToolbarButton
                     }
                 }
 
@@ -2267,19 +2294,23 @@ struct LogPhotoCarouselView: View {
     }
 
     private var formattedDate: String {
+        formattedDate(for: dateState)
+    }
+
+    private func formattedDate(for value: Date) -> String {
         let calendar = Calendar.current
-        if calendar.isDateInToday(dateState) {
+        if calendar.isDateInToday(value) {
             return "Today"
         }
         let dayNameFormatter = DateFormatter()
         dayNameFormatter.dateFormat = "EEEE"
-        if let daysAgo = calendar.dateComponents([.day], from: dateState, to: Date()).day,
+        if let daysAgo = calendar.dateComponents([.day], from: value, to: Date()).day,
            daysAgo >= 1 && daysAgo < 7 {
-            return dayNameFormatter.string(from: dateState)
+            return dayNameFormatter.string(from: value)
         }
         let formatter = DateFormatter()
         formatter.dateFormat = "MMM d, yyyy"
-        return formatter.string(from: dateState)
+        return formatter.string(from: value)
     }
 
     private var datesWithPhotos: [Date] {
@@ -2301,7 +2332,16 @@ struct LogPhotoCarouselView: View {
     }
 
     private var dayPreviewDates: [Date] {
-        [previousDateWithPhotos, dateState, nextDateWithPhotos].compactMap { $0 }
+        let calendar = Calendar.current
+        let selectedDay = calendar.startOfDay(for: dateState)
+        let previousDays = datesWithPhotos
+            .filter { $0 < selectedDay }
+            .suffix(3)
+        let nextDays = datesWithPhotos
+            .filter { $0 > selectedDay }
+            .prefix(3)
+
+        return Array(previousDays) + [selectedDay] + Array(nextDays)
     }
 
     private func previewPhoto(for day: Date) -> UIImage? {
@@ -2319,10 +2359,7 @@ struct LogPhotoCarouselView: View {
     }
 
     private func previewDateLabel(for day: Date) -> String {
-        if Calendar.current.isDateInToday(day) {
-            return "Today"
-        }
-        return day.formatted(.dateTime.weekday(.abbreviated))
+        formattedDate(for: day)
     }
 
     private var currentWeightEntry: WeightEntry? {
@@ -2481,10 +2518,6 @@ struct LogPhotoCarouselView: View {
 
                 carouselPhotosTab
 
-                if currentWeightEntry != nil || currentActivitySummary != nil || !currentWorkouts.isEmpty || !currentSleepEntries.isEmpty {
-                    carouselStatsRow
-                        .padding(.top, -2)
-                }
             }
             .overlay(alignment: .bottom) {
                 if !photosState.isEmpty, dayPreviewDates.count > 1 {
@@ -2507,8 +2540,15 @@ struct LogPhotoCarouselView: View {
             }
             .safeAreaInset(edge: .bottom, spacing: 0) {
                 if !photosState.isEmpty {
-                    carouselThumbnailStrip
-                        .background(.ultraThinMaterial)
+                    VStack(spacing: 0) {
+                        if currentWeightEntry != nil || currentActivitySummary != nil || !currentWorkouts.isEmpty || !currentSleepEntries.isEmpty {
+                            carouselStatsRow
+                                .padding(.vertical, 8)
+                        }
+
+                        carouselThumbnailStrip
+                    }
+                    .background(.ultraThinMaterial)
                 }
             }
         }
@@ -2597,18 +2637,18 @@ struct LogPhotoCarouselView: View {
                                         .scaledToFill()
                                         .frame(width: 64, height: 40)
                                         .clipShape(RoundedRectangle(cornerRadius: 7, style: .continuous))
+                                        .overlay {
+                                            RoundedRectangle(cornerRadius: 7, style: .continuous)
+                                                .stroke(
+                                                    Calendar.current.isDate(day, inSameDayAs: dateState) ? tintColor : Color.white.opacity(0.24),
+                                                    lineWidth: Calendar.current.isDate(day, inSameDayAs: dateState) ? 2 : 1
+                                                )
+                                        }
 
                                     Text(previewDateLabel(for: day))
                                         .font(.caption2.weight(.medium))
                                         .foregroundStyle(.primary)
-                                }
-                                .padding(4)
-                                .overlay {
-                                    RoundedRectangle(cornerRadius: 10, style: .continuous)
-                                        .stroke(
-                                            Calendar.current.isDate(day, inSameDayAs: dateState) ? tintColor : Color.white.opacity(0.24),
-                                            lineWidth: Calendar.current.isDate(day, inSameDayAs: dateState) ? 2 : 1
-                                        )
+                                        .shadow(color: .black.opacity(0.72), radius: 2, x: 0, y: 1)
                                 }
                                 .opacity(Calendar.current.isDate(day, inSameDayAs: dateState) ? 1 : 0.68)
                             }
@@ -3065,9 +3105,12 @@ struct WorkoutSummaryCard: View {
 struct SleepSummaryCard: View {
     let sleepEntries: [SleepEntry]
     let tintColor: Color
+    @AppStorage("appTint") private var appTint = AppTint.defaultValue.rawValue
 
     private var totalDuration: TimeInterval {
-        sleepEntries.reduce(0) { $0 + $1.duration }
+        sleepEntries
+            .filter { $0.stage.countsTowardSleepDuration }
+            .reduce(0) { $0 + $1.duration }
     }
 
     private var sortedEntries: [SleepEntry] {
@@ -3087,7 +3130,7 @@ struct SleepSummaryCard: View {
 
     private var visibleStages: [SleepStage] {
         let present = Set(sleepEntries.map(\.stage))
-        return [.deep, .core, .rem, .unspecified].filter { present.contains($0) }
+        return [.deep, .core, .rem, .unspecified, .inBed].filter { present.contains($0) }
     }
 
     var body: some View {
@@ -3136,7 +3179,7 @@ struct SleepSummaryCard: View {
                     RoundedRectangle(cornerRadius: 6, style: .continuous)
                         .fill(tintColor.opacity(0.08))
 
-                    ForEach(sortedEntries, id: \.persistentModelID) { entry in
+                    ForEach(sortedEntries.filter { $0.stage == .inBed }, id: \.persistentModelID) { entry in
                         let startFraction = totalSpan > 0
                             ? entry.startDate.timeIntervalSince(bounds.start) / totalSpan
                             : 0
@@ -3144,12 +3187,46 @@ struct SleepSummaryCard: View {
                             ? entry.endDate.timeIntervalSince(entry.startDate) / totalSpan
                             : 1
 
-                        RoundedRectangle(cornerRadius: 5, style: .continuous)
+                        Rectangle()
                             .fill(stageColor(entry.stage))
                             .frame(width: max(widthFraction * proxy.size.width, 4))
                             .offset(x: startFraction * proxy.size.width)
                     }
+
+                    ForEach(sortedEntries.filter { $0.stage != .inBed && $0.stage != .awake }, id: \.persistentModelID) { entry in
+                        let startFraction = totalSpan > 0
+                            ? entry.startDate.timeIntervalSince(bounds.start) / totalSpan
+                            : 0
+                        let widthFraction = totalSpan > 0
+                            ? entry.endDate.timeIntervalSince(entry.startDate) / totalSpan
+                            : 1
+
+                        // Round only the outer track: all internal sleep-stage boundaries are square.
+                        Rectangle()
+                            .fill(stageColor(entry.stage))
+                            .frame(width: max(widthFraction * proxy.size.width, 4))
+                            .offset(x: startFraction * proxy.size.width)
+                    }
+
+                    // Awake time is intentionally represented as an empty gap,
+                    // not a colored sleep stage.
+                    ForEach(sortedEntries.filter { $0.stage == .awake }, id: \.persistentModelID) { entry in
+                        let startFraction = totalSpan > 0
+                            ? entry.startDate.timeIntervalSince(bounds.start) / totalSpan
+                            : 0
+                        let widthFraction = totalSpan > 0
+                            ? entry.endDate.timeIntervalSince(entry.startDate) / totalSpan
+                            : 1
+
+                        Rectangle()
+                            .fill(.black)
+                            .frame(width: max(widthFraction * proxy.size.width, 4))
+                            .offset(x: startFraction * proxy.size.width)
+                            .blendMode(.destinationOut)
+                    }
                 }
+                .compositingGroup()
+                .clipShape(RoundedRectangle(cornerRadius: 6, style: .continuous))
             }
             .frame(height: 28)
 
@@ -3180,20 +3257,25 @@ struct SleepSummaryCard: View {
     }
 
     private func stageColor(_ stage: SleepStage) -> Color {
-        switch stage {
-        case .deep:
-            return tintColor.opacity(0.85)
-        case .core:
-            return tintColor.opacity(0.50)
-        case .rem:
-            return tintColor.opacity(0.35)
-        case .unspecified:
-            return tintColor.opacity(0.55)
+        guard stage != .awake else { return .clear }
+        let activeTint = AppTint(rawValue: appTint) ?? .defaultValue
+        let endpoints = AppTint.sleepGradientEndpoints(excluding: activeTint)
+        let position: CGFloat = switch stage {
+        case .inBed: 0.02
+        case .deep: 0.10
+        case .core: 0.32
+        case .rem: 0.58
+        case .unspecified: 0.80
+        case .awake: 0
         }
+        let color = Color.interpolated(from: endpoints.0, to: endpoints.1, amount: position)
+        return stage == .inBed ? color.opacity(0.22) : color
     }
 
     private func stageName(_ stage: SleepStage) -> String {
         switch stage {
+        case .awake: return ""
+        case .inBed: return "In Bed"
         case .deep: return "Deep"
         case .core: return "Core"
         case .rem: return "REM"

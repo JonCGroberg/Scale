@@ -36,12 +36,12 @@ struct ScaleApp: App {
 
     private let healthKitManager = HealthKitManager()
     private let notificationManager = NotificationManager()
+    @Environment(\.scenePhase) private var scenePhase
     @State private var selectedTab = 3
     @State private var didInitializeTab = false
     @State private var showLog = false
 
     @AppStorage("autoSyncHealthKit") private var autoSyncHealthKit = false
-    @AppStorage("badgePeriodIndex") private var badgePeriodIndex = 0
     @AppStorage("hasCompletedOnboarding_v2") private var hasCompletedOnboarding = false
 
     private static let notificationDelegate = NotificationDelegate()
@@ -60,7 +60,6 @@ struct ScaleApp: App {
                     .onAppear {
                         if !didInitializeTab {
                             selectedTab = 3
-                            badgePeriodIndex = 0
                             didInitializeTab = true
                         }
                         
@@ -76,11 +75,10 @@ struct ScaleApp: App {
                             populateMockDataIfNeeded()
                         }
 
-                        // Automatically open the log sheet if the user hasn't
-                        // recorded a weight entry today yet.
-                        // if !notificationManager.todayHasWeightEntry() {
-                        //     showLog = true
-                        // }
+                        // Open the log sheet only when neither a weight nor a
+                        // progress photo has been logged today. EntryView restores
+                        // the tab the person last used.
+                        openTodayLogIfNeeded()
                     }
                     .task(id: autoSyncHealthKit) {
                         guard autoSyncHealthKit else { return }
@@ -89,6 +87,10 @@ struct ScaleApp: App {
                     }
                     .onReceive(NotificationCenter.default.publisher(for: .didTapWeightReminder)) { _ in
                         showLog = true
+                    }
+                    .onChange(of: scenePhase) { _, newPhase in
+                        guard newPhase == .active else { return }
+                        openTodayLogIfNeeded()
                     }
             } else {
                 OnboardingView()
@@ -109,6 +111,31 @@ struct ScaleApp: App {
 
     static func shouldSeedMockData(arguments: [String], isDebugBuild: Bool) -> Bool {
         isDebugBuild && arguments.contains("-seedMockData")
+    }
+
+    static func shouldPromptForTodayLog(
+        entries: [WeightEntry],
+        date: Date = .now,
+        calendar: Calendar = .current
+    ) -> Bool {
+        let startOfToday = calendar.startOfDay(for: date)
+        guard let startOfTomorrow = calendar.date(byAdding: .day, value: 1, to: startOfToday) else {
+            return false
+        }
+
+        return !entries.contains { entry in
+            entry.timestamp >= startOfToday
+                && entry.timestamp < startOfTomorrow
+                && (entry.includesWeight || entry.hasPhotos)
+        }
+    }
+
+    private func openTodayLogIfNeeded() {
+        let descriptor = FetchDescriptor<WeightEntry>()
+        let entries = (try? sharedModelContainer.mainContext.fetch(descriptor)) ?? []
+        if Self.shouldPromptForTodayLog(entries: entries) {
+            showLog = true
+        }
     }
 
     private func populateMockDataIfNeeded() {

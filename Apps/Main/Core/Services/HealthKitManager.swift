@@ -409,16 +409,17 @@ final class HealthKitManager {
             await Task.yield()
             let existingEntries = try modelContext.fetch(FetchDescriptor<SleepEntry>())
             await Task.yield()
-            let asleepValues: Set<Int> = [
-                HKCategoryValueSleepAnalysis.asleepUnspecified.rawValue,
-                HKCategoryValueSleepAnalysis.asleepCore.rawValue,
-                HKCategoryValueSleepAnalysis.asleepDeep.rawValue,
-                HKCategoryValueSleepAnalysis.asleepREM.rawValue
-            ]
+            let supportedValues = Set(HKCategoryValueSleepAnalysis.allAsleepValues.map(\.rawValue))
+                .union([
+                    HKCategoryValueSleepAnalysis.awake.rawValue,
+                    HKCategoryValueSleepAnalysis.inBed.rawValue
+                ])
 
             let importedSleep = samples.compactMap { sample -> ImportedSleep? in
-                guard asleepValues.contains(sample.value), sample.endDate > sample.startDate else { return nil }
+                guard supportedValues.contains(sample.value), sample.endDate > sample.startDate else { return nil }
                 let stage: SleepStage = switch sample.value {
+                case HKCategoryValueSleepAnalysis.awake.rawValue: .awake
+                case HKCategoryValueSleepAnalysis.inBed.rawValue: .inBed
                 case HKCategoryValueSleepAnalysis.asleepCore.rawValue: .core
                 case HKCategoryValueSleepAnalysis.asleepDeep.rawValue: .deep
                 case HKCategoryValueSleepAnalysis.asleepREM.rawValue: .rem
@@ -661,17 +662,18 @@ final class HealthKitManager {
                 sortDescriptors: [SortDescriptor(\.startDate, order: .forward)]
             )
             let samples = try await descriptor.result(for: healthStore)
-            let asleepValues: Set<Int> = [
-                HKCategoryValueSleepAnalysis.asleepUnspecified.rawValue,
-                HKCategoryValueSleepAnalysis.asleepCore.rawValue,
-                HKCategoryValueSleepAnalysis.asleepDeep.rawValue,
-                HKCategoryValueSleepAnalysis.asleepREM.rawValue
-            ]
+            let supportedValues = Set(HKCategoryValueSleepAnalysis.allAsleepValues.map(\.rawValue))
+                .union([
+                    HKCategoryValueSleepAnalysis.awake.rawValue,
+                    HKCategoryValueSleepAnalysis.inBed.rawValue
+                ])
 
             var importedCount = 0
             for sample in samples {
-                guard asleepValues.contains(sample.value), sample.endDate > sample.startDate else { continue }
+                guard supportedValues.contains(sample.value), sample.endDate > sample.startDate else { continue }
                 let stage: SleepStage = switch sample.value {
+                case HKCategoryValueSleepAnalysis.awake.rawValue: .awake
+                case HKCategoryValueSleepAnalysis.inBed.rawValue: .inBed
                 case HKCategoryValueSleepAnalysis.asleepCore.rawValue: .core
                 case HKCategoryValueSleepAnalysis.asleepDeep.rawValue: .deep
                 case HKCategoryValueSleepAnalysis.asleepREM.rawValue: .rem

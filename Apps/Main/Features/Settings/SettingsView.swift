@@ -10,6 +10,14 @@ import SwiftData
 import UIKit
 
 struct SettingsView: View {
+    enum Content {
+        case settings
+        case goals
+    }
+
+    var showsDoneButton = true
+    var content: Content = .settings
+    var isProfile = false
     @Environment(\.dismiss) private var dismiss
     @Environment(\.modelContext) private var modelContext
     @Environment(HealthKitManager.self) private var healthManager
@@ -118,13 +126,30 @@ struct SettingsView: View {
         }
     }
 
-    private var bigGoalTrackTargets: Set<Double> {
-        Set(bigGoals.map(\.targetWeight))
-    }
-
     var body: some View {
         NavigationStack {
             List {
+                if content == .goals {
+                    goalSettingsSection
+                } else {
+                if isProfile {
+                    Section {
+                        HStack(spacing: 14) {
+                            Image(systemName: "person.crop.circle.fill")
+                                .font(.system(size: 52))
+                                .foregroundStyle(.secondary)
+                            VStack(alignment: .leading, spacing: 3) {
+                                Text("Profile")
+                                    .font(.headline)
+                                Text("Your health and journal preferences")
+                                    .font(.subheadline)
+                                    .foregroundStyle(.secondary)
+                            }
+                        }
+                        .padding(.vertical, 8)
+                    }
+                }
+
                 Section {
                     Picker(selection: selectedTint) {
                         ForEach(AppTint.presets) { tint in
@@ -197,7 +222,9 @@ struct SettingsView: View {
                 }
 
                 if hasLoadedDeferredContent {
+                if isProfile {
                     goalSettingsSection
+                }
 
                 Section {
                     if healthManager.isAvailable {
@@ -300,15 +327,18 @@ struct SettingsView: View {
                         }
                     }
                 }
+                }
             }
-            .navigationTitle("Settings")
+            .navigationTitle(isProfile ? "Profile" : (content == .goals ? "Goals" : "Settings"))
             .toolbar {
-                ToolbarItem(placement: .topBarTrailing) {
-                    Button("Done") {
-                        Haptics.selection()
-                        dismiss()
+                if showsDoneButton {
+                    ToolbarItem(placement: .topBarTrailing) {
+                        Button("Done") {
+                            Haptics.selection()
+                            dismiss()
+                        }
+                        .fontWeight(.semibold)
                     }
-                    .fontWeight(.semibold)
                 }
             }
             .task {
@@ -319,7 +349,9 @@ struct SettingsView: View {
                 await Task.yield()
                 guard !Task.isCancelled else { return }
 
-                reminders = notificationManager.loadReminders()
+                if content == .settings {
+                    reminders = notificationManager.loadReminders()
+                }
                 loadGoals()
                 withAnimation(.easeInOut(duration: 0.2)) {
                     hasLoadedDeferredContent = true
@@ -461,7 +493,6 @@ struct SettingsView: View {
             GoalProgressTrack(
                 goal: selectedWeightGoal.wrappedValue,
                 targets: goalTrackTargets,
-                bigGoalTargets: bigGoalTrackTargets,
                 currentWeight: weightEntries.first?.weight,
                 tintColor: tintColor
             )
@@ -695,10 +726,9 @@ private struct GoalSectionDivider: View {
     }
 }
 
-private struct GoalProgressTrack: View {
+struct GoalProgressTrack: View {
     let goal: WeightGoal
     let targets: [Double]
-    let bigGoalTargets: Set<Double>
     let currentWeight: Double?
     let tintColor: Color
 
@@ -720,27 +750,11 @@ private struct GoalProgressTrack: View {
                             .frame(width: intervalWidth(at: index, availableWidth: availableWidth), height: 8)
                     }
                 }
-                .offset(x: edgeInset, y: 21)
+                .offset(x: edgeInset, y: 2)
 
-                ForEach(targets.indices, id: \.self) { index in
-                    let target = targets[index]
-                    let position = markerPosition(
-                        at: index,
-                        availableWidth: availableWidth,
-                        edgeInset: edgeInset,
-                        gapWidth: gapWidth
-                    )
-
-                    if bigGoalTargets.contains(target) {
-                        Image(systemName: "flag.fill")
-                            .font(.caption2)
-                            .foregroundStyle(hasReached(target) ? tintColor : Color.secondary.opacity(0.75))
-                            .position(x: position, y: 8)
-                    }
-                }
             }
         }
-        .frame(height: 29)
+        .frame(height: 12)
         .accessibilityElement(children: .ignore)
         .accessibilityLabel(accessibilityDescription)
     }
@@ -769,29 +783,9 @@ private struct GoalProgressTrack: View {
         return availableWidth * CGFloat(abs(targets[index] - targets[index + 1])) / CGFloat(totalDistance)
     }
 
-    private func markerPosition(
-        at index: Int,
-        availableWidth: CGFloat,
-        edgeInset: CGFloat,
-        gapWidth: CGFloat
-    ) -> CGFloat {
-        guard targets.count > 1 else { return edgeInset + availableWidth / 2 }
-        guard index > 0 else { return edgeInset }
-
-        let precedingWidth = (0..<index).reduce(CGFloat.zero) { width, intervalIndex in
-            width + intervalWidth(at: intervalIndex, availableWidth: availableWidth)
-        }
-
-        if index == targets.count - 1 {
-            return edgeInset + precedingWidth + gapWidth * CGFloat(index - 1)
-        }
-
-        return edgeInset + precedingWidth + gapWidth * (CGFloat(index) - 0.5)
-    }
-
     private var accessibilityDescription: String {
         let formattedTargets = targets.map { String(format: "%.1f", $0) }.joined(separator: ", ")
-        return "Proportional goal timeline with big-goal flags at \(formattedTargets) pounds"
+        return "Proportional goal timeline at \(formattedTargets) pounds"
     }
 }
 

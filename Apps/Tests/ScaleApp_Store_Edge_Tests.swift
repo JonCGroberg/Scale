@@ -112,4 +112,31 @@ struct ScaleAppStoreEdgeTests {
     @Test func mockDataSeedingRemainsDisabledOutsideDebugBuilds() {
         #expect(!ScaleApp.shouldSeedMockData(arguments: ["Scale", "-seedMockData"], isDebugBuild: false))
     }
+
+    // MARK: - launch log prompt
+
+    @Test func todayWeightOrPhotoSuppressesTheLaunchLogPrompt() {
+        let calendar = Calendar(identifier: .gregorian)
+        let today = Date(timeIntervalSinceReferenceDate: 1_000_000)
+        let photoOnlyEntry = WeightEntry(
+            weight: 0,
+            includesWeight: false,
+            timestamp: today,
+            photoData: Data([1])
+        )
+        let weightEntry = WeightEntry(weight: 160, timestamp: today)
+
+        #expect(!ScaleApp.shouldPromptForTodayLog(entries: [photoOnlyEntry], date: today, calendar: calendar))
+        #expect(!ScaleApp.shouldPromptForTodayLog(entries: [weightEntry], date: today, calendar: calendar))
+    }
+
+    @Test func noTodayWeightOrPhotoShowsTheLaunchLogPrompt() {
+        let calendar = Calendar(identifier: .gregorian)
+        let today = Date(timeIntervalSinceReferenceDate: 1_000_000)
+        let yesterday = calendar.date(byAdding: .day, value: -1, to: today)!
+        let oldEntry = WeightEntry(weight: 160, timestamp: yesterday)
+        let emptyMoment = WeightEntry(weight: 0, includesWeight: false, timestamp: today)
+
+        #expect(ScaleApp.shouldPromptForTodayLog(entries: [oldEntry, emptyMoment], date: today, calendar: calendar))
+    }
 }

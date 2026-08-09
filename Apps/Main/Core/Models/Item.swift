@@ -156,10 +156,22 @@ final class DailyActivitySummary {
 }
 
 enum SleepStage: String, Codable {
+    case awake
+    case inBed
     case core
     case deep
     case rem
     case unspecified
+
+    /// Awake and in-bed samples describe the sleep window, not time asleep.
+    var countsTowardSleepDuration: Bool {
+        switch self {
+        case .core, .deep, .rem, .unspecified:
+            true
+        case .awake, .inBed:
+            false
+        }
+    }
 }
 
 @Model
