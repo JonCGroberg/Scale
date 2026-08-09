@@ -16,6 +16,7 @@ struct ChangeBadge: View {
     let entries: [WeightEntry]
     let showsRange: Bool
     let chartSelection: ChartDaySelection?
+    let periodOverride: TimePeriod?
 
     @AppStorage("appTint") private var appTint = AppTint.defaultValue.rawValue
     @AppStorage("badgePeriodIndex") private var currentIndex: Int = 2
@@ -23,14 +24,20 @@ struct ChangeBadge: View {
     @AppStorage("cutTargetWeight") private var cutTargetWeight = 180.0
     @AppStorage("bulkTargetWeight") private var bulkTargetWeight = 180.0
 
-    init(entries: [WeightEntry], showsRange: Bool = false, chartSelection: ChartDaySelection? = nil) {
+    init(
+        entries: [WeightEntry],
+        showsRange: Bool = false,
+        chartSelection: ChartDaySelection? = nil,
+        periodOverride: TimePeriod? = nil
+    ) {
         self.entries = entries
         self.showsRange = showsRange
         self.chartSelection = chartSelection
+        self.periodOverride = periodOverride
     }
 
     private var period: TimePeriod {
-        TimePeriod.allCases[currentIndex]
+        periodOverride ?? TimePeriod.allCases[currentIndex]
     }
 
     private var selectedGoal: WeightGoal {
@@ -48,11 +55,15 @@ struct ChangeBadge: View {
             bulkTarget: bulkTargetWeight
         ) else { return nil }
 
+        // The selected chart range controls the period-change copy in the
+        // badge, not the goal itself. Using it here made the goal's starting
+        // weight—and consequently its denominator and progress bar—change
+        // whenever the user switched ranges.
         return WeightCalculations.goalProgress(
             from: entries,
             goal: selectedGoal,
             targetWeight: target,
-            over: period
+            over: .year
         )
     }
 
@@ -106,7 +117,7 @@ struct ChangeBadge: View {
         // expands inside this badge instead of replacing it with a second pill.
         badgeContent
             .frame(width: showsRange ? 244 : nil)
-            .padding(.vertical, showsRange ? 0 : 1)
+            .frame(height: showsRange ? nil : 44)
             .padding(.bottom, showsRange ? 8 : 0)
             .glassEffect(
                 .regular.interactive(),
@@ -177,11 +188,10 @@ struct ChangeBadge: View {
                     .foregroundStyle(.secondary)
                     .contentTransition(.interpolate)
             } else if let lbs = summary.weightChange {
-                if let goalProgress {
+                if goalProgress != nil {
                     let arrow = lbs < 0 ? "↓" : "↑"
-                    let numerator = String(format: "%.1f", abs(lbs))
-                    let denominator = String(format: "%.1f", abs(goalProgress.totalChange))
-                    Text("\(Text(arrow).foregroundStyle(tintColor).fontWeight(.bold)) \(Text(numerator).foregroundStyle(tintColor).fontWeight(.bold))\(Text("/" + denominator).foregroundStyle(tintColor).fontWeight(.bold)) \(Text("lbs").foregroundStyle(tintColor).fontWeight(.bold))  \(thisPeriodPhrase)")
+                    let amount = String(format: "%.1f", abs(lbs))
+                    Text("\(Text(arrow).foregroundStyle(tintColor).fontWeight(.bold)) \(Text(amount).foregroundStyle(tintColor).fontWeight(.bold)) \(Text("lbs").foregroundStyle(tintColor).fontWeight(.bold))  \(thisPeriodPhrase)")
                         .font(.caption)
                         .fontWeight(.semibold)
                         .foregroundStyle(.secondary)
@@ -195,20 +205,6 @@ struct ChangeBadge: View {
                         .foregroundStyle(.secondary)
                         .contentTransition(.numericText())
                 }
-            } else if let goalProgress {
-                let arrow = selectedGoal == .gain ? "↑" : "↓"
-                let numerator = String(format: "%.1f", abs(goalProgress.completedChange))
-                let denominator = String(format: "%.1f", abs(goalProgress.totalChange))
-                HStack(spacing: 0) {
-                    Text("\(arrow) \(numerator)/\(denominator) lbs")
-                        .foregroundStyle(tintColor)
-                        .fontWeight(.bold)
-                    Text("  \(thisPeriodPhrase)")
-                        .foregroundStyle(.secondary)
-                }
-                .font(.caption)
-                .fontWeight(.semibold)
-                .contentTransition(.numericText())
             } else {
                 Text("-- lbs \(thisPeriodPhrase)")
                     .font(.caption)
@@ -267,28 +263,100 @@ struct ChangeBadge: View {
     }
 }
 
-/// The overview chart's range selector, presented in the floating bottom toolbar.
+/// The overview chart's range selector, presented in the Health section header.
 struct TimeRangePill: View {
+    var isPillStyled = true
+    var width: CGFloat = 240
+    var height: CGFloat = 48
     @AppStorage("badgePeriodIndex") private var currentIndex: Int = 2
-    @AppStorage("appTint") private var appTint = AppTint.defaultValue.rawValue
+    @State private var dragStartIndex: Int?
 
-    private var tintColor: Color {
-        (AppTint(rawValue: appTint) ?? .defaultValue).color
+    private var validIndex: Int {
+        min(max(currentIndex, 0), TimePeriod.allCases.count - 1)
+    }
+
+    private var selectedPeriod: TimePeriod {
+        TimePeriod.allCases.indices.contains(currentIndex)
+            ? TimePeriod.allCases[currentIndex]
+            : .today
     }
 
     var body: some View {
-        Picker("Time range", selection: $currentIndex) {
-            ForEach(Array(TimePeriod.allCases.enumerated()), id: \.offset) { index, period in
-                Text(period.rawValue).tag(index)
+        GeometryReader { proxy in
+            let selectedTitle = selectedPeriod == .today ? selectedPeriod.label : selectedPeriod.rawValue
+            let handleWidth: CGFloat = selectedPeriod == .today ? 72 : 54
+            let contentInset: CGFloat = isPillStyled ? 5 : 0
+            let contentWidth = max(proxy.size.width - contentInset * 2, handleWidth)
+            let contentHeight = max(proxy.size.height - contentInset * 2, 1)
+            let travel = max(contentWidth - handleWidth, 1)
+            let step = travel / CGFloat(max(TimePeriod.allCases.count - 1, 1))
+            let handleOffset = CGFloat(validIndex) * step
+
+            ZStack(alignment: .leading) {
+                // Position each marker on the exact centre point of the movable
+                // selection handle. A flexible HStack would inset its first and
+                // last dots, making the active pill look slightly off-centre.
+                ForEach(TimePeriod.allCases.indices, id: \.self) { index in
+                    let isSelected = index == validIndex
+                    let dotSize: CGFloat = isSelected ? 5 : 3
+
+                    Circle()
+                        .fill(isSelected ? Color.primary.opacity(0.42) : Color.primary.opacity(0.16))
+                        .frame(width: dotSize, height: dotSize)
+                        .position(
+                            x: contentInset + (handleWidth / 2) + CGFloat(index) * step,
+                            y: proxy.size.height / 2
+                        )
+                }
+
+                Text(selectedTitle)
+                    .font(.subheadline.weight(.bold).monospacedDigit())
+                    .foregroundStyle(.primary)
+                    .frame(width: handleWidth, height: contentHeight)
+                    .background {
+                        if isPillStyled || selectedPeriod == .today {
+                            Capsule().fill(Color.primary.opacity(0.22))
+                        } else {
+                            Circle().fill(Color.primary.opacity(0.18))
+                        }
+                    }
+                    .offset(x: contentInset + handleOffset)
+            }
+            .contentShape(Rectangle())
+            .gesture(
+                DragGesture(minimumDistance: 0)
+                    .onChanged { value in
+                        if dragStartIndex == nil {
+                            dragStartIndex = validIndex
+                        }
+                        guard let dragStartIndex else { return }
+                        let stepChange = Int((value.translation.width / step).rounded())
+                        currentIndex = min(max(dragStartIndex + stepChange, 0), TimePeriod.allCases.count - 1)
+                    }
+                    .onEnded { _ in
+                        dragStartIndex = nil
+                    }
+            )
+        }
+        .frame(width: width, height: height)
+        .glassEffect(isPillStyled ? .regular.interactive() : .identity, in: Capsule())
+        .accessibilityLabel("Time range")
+        .accessibilityValue(selectedPeriod.label)
+        .accessibilityAdjustableAction { direction in
+            switch direction {
+            case .increment:
+                currentIndex = min(validIndex + 1, TimePeriod.allCases.count - 1)
+            case .decrement:
+                currentIndex = max(validIndex - 1, 0)
+            @unknown default:
+                break
             }
         }
-        .pickerStyle(.segmented)
-        .tint(tintColor)
-        .labelsHidden()
-        .frame(width: 236)
-        .padding(5)
-        .glassEffect(.regular.interactive(), in: Capsule())
-        .accessibilityLabel("Time range")
-        .sensoryFeedback(.selection, trigger: currentIndex)
+        // Drag and accessibility adjustments both change this shared value. Using
+        // the app's haptics helper ensures every actual range change has feedback.
+        .onChange(of: currentIndex) { oldValue, newValue in
+            guard oldValue != newValue else { return }
+            Haptics.selection()
+        }
     }
 }
