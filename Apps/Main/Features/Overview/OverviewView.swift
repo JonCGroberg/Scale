@@ -1935,7 +1935,7 @@ struct OverviewView: View {
                 )
                 .foregroundStyle(tintColor.opacity(selectedDate == nil ? 0.50 : 0.14))
                 .lineStyle(StrokeStyle(lineWidth: 1.4, dash: [5, 3]))
-                .interpolationMethod(.catmullRom)
+                .interpolationMethod(.monotone)
             }
 
             if let selectedData = selectedDataPoint {
@@ -2323,7 +2323,7 @@ struct OverviewView: View {
                 )
                 .foregroundStyle(tintColor.opacity(selectedDate == nil ? 0.50 : 0.14))
                 .lineStyle(StrokeStyle(lineWidth: 1.4, dash: [5, 3]))
-                .interpolationMethod(.catmullRom)
+                .interpolationMethod(.monotone)
             }
 
             if let selectedData = selectedDataPoint {
@@ -2468,7 +2468,7 @@ struct OverviewView: View {
                 )
                 .foregroundStyle(tintColor.opacity(selectedDate == nil ? 0.50 : 0.14))
                 .lineStyle(StrokeStyle(lineWidth: 1.4, dash: [5, 3]))
-                .interpolationMethod(.catmullRom)
+                .interpolationMethod(.monotone)
             }
             
             if let selectedData = selectedDataPoint {
